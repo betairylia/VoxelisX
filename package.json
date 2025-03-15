@@ -1,0 +1,22 @@
+{
+  "name": "com.voxelis.voxelisx",
+  "version": "0.1.0",
+  "displayName": "VoxelisX",
+  "description": "Ray-traced dynamic VoxelEngine for Unity URP",
+  "unity": "6000.0",
+  "documentationUrl": "https://example.com/",
+  "changelogUrl": "https://example.com/changelog.html",
+  "licensesUrl": "https://example.com/licensing.html",
+  "dependencies": {
+    "com.unity.render-pipelines.universal": "17.0.0"
+ },
+ "keywords": [
+    "Voxel Engine",
+    "Ray Tracing"
+  ],
+  "author": {
+    "name": "betairylia",
+    "email": "betairya@gmail.com",
+    "url": "https://www.unity3d.com"
+  }
+}
