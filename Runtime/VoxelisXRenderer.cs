@@ -29,6 +29,8 @@ public class VoxelisXRenderer : MonoBehaviour
     {
         entities.Remove(e);
     }
+
+    public List<VoxelEntity> AllEntities => new List<VoxelEntity>(entities);
     
     public RayTracingAccelerationStructure voxelScene
     {
@@ -104,7 +106,7 @@ public class VoxelisXRenderer : MonoBehaviour
                 
                 if(sector.renderer == null) continue;
 
-                sector.renderer.Render(ref _voxelScene);
+                sector.renderer.RenderModifyAS(ref _voxelScene);
             }
         }
         
@@ -203,8 +205,14 @@ public class VoxelisXRenderer : MonoBehaviour
         _voxelScene.Dispose();
     }
 
-    // Update is called once per frame
+    [SerializeField] private bool autoTick = false;
+
     void Update()
+    {
+        if(autoTick){ Tick(); }
+    }
+
+    public void Tick()
     {
         frameId += 1;
         instanceCount = (int)voxelScene.GetInstanceCount();
@@ -215,13 +223,18 @@ public class VoxelisXRenderer : MonoBehaviour
             // voxelScene.UpdateInstanceTransform(h.handle, h.mat * Matrix4x4.Rotate(Quaternion.AngleAxis(90.0f, Vector3.up)));
         // }
         
-        // Pass 1: Emit jobs
+        // Pass 1: Emit jobs & Remove unused sectors
         foreach (var e in entities)
         {
             if(e == null)
             {
                 RemoveEntity(e);
                 break;
+            }
+
+            while (e.sectorsToRemove.TryDequeue(out SectorRef result))
+            {
+                result.renderer?.RemoveMe(ref _voxelScene);
             }
             
             foreach (var kvp in e.Voxels)
@@ -250,7 +263,9 @@ public class VoxelisXRenderer : MonoBehaviour
                 
                 if(sector.renderer == null) continue;
 
-                sector.renderer.Render(ref _voxelScene);
+                sector.renderer.Render();
+                sector.renderer.RenderModifyAS(ref _voxelScene);
+                sector.Tick();
             }
         }
     }
@@ -258,7 +273,6 @@ public class VoxelisXRenderer : MonoBehaviour
     private void OnGUI()
     {
         GUILayout.BeginVertical(); 
-        
 
         ulong hostMemory = 0;
         ulong deviceMemory = 0;

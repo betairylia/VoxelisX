@@ -1,5 +1,8 @@
 // #include "UnityShaderVariables.cginc"
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/GlobalIllumination.hlsl"
+#include "Assets/VoxelisX/VoxelMaterials.hlsl"
 #include "RayPayload.hlsl"
 #include "Utils.hlsl"
 
@@ -14,11 +17,18 @@ RWTexture2D<float4> AlbedoTarget;
 RWTexture2D<float4> NormalTarget;
 RWTexture2D<float> DepthTarget;
 
-uint g_ConvergenceStep = 60;
+TextureCube<float4> g_Sky;
+SamplerState sampler_g_Sky;
+
+// Sadly unity seems giving me wrong color. No idea what's going on so pass it on our own.
+// The hell you mean that the color I got is BLUE when the light is black?
+float4 g_mainLightColor;
+
+uint g_ConvergenceStep = 10;
 
 // Placeholder parameters
 static uint g_BounceCountOpaque = 2;
-static uint g_BounceCountTransparent = 1;
+static uint g_BounceCountTransparent = 2;
 
 static uint g_spp = 1;
 
@@ -30,11 +40,11 @@ static uint g_spp = 1;
 [shader("raygeneration")]
 void MainRayGenShader()
 {
-#if UNITY_UV_STARTS_AT_TOP
+    //////////////////////////////////////////
+    // Compute Ray Parameters
+    //////////////////////////////////////////
+    
     uint2 launchIndex = uint2(DispatchRaysIndex().x, DispatchRaysDimensions().y - DispatchRaysIndex().y - 1);
-#else
-    return;
-#endif
 
     uint2 launchDim = DispatchRaysDimensions().xy;
 
@@ -42,11 +52,13 @@ void MainRayGenShader()
     float2 frameCoord = launchIndex + float2(0.5, 0.5);
 
     float3 radiance = float3(0, 0, 0);
+    float3 radiance_direct = float3(0, 0, 0);
 
     // Initial random number generator seed for this pixel. The rngState will change every time we draw a random number.
     uint rngState = uint(uint(launchIndex.x) * uint(1973) + uint(launchIndex.y) * uint(9277) + uint(g_ConvergenceStep + g_FrameIndex) * uint(26699)) | uint(1);
 
     float2 jitter = float2(RandomFloat01(rngState), RandomFloat01(rngState)) - float2(0.5, 0.5);
+    // float2 jitter = float2(0, 0);
 
     float2 ndcCoords = (frameCoord + jitter) / float2(launchDim.x - 1, launchDim.y - 1);
 
@@ -74,6 +86,7 @@ void MainRayGenShader()
     payload.bounceIndexOpaque = 0;
     payload.bounceIndexTransparent = 0;
     payload.worldNormal = half3(0, 0, 0);
+    payload.previousTransparentMaterial = 0;
     // payload.bounceRayOrigin = float3(0, 0, 0);
     // payload.bounceRayDirection = float3(0, 0, 0);
     payload.bounceRayOrigin = _WorldSpaceCameraPos;
@@ -83,53 +96,116 @@ void MainRayGenShader()
     float3 wpos = ray.Origin + ray.Direction * 99999.0f;
     float3 normal = float3(0, 0, 0);
     float3 albedo = float3(0, 0, 0);
+    float shadow = 1.0f;
 
+    bool isSky = false;
+    
+    Light mainLight = GetMainLight();
+
+    //////////////////////////////////////////
+    // Primary Ray
+    //////////////////////////////////////////
+    
     // Safe net for when shaders have compilation errors and don't increase the bounce index, resulting in an infinite loop.
     uint safeNet = 0;
 
     float3 throughput = float3(1, 1, 1);
+    
+    TraceRay(g_AccelStruct, 0, 0xFF, 0, 1, missShaderIndex, ray, payload);
+    
+    radiance += payload.emission;
 
-    do
+    // Hit
+    if((payload.bounceIndexOpaque | payload.bounceIndexTransparent) == 1)
     {
-        TraceRay(g_AccelStruct, 0, 0xFF, 0, 1, missShaderIndex, ray, payload);
-
-        if(payload.bounceIndexOpaque == 1)
-        {
-            wpos = payload.bounceRayOrigin;
-            normal = payload.worldNormal;
-            albedo = payload.albedo;
-        }
-
-        radiance += payload.emission * throughput;
-
+        wpos = payload.bounceRayOrigin;
+        normal = payload.worldNormal;
+        albedo = payload.albedo;
+    
+        //////////////////////////////////////////
+        // Shadow Ray
+        //////////////////////////////////////////
+        
+        // TODO: Use separated pass?
+        
+        RayDesc shadowRay;
+        shadowRay.Origin = wpos;
+        shadowRay.Direction = mainLight.direction;
+        shadowRay.TMin = ray.TMin;
+        shadowRay.TMax = ray.TMax;
+        
+        RayPayload shadowPayload;
+        shadowPayload.albedo = float3(1, 1, 1);
+        shadowPayload.emission = float3(0, 0, 0);
+        shadowPayload.rngState = rngState;
+        shadowPayload.bounceIndexOpaque = 0;
+        shadowPayload.bounceIndexTransparent = 0;
+        shadowPayload.worldNormal = half3(0, 0, 0);
+        shadowPayload.bounceRayOrigin = float3(0, 0, 0);
+        shadowPayload.bounceRayDirection = float3(0, 0, 0);
+        shadowPayload.k = 1;
+        
+        TraceRay(g_AccelStruct, 0, 0xFF, 0, 1, missShaderIndex, shadowRay, shadowPayload);
+        
+        shadow = (shadowPayload.bounceIndexOpaque == 1) ? 0.0f : 1.0f;
+        
+        radiance_direct += mainLight.color.rgb * albedo * clamp(shadow * clamp(dot(normal, mainLight.direction), 0, 1), 0.0, 1);
+        // radiance_direct += g_mainLightColor.rgb * shadow;
+        
+        //////////////////////////////////////////
+        // Ambient / GI
+        //////////////////////////////////////////
+        
+        // Handle reflection ray
         throughput *= payload.albedo / max(0.001, payload.k);
-
-        float pathStopProbability = 1;
-
-#define ENABLE_RUSSIAN_ROULETTE 0
-
-#if ENABLE_RUSSIAN_ROULETTE
-        pathStopProbability = max(throughput.r, max(throughput.g, throughput.b));
-
-        // Dark colors have higher chance to terminate the path early.
-        if (pathStopProbability < RandomFloat01(payload.rngState))
-            break;
-#endif
-
-        throughput *= 1 / pathStopProbability;
-
         ray.Origin = payload.bounceRayOrigin;
         ray.Direction = payload.bounceRayDirection;
+        
+        do
+        {
+            TraceRay(g_AccelStruct, 0 + (5 << 11), 0xFF, 0, 1, missShaderIndex, ray, payload);
+
+            radiance += payload.emission * throughput;
+
+            throughput *= payload.albedo / max(0.001, payload.k);
+
+            float pathStopProbability = 1;
+
+    #define ENABLE_RUSSIAN_ROULETTE 0
+
+    #if ENABLE_RUSSIAN_ROULETTE
+            pathStopProbability = max(throughput.r, max(throughput.g, throughput.b));
+
+            // Dark colors have higher chance to terminate the path early.
+            if (pathStopProbability < RandomFloat01(payload.rngState))
+                break;
+    #endif
+
+            throughput *= 1 / pathStopProbability;
+
+            ray.Origin = payload.bounceRayOrigin;
+            ray.Direction = payload.bounceRayDirection;
+        }
+        while ((payload.bounceIndexOpaque <= g_BounceCountOpaque) && (payload.bounceIndexTransparent <= g_BounceCountTransparent) && (++safeNet < 1000));
+        // while (false);
+        
+        // Mix
+        radiance = 0.1f * radiance_direct + 1.0f * radiance;
+    }    
+    // Miss
+    else
+    {
+        isSky = true;
     }
-    while ((payload.bounceIndexOpaque <= g_BounceCountOpaque) && (payload.bounceIndexTransparent <= g_BounceCountTransparent) && (++safeNet < 1000));
-    // while (false);
 
     float3 prevRadiance = RenderTarget[launchIndex].xyz;
+    // isSky = (g_ConvergenceStep < 1) * isSky + (g_ConvergenceStep >= 1) * (isSky | (!RenderTarget[launchIndex].a));
+    isSky = false;
 
     float3 result = lerp(prevRadiance, radiance, 1 / float(g_ConvergenceStep + 1));
     // float3 result = radiance;
-
-    RenderTarget[launchIndex] = float4(result, 1);
+        
+    RenderTarget[launchIndex] = float4(result, !isSky);
     // RenderTarget[launchIndex] = float4(payload.bounceIndexOpaque / 100.0 * float3(1, 1, 1), 1);
     // RenderTarget[launchIndex] = float4(payload.albedo, 1);
     
@@ -138,15 +214,22 @@ void MainRayGenShader()
     AlbedoTarget[launchIndex] = float4(albedo, 1);
 }
 
-static float3 skyHigh = float3(0.7, 0.8, 1.0);
-static float3 skyLow = float3(0.2, 0.15, 0.0);
+static float3 skyHigh = float3(0.92, 0.95, 1.0);
+static float3 skyLow = float3(0.4, 0.5, 0.6);
 
 [shader("miss")]
 void MainMissShader0(inout RayPayload payload: SV_RayPayload)
 {
-    // payload.emission = g_EnvTex.SampleLevel(sampler_g_EnvTex, WorldRayDirection(), 0).xyz;
+    // Accumulated albedo for transparency
+    VoxelMaterial tMat = GET_MATERIAL(payload.previousTransparentMaterial);
+    float3 ext = payload.previousTransparentMaterial == 0 ? float3(1, 1, 1) : float3(0, 0, 0);
+
+    payload.emission = g_Sky.SampleLevel(sampler_g_Sky, WorldRayDirection(), 0).xyz * ext;
     // payload.emission = float3(0.8, 0.9, 1.0);
-    payload.emission = float3(0.4, 0.4, 0.5);
-    // payload.emission = lerp(skyLow, skyHigh, abs(payload.bounceRayDirection.y));
+    // payload.emission = float3(0.4, 0.4, 0.5);
+    // payload.emission = float3(0.015, 0.015, 0.02);
+    // payload.emission = float3(0, 0, 0);
+    // payload.emission = lerp(skyLow, skyHigh, max(0, pow(payload.bounceRayDirection.y, 0.7)));
+
     payload.bounceIndexOpaque = -1;
 }

@@ -18,10 +18,12 @@ Shader "VoxelisX/BrickRTTest"
 
             #include "RayPayload.hlsl"
             #include "Utils.hlsl"
+            #include "Assets/VoxelisX/VoxelMaterials.hlsl"
 
             struct AttributeData
             {
-                half4 color;
+                // half4 color;
+                int matID;
                 half3 normal;
             };
 
@@ -112,13 +114,13 @@ Shader "VoxelisX/BrickRTTest"
                 if(aabbIdx == -1){ return; }
                 
                 // Brick pos inside sector (16x16x16 grid)
-                int bX = aabbIdx % 16;
-                int bY = (aabbIdx / 16) % 16;
-                int bZ = aabbIdx / 256;
+                int bX = 8.0f * (aabbIdx % 16);
+                int bY = 8.0f * ((aabbIdx / 16) % 16);
+                int bZ = 8.0f * (aabbIdx / 256);
                 
                 // Define the AABB for this primitive (unit size boxes)
                 float3 aabbMin = float3(bX, bY, bZ);
-                float3 aabbMax = float3(bX + 1.0f, bY + 1.0f, bZ + 1.0f);
+                float3 aabbMax = float3(bX + 8.0f, bY + 8.0f, bZ + 8.0f);
                 
                 // Ray-AABB intersection with optimization for unit-sized boxes
                 float3 invDir = 1.0f / rayDir;
@@ -151,7 +153,7 @@ Shader "VoxelisX/BrickRTTest"
                     // Create minimalist hit attributes with just the normal
                     AttributeData attrib;
                     attrib.normal = hitNormal;
-                    // attrib.color = half4(0.2, 1, 0.6, 0.0);
+                    // attrib.matID = 0xffffffff;
                     // ReportHit(hitT, 0, attrib);
                     // return;
                     
@@ -160,16 +162,18 @@ Shader "VoxelisX/BrickRTTest"
                     float3x4 objectToWorld = ObjectToWorld3x4();
                     int3 sectorPos = floor(float3(objectToWorld[0][3], objectToWorld[1][3], objectToWorld[2][3]));
                     
-                    int3 brickPos = (int3(bX, bY, bZ) + sectorPos) * 8;
+                    int3 brickPos = (int3(bX, bY, bZ) + sectorPos);
                     // int3 brickPos = (int3(bX, bY, bZ)) * 8;
                     // float3 newRayPos = frac(rayOrigin + rayDir * (hitT + 0.0001f)) * 8.0f;
-                    float3 newRayPos = clamp(rayOrigin + rayDir * hitT - float3(bX, bY, bZ), 0.0f, 0.9999f) * 8.0f;
+                    float3 newRayPos = clamp(rayOrigin + rayDir * hitT - float3(bX, bY, bZ), 0.0f, 7.9999f);
                     int3 blockPos = floor(newRayPos + 0.);
                     int3 rayStep = int3(sign(rayDir));
                     float3 deltaDist = abs(length(rayDir) / rayDir);
                     float3 sideDist = (sign(rayDir) * (float3(blockPos) - newRayPos) + (sign(rayDir) * 0.5) + 0.5) * deltaDist;
 
                     bool3 mask = bool3(false, false, false);
+
+                    int prevTransparentBlock = -1;
 
                     // bool hit = true;
                     bool hit = false;
@@ -180,11 +184,19 @@ Shader "VoxelisX/BrickRTTest"
                         // if(hit || map(blockPos + brickPos))
                         // if(hit || ReadBrickBuf(brick, blockPos))
                         int blk = ReadBrickBuf(bid, blockPos);
-                        if(hit || blk)
+
+                        // Should Terminate?
+                        bool shouldTerminate = IsOpaque(blk);
+                        shouldTerminate |= (prevTransparentBlock != -1) && (blk != prevTransparentBlock);
+                        
+                        prevTransparentBlock = blk;
+                        
+                        if(hit || shouldTerminate)
                         {
                             attrib.normal = (i == 0) * attrib.normal + (i > 0) * half3(mask) * (-rayStep);
-                            attrib.color = half4(((blk >> 11) & 0x1F) / 31.0, ((blk >> 6) & 0x1F) / 31.0, ((blk >> 1) & 0x1F) / 31.0, blk & 0b01);
-                            hitT += dot(mask, sideDist - deltaDist) / 8.0;
+                            // attrib.color = half4(((blk >> 11) & 0x1F) / 31.0, ((blk >> 6) & 0x1F) / 31.0, ((blk >> 1) & 0x1F) / 31.0, blk & 0b01);
+                            attrib.matID = blk;
+                            hitT += dot(mask, sideDist - deltaDist);// / 8.0;
                             hit = true; break;
                         }
                         mask = (sideDist.xyz <= min(sideDist.yzx, sideDist.zxy));
@@ -209,36 +221,59 @@ Shader "VoxelisX/BrickRTTest"
             [shader("closesthit")]
             void ClosestHitMain(inout RayPayload payload : SV_RayPayload, AttributeData attribs : SV_IntersectionAttributes)
             {
+                int materialID = attribs.matID;
+                VoxelMaterial material = GET_MATERIAL(materialID);
+                
                 // float3 objectHitPosition = ObjectRayOrigin() + ObjectRayDirection() * RayTCurrent();
                 float3 worldRayOrigin = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
                 float3 worldNormal = mul((float3x3)ObjectToWorld3x4(), attribs.normal);
 
-                // payload.albedo = float4(attribs.normal * 0.5 + 0.5, 1);
-                // payload.albedo = float4(worldNormal * 0.5 + 0.5, 1);
-                payload.albedo = float4(attribs.color.rgb, 1);
-                // payload.albedo = float4(RayTCurrent() / 50.0, 0, 0, 1);
-                payload.bounceIndexOpaque = payload.bounceIndexOpaque + 1;
-                // payload.emission = float4(attribs.color.y == 0, (1 - attribs.color.x) * (attribs.color.y == 0), 0, 1);
-                // payload.emission = float4(.02, .02, .02, 1);
-                payload.emission = float4(attribs.color.a * attribs.color.rgb, 1);
+                // Accumulated albedo for transparency
+                VoxelMaterial tMat = GET_MATERIAL(payload.previousTransparentMaterial);
+                float3 ext = payload.previousTransparentMaterial == 0 ? float3(1, 1, 1) : exp(-(1 - tMat.albedo) * RayTCurrent() * tMat.extinction);
+                // float3 ext = float3(1, 1, 1);
 
-                
-                float fresnelFactor = FresnelReflectAmountOpaque(1, _IOR, WorldRayDirection(), worldNormal);
-                float specularChance = lerp(_Metallic, 1, fresnelFactor * _Smoothness);
+                if(IsOpaque(materialID))
+                {
+                    // payload.albedo = float4(attribs.normal * 0.5 + 0.5, 1);
+                    // payload.albedo = float4(worldNormal * 0.5 + 0.5, 1);
+                    payload.albedo = material.albedo.rgb * ext;
+                    // payload.albedo = float4(1, 1, 1, 1);
+                    // payload.albedo = float4(RayTCurrent() / 50.0, 0, 0, 1);
+                    payload.bounceIndexOpaque = payload.bounceIndexOpaque + 1;
+                    // payload.emission = float4(attribs.color.y == 0, (1 - attribs.color.x) * (attribs.color.y == 0), 0, 1);
+                    // payload.emission = float4(.02, .02, .02, 1);
+                    payload.emission = material.emission.rgb;
+                    
+                    float fresnelFactor = FresnelReflectAmountOpaque(1, material.IOR, WorldRayDirection(), worldNormal);
+                    float specularChance = lerp(material.metallic, 1, fresnelFactor * material.smoothness);
 
-                // Calculate whether we are going to do a diffuse or specular reflection ray 
-                float doSpecular = (RandomFloat01(payload.rngState) < specularChance) ? 1 : 0;
-                
-                // Bounce
-                const float3 diffuseRayDir = normalize(worldNormal + RandomUnitVector(payload.rngState));
-                float3 specularRayDir = reflect(WorldRayDirection(), worldNormal);
-                specularRayDir = normalize(lerp(diffuseRayDir, specularRayDir, _Smoothness));
-                float3 reflectedRayDir = lerp(diffuseRayDir, specularRayDir, doSpecular);
-                
-                payload.bounceRayOrigin = worldRayOrigin + K_RAY_ORIGIN_PUSH_OFF * worldNormal;
-                // payload.bounceRayDirection = diffuseRayDir;
-                payload.bounceRayDirection = reflectedRayDir;
-                payload.worldNormal = worldNormal;
+                    // Calculate whether we are going to do a diffuse or specular reflection ray 
+                    float doSpecular = (RandomFloat01(payload.rngState) < specularChance) ? 1 : 0;
+                    
+                    // Bounce
+                    const float3 diffuseRayDir = normalize(worldNormal + RandomUnitVector(payload.rngState));
+                    float3 specularRayDir = reflect(WorldRayDirection(), worldNormal);
+                    specularRayDir = normalize(lerp(diffuseRayDir, specularRayDir, material.smoothness));
+                    float3 reflectedRayDir = lerp(diffuseRayDir, specularRayDir, doSpecular);
+                    
+                    payload.k               = (doSpecular == 1) ? specularChance : 1 - specularChance;
+                    payload.bounceRayOrigin = worldRayOrigin + K_RAY_ORIGIN_PUSH_OFF * worldNormal;
+                    // payload.bounceRayDirection = diffuseRayDir;
+                    payload.bounceRayDirection = reflectedRayDir;
+                    payload.worldNormal = worldNormal;
+                }
+                else
+                {
+                    payload.k = 1;
+                    payload.albedo = float3(1, 1, 1);
+                    payload.emission = float3(0, 0, 0);
+                    payload.bounceRayOrigin = worldRayOrigin - K_RAY_ORIGIN_PUSH_OFF * worldNormal;
+                    payload.bounceRayDirection = WorldRayDirection();
+                    payload.worldNormal = worldNormal;
+                    payload.previousTransparentMaterial = materialID;
+                    payload.bounceIndexTransparent = payload.bounceIndexTransparent + 1;
+                }
             }
             
             ENDHLSL

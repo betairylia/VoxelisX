@@ -1,11 +1,11 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using NUnit;
 using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering;
 using UnityEngine.Rendering;
-using UnityEngine.Rendering.Denoising;
 using UnityEngine.Rendering.RenderGraphModule;
 using UnityEngine.Rendering.Universal;
 
@@ -26,6 +26,7 @@ public class VoxelisXRenderPass : ScriptableRenderPass
     }
     
     private static Dictionary<Camera, PrevCameraState> prevFrameState = new Dictionary<Camera, PrevCameraState>();
+    private int EnvMapID = Shader.PropertyToID("_GlossyEnvironmentCubeMap");
 
     internal class PassData
     {
@@ -39,13 +40,18 @@ public class VoxelisXRenderPass : ScriptableRenderPass
 
         internal uint frameId;
         internal int avgFrames;
+
+        internal Light mainLight;
         
-        internal TextureHandle Color;
+        internal TextureHandle GI;
         internal TextureHandle Albedo;
         internal TextureHandle Normal;
+        internal TextureHandle ShadowMask;
         internal TextureHandle Depth;
 
-        internal TextureHandle Color_dest;
+        internal TextureHandle Albedo_dest;
+        internal TextureHandle Normal_dest;
+        internal TextureHandle GI_dest;
         internal TextureHandle Depth_dest;
 
         internal Material copyDSMat;
@@ -130,15 +136,17 @@ public class VoxelisXRenderPass : ScriptableRenderPass
             passData.height = (uint)cameraData.scaledHeight;
             passData.fov = 60.0f;
             
-            passData.Color = RT;
+            passData.GI = RT;
             passData.Albedo = RT_Albedo;
             passData.Normal = RT_Normal;
             passData.Depth = RT_Depth;
 
             passData.copyDSMat = flip;
             
-            passData.Color_dest = frameData.Get<UniversalResourceData>().activeColorTexture;
+            passData.GI_dest = frameData.Get<UniversalResourceData>().activeColorTexture;
             passData.Depth_dest = frameData.Get<UniversalResourceData>().activeDepthTexture;
+
+            passData.mainLight = frameData.Get<UniversalLightData>().visibleLights[frameData.Get<UniversalLightData>().mainLightIndex].light;
             
             passData.cameraMat = cameraData.GetViewMatrix();
             passData.camera = cameraData.camera;
@@ -158,6 +166,9 @@ public class VoxelisXRenderPass : ScriptableRenderPass
             builder.UseTexture(RT_Normal, AccessFlags.Write);
             builder.UseTexture(passData.Depth, AccessFlags.Write);
             builder.UseTexture(passData.Depth_dest, AccessFlags.Write);
+            
+            // RenderGraph does not see this properly set so ...
+            // builder.UseGlobalTexture(EnvMapID);
             
             builder.AllowPassCulling(false);
 
@@ -213,14 +224,27 @@ public class VoxelisXRenderPass : ScriptableRenderPass
             };
         }
         
-        CommandBufferHelpers.GetNativeCommandBuffer(context.cmd).SetRayTracingShaderPass(data.voxShaderRT, "VoxelisX");
+        var natcmd = CommandBufferHelpers.GetNativeCommandBuffer(context.cmd);
+        natcmd.SetRayTracingShaderPass(data.voxShaderRT, "VoxelisX");
         context.cmd.BuildRayTracingAccelerationStructure(data.voxAS);
         
         context.cmd.SetRayTracingAccelerationStructure(data.voxShaderRT, "g_AccelStruct", data.voxAS);
-        context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "RenderTarget", data.Color);
+        context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "RenderTarget", data.GI);
         context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "AlbedoTarget", data.Albedo);
         context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "NormalTarget", data.Normal);
         context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "DepthTarget", data.Depth);
+
+        // This works but feels like a super dirty hack ...
+        // TODO: FIXME: Maybe PR to PBSky repo so we can use the texture properly ... idk
+        Texture tex = Shader.GetGlobalTexture(Shader.PropertyToID("_GlossyEnvironmentCubeMap"));
+        // Sometimes we won't be able to obtain the texture
+        if (tex == null)
+        {
+            // Dummy pure white sky
+            Debug.LogWarning("Cannot obtain current sky texture. Using dummy pure white sky instead.");
+            tex = new Cubemap(1, GraphicsFormat.B8G8R8A8_SRGB, TextureCreationFlags.None);
+        }
+        natcmd.SetRayTracingTextureParam(data.voxShaderRT, "g_Sky", tex);
         
         // context.cmd.SetRayTracingMatrixParam(data.voxShaderRT, "g_PrevCameraToWorld", prevCameraView.inverse);
         // context.cmd.SetRayTracingMatrixParam(data.voxShaderRT, "g_PrevViewProjection", prevCameraView);
@@ -229,6 +253,10 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_ConvergenceStep", prevFrameState[data.camera].frames);
         context.cmd.SetRayTracingFloatParam(data.voxShaderRT, "g_Zoom", Mathf.Tan(Mathf.Deg2Rad * data.fov * 0.5f)); // TODO: Replace this to use camera projection matrix instead
         context.cmd.SetRayTracingFloatParam(data.voxShaderRT, "g_AspectRatio", data.width / (float)data.height);
+        context.cmd.SetRayTracingVectorParam(data.voxShaderRT, "g_mainLightColor",
+            data.mainLight.color.linear * data.mainLight.intensity * (data.mainLight.useColorTemperature
+                ? Mathf.CorrelatedColorTemperatureToRGB(data.mainLight.colorTemperature)
+                : Color.white));
         
         context.cmd.DispatchRays(data.voxShaderRT, "MainRayGenShader", data.width, data.height, 1, null);
         
@@ -243,8 +271,8 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         
         var cmd = CommandBufferHelpers.GetNativeCommandBuffer(context.cmd);
         
-        cmd.SetRenderTarget(data.Color_dest, data.Depth_dest);
+        cmd.SetRenderTarget(data.GI_dest, data.Depth_dest);
         data.copyDSMat.SetTexture("_DepthTex", data.Depth);
-        Blitter.BlitTexture(cmd, data.Color, new Vector4(1, 1, 0, 0), data.copyDSMat, 0);
+        Blitter.BlitTexture(cmd, data.GI, new Vector4(1, 1, 0, 0), data.copyDSMat, 0);
     }
 }

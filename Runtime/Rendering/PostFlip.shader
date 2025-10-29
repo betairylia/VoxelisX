@@ -19,6 +19,10 @@ Shader "VoxelisX/PostFlip"
             float2 uv = input.texcoord;
             
             float4 color = SAMPLE_TEXTURE2D(_BlitTexture, sampler_LinearClamp, uv);
+            if(color.a < 0.01f)
+            {
+                clip(-1);
+            }
 
             outDepth = SAMPLE_TEXTURE2D(_DepthTex, sampler_LinearClamp, uv).r;
 

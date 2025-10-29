@@ -1,5 +1,7 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
@@ -11,7 +13,7 @@ using Voxelis.Rendering;
 
 namespace Voxelis
 {
-    public struct Block
+    public struct Block : IEquatable<Block>
     {
         public uint data;
 
@@ -50,6 +52,25 @@ namespace Voxelis
         }
 
         public static readonly Block Empty = new Block() { data = 0 };
+
+        public static bool operator == (Block a, Block b) => a.data == b.data;
+        public static bool operator != (Block a, Block b) => a.data != b.data;
+
+        public bool Equals(Block other)
+        {
+            return data == other.data;
+        }
+
+        public override int GetHashCode()
+        {
+            return (int)data;
+        }
+    }
+
+    public struct BlockIterator
+    {
+        public Block block;
+        public int3 position;
     }
 
     // public struct Brick : IDisposable
@@ -114,14 +135,16 @@ namespace Voxelis
         
         // Absolute ID => Flags
         public NativeArray<BrickUpdateInfo.Type> brickFlags;
-
+        
         // Queue with Absolute IDs of dirty bricks
-        public NativeQueue<short> updateRecord;
-        public bool IsDirty => !updateRecord.IsEmpty();
+        // For internal renderer use only
+        internal NativeList<short> updateRecord;
+        internal bool IsRendererDirty => !updateRecord.IsEmpty;
+        internal bool IsRendererEmpty => RendererNonEmptyBrickCount == 0;
         
         // Single-element array representing a number
-        private NativeArray<int> currentBrickId; 
-
+        private NativeArray<int> currentBrickId;
+        
         public int RendererNonEmptyBrickCount => currentBrickId[0];
         public int NonEmptyBrickCount => currentBrickId[0];
         public int MemoryUsage => voxels.Capacity * UnsafeUtility.SizeOf(typeof(Block));
@@ -151,12 +174,40 @@ namespace Voxelis
                     options),
                 brickFlags = new NativeArray<BrickUpdateInfo.Type>(
                     SIZE_IN_BRICKS_X * SIZE_IN_BRICKS_Y * SIZE_IN_BRICKS_Z, allocator, options),
-                updateRecord = new NativeQueue<short>(allocator),
+                updateRecord = new NativeList<short>(allocator),
                 currentBrickId = new(1, allocator),
+                
+                nonEmptyBricks = new NativeList<short>(allocator),
             };
 
             var initJob = new InitBrickIdJob() { id = s.brickIdx };
             initJob.Schedule(s.brickIdx.Length, s.brickIdx.Length).Complete();
+            
+            return s;
+        }
+        
+        public static Sector CloneNoRecord(
+            Sector from,
+            Allocator allocator)
+        {
+            Sector s = new Sector()
+            {
+                voxels = new NativeList<Block>(
+                    from.NonEmptyBrickCount * BLOCKS_IN_BRICK, allocator),
+                brickIdx = new NativeArray<short>(
+                    SIZE_IN_BRICKS_X * SIZE_IN_BRICKS_Y * SIZE_IN_BRICKS_Z,
+                    allocator),
+                brickFlags = new NativeArray<BrickUpdateInfo.Type>(
+                    SIZE_IN_BRICKS_X * SIZE_IN_BRICKS_Y * SIZE_IN_BRICKS_Z, allocator),
+                updateRecord = new NativeList<short>(allocator),
+                currentBrickId = new(1, allocator),
+                
+                nonEmptyBricks = new NativeList<short>(allocator),
+            };
+            
+            s.voxels.AddRange(from.voxels.AsArray());
+            s.brickIdx.CopyFrom(from.brickIdx);
+            s.currentBrickId.CopyFrom(from.currentBrickId);
             
             return s;
         }
@@ -170,6 +221,7 @@ namespace Voxelis
             currentBrickId.Dispose();
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static int ToBrickIdx(int x, int y, int z)
         {
             Utils.BurstAssertSimpleExperssionsOnly.IsTrue(x < SIZE_IN_BRICKS_X);
@@ -179,6 +231,7 @@ namespace Voxelis
             return (x + y * SIZE_IN_BRICKS_X + z * (SIZE_IN_BRICKS_X * SIZE_IN_BRICKS_Y));
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static Vector3Int ToBrickPos(short bidAbsolute)
         {
             return new Vector3Int(
@@ -187,6 +240,7 @@ namespace Voxelis
                 (bidAbsolute >> (SHIFT_IN_BRICKS_X + SHIFT_IN_BRICKS_Y)));
         }
         
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static int ToBlockIdx(int x, int y, int z)
         {
             Utils.BurstAssertSimpleExperssionsOnly.IsTrue(x < SIZE_IN_BLOCKS_X);
@@ -196,19 +250,25 @@ namespace Voxelis
             return (x + y * SIZE_IN_BLOCKS_X + z * (SIZE_IN_BLOCKS_X * SIZE_IN_BLOCKS_Y));
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public NativeSlice<Block>? GetBrick(int x, int y, int z)
         {
             short bid = this.brickIdx[ToBrickIdx(x, y, z)];
+            return GetBrick(bid);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public NativeSlice<Block>? GetBrick(short bid)
+        {
             if (bid == BRICKID_EMPTY)
             {
                 return null;
             }
-
             return new NativeSlice<Block>(voxels, bid * BLOCKS_IN_BRICK);
         }
-        
-        // TODO: Per-brick thread safety, pre-alloc etc.
 
+        // TODO: Per-brick thread safety, pre-alloc etc.
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public Block GetBlock(int x, int y, int z)
         {
             int brick_sector_index_id =
@@ -229,6 +289,7 @@ namespace Voxelis
             ];
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void SetBlock(int x, int y, int z, Block b)
         {
             int brick_sector_index_id =
@@ -250,9 +311,11 @@ namespace Voxelis
                 voxels.AddReplicate(Block.Empty, BLOCKS_IN_BRICK);
 
                 brickFlags[brick_sector_index_id] = BrickUpdateInfo.Type.Added;
-                updateRecord.Enqueue((short)brick_sector_index_id);
+                updateRecord.Add((short)brick_sector_index_id);
                 
                 currentBrickId[0]++;
+
+                isNonEmptyBricksDirty = true;
             }
 
             // Set the block in target brick
@@ -267,28 +330,83 @@ namespace Voxelis
             if (brickFlags[brick_sector_index_id] == BrickUpdateInfo.Type.Idle)
             {
                 brickFlags[brick_sector_index_id] = BrickUpdateInfo.Type.Modified;
-                updateRecord.Enqueue((short)brick_sector_index_id);
+                updateRecord.Add((short)brick_sector_index_id);
             }
         }
 
         // This will dequeue next dirty brick and mark it undirty!
-        public BrickUpdateInfo? ProcessNextDirtyBrick()
+        // public BrickUpdateInfo? ProcessNextDirtyBrick()
+        // {
+        //     if (rendererUpdateRecord.IsEmpty()) return null;
+        //     
+        //     short absolute_bid = rendererUpdateRecord.Dequeue();
+        //
+        //     var result = new BrickUpdateInfo()
+        //     {
+        //         brickIdx = brickIdx[absolute_bid],
+        //         brickIdxAbsolute = absolute_bid,
+        //         type = brickFlags[absolute_bid]
+        //     };
+        //
+        //     brickFlags[absolute_bid] = BrickUpdateInfo.Type.Idle;
+        //
+        //     return result;
+        // }
+
+        public void ReorderBricks()
         {
-            if (updateRecord.IsEmpty()) return null;
-            
-            short absolute_bid = updateRecord.Dequeue();
-
-            var result = new BrickUpdateInfo()
-            {
-                brickIdx = brickIdx[absolute_bid],
-                brickIdxAbsolute = absolute_bid,
-                type = brickFlags[absolute_bid]
-            };
-
-            brickFlags[absolute_bid] = BrickUpdateInfo.Type.Idle;
-
-            return result;
+            // Do nothing now
+            // TODO: Implement proper logic
+            return;
         }
+
+        public void EndTick()
+        {
+            // TODO: Burst
+            // TODO: Handle delete brick properly
+            foreach (var record in updateRecord)
+            {
+                brickFlags[record] = BrickUpdateInfo.Type.Idle;
+            }
+            
+            updateRecord.Clear();
+        }
+        
+        #region PHYSICS
+
+        ///////////////////////////////////
+        /// PHYSICS
+        ///////////////////////////////////
+
+        // Accelerators
+        private bool isNonEmptyBricksDirty;
+
+        private NativeList<short> nonEmptyBricks;
+
+        // internal NativeArray<uint> corners;
+        // internal NativeArray<uint> edges;
+
+        [BurstCompile]
+        public NativeList<short> GetNonEmptyBricks()
+        {
+            if (isNonEmptyBricksDirty)
+            {
+                nonEmptyBricks.Clear();
+                for (short i = 0; i < (1 << (SHIFT_IN_BRICKS_X + SHIFT_IN_BRICKS_Y + SHIFT_IN_BRICKS_Z)); i++)
+                {
+                    if (brickIdx[i] != BRICKID_EMPTY)
+                    {
+                        nonEmptyBricks.Add(i);
+                    }
+                }
+
+                isNonEmptyBricksDirty = false;
+            }
+            
+            return nonEmptyBricks;
+        }
+
+        #endregion
     }
     
     public class SectorRef : IDisposable
@@ -298,6 +416,7 @@ namespace Voxelis
         
         // Sector coords inside entity
         public Vector3Int sectorPos;
+        public Vector3Int sectorBlockPos => sectorPos * 128; // FIXME: WARNING: <-- Hardcoded.
 
         public SectorRenderer renderer;
         public VoxelEntity entity;
@@ -315,6 +434,19 @@ namespace Voxelis
             {
                 renderer = new SectorRenderer(this);
             }
+        }
+
+        public void Tick()
+        {
+            sector.ReorderBricks();
+            // TODO: Call renderer RenderEmitJob and Render here with proper parallelization
+            sector.EndTick();
+        }
+
+        public void Remove()
+        {
+            sector.Dispose();
+            renderer?.MarkRemove();
         }
 
         public void Dispose()

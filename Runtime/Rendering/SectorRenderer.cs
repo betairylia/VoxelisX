@@ -26,12 +26,13 @@ namespace Voxelis.Rendering
         [StructLayout(LayoutKind.Sequential)]
         struct ZeroOnePassBrick
         {
-            internal int brickPosNum;
-            internal int d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15;
+            internal ulong brickInfo; // 12bit brickPosNum, 8bit semi-brick mask, 44bit reserved
+            // internal int d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15;
+            internal ulong ul0, ul1, ul2, ul3, ul4, ul5, ul6, ul7;
         }
 
         public static readonly int BRICK_DATA_LENGTH_01PASS = 
-            1           // 32 bit for brick position
+            2           // 64 bit for brick position
             + 512 / 32; // 1 bit per block
         
         public static readonly int BRICK_DATA_LENGTH = 
@@ -69,13 +70,31 @@ namespace Voxelis.Rendering
 
             // [minModified, maxModified]
             public NativeArray<int> syncRecord;
+
+            public BrickUpdateInfo? ProcessDirtyBrick(int index)
+            {
+                if (index >= sector.updateRecord.Length) return null;
+                
+                short absolute_bid = sector.updateRecord[index];
+                
+                var result = new BrickUpdateInfo()
+                {
+                    brickIdx = sector.brickIdx[absolute_bid],
+                    brickIdxAbsolute = absolute_bid,
+                    type = sector.brickFlags[absolute_bid]
+                };
+                
+                return result;
+            }
             
             public void Execute()
             {
                 syncRecord[0] = 65536;
                 syncRecord[1] = 0;
+
+                int id = 0;
                 
-                BrickUpdateInfo? record = sector.ProcessNextDirtyBrick();
+                BrickUpdateInfo? record = ProcessDirtyBrick(id);
                 while (record != null)
                 {
                     if (record.Value.type == BrickUpdateInfo.Type.Idle) continue;
@@ -119,94 +138,50 @@ namespace Voxelis.Rendering
                         Vector3 brickPos = Sector.ToBrickPos(record.Value.brickIdxAbsolute);
                         aabbBuffer[bid] = new AABB()
                         {
-                            min = brickPos,
-                            max = brickPos + Vector3.one
+                            min = brickPos * 8,
+                            max = (brickPos + Vector3.one) * 8
                         };
                     }
                     
                     // Go to next brick
-                    record = sector.ProcessNextDirtyBrick();
+                    id++;
+                    record = ProcessDirtyBrick(id);
                 }
             }
         }
         
-        [BurstCompile]
-        struct GenerateSector01PassRenderDataJob : IJob
-        {
-            public Sector sector;
-            
-            // Buffer of all AABB bounding boxes used for RayTracingAccelerationStructure
-            public NativeList<AABB> aabbBuffer;
-            
-            // Buffers for RayTracing Shaders
-            public NativeList<int> brickData;
-
-            // [minModified, maxModified]
-            public NativeArray<int> syncRecord;
-            
-            public void Execute()
-            {
-                syncRecord[0] = 65536;
-                syncRecord[1] = 0;
-                
-                BrickUpdateInfo? record = sector.ProcessNextDirtyBrick();
-                while (record != null)
-                {
-                    if (record.Value.type == BrickUpdateInfo.Type.Idle) continue;
-                    if (record.Value.type == BrickUpdateInfo.Type.Removed) throw new System.NotImplementedException();
-                    
-                    // Buffer start position
-                    short bid = record.Value.brickIdx;
-                    int bp = bid * BRICK_DATA_LENGTH;
-                    
-                    // Record modifications for Host-Device buffer sync
-                    syncRecord[0] = math.min(syncRecord[0], bid);
-                    syncRecord[1] = math.max(syncRecord[1], bid);
-
-                    // Brick position
-                    brickData[bp] = record.Value.brickIdxAbsolute;
-
-                    // Brick data
-                    for (int bz = 0; bz < Sector.SIZE_IN_BLOCKS_Z; bz++)
-                    {
-                        for (int byhalf = 0; byhalf < 2; byhalf++)
-                        {
-                            int val = 0;
-                            for (int by = 0; by < Sector.SIZE_IN_BLOCKS_Y / 2; by++)
-                            {
-                                // Assume X-First
-                                int blockStart = bid * Sector.BLOCKS_IN_BRICK + Sector.ToBlockIdx(0, by + byhalf * Sector.SIZE_IN_BLOCKS_Y / 2, bz);
-
-                                for (int bx = 0; bx < Sector.SIZE_IN_BLOCKS_X; bx++)
-                                {
-                                    val |= ((sector.voxels[blockStart + bx].isEmpty ? 0 : 1) << (bx + by * 8));
-                                }
-                            }
-                            brickData[bp + 1 + (byhalf + bz * 2)] = val;
-                        }
-                    }
-                    
-                    // AABB
-                    // Only do for new bricks
-                    if (record.Value.type == BrickUpdateInfo.Type.Added)
-                    {
-                        Vector3 brickPos = Sector.ToBrickPos(record.Value.brickIdxAbsolute);
-                        aabbBuffer[bid] = new AABB()
-                        {
-                            min = brickPos,
-                            max = brickPos + Vector3.one
-                        };
-                    }
-                    
-                    // Go to next brick
-                    record = sector.ProcessNextDirtyBrick();
-                }
-            }
-        }
+        // [BurstCompile]
+        // struct GenerateSector01PassRenderDataJob : IJob
+        // {
+        //     // ......
+        //
+        //             // Brick data
+        //             for (int bz = 0; bz < Sector.SIZE_IN_BLOCKS_Z; bz++)
+        //             {
+        //                 for (int byhalf = 0; byhalf < 2; byhalf++)
+        //                 {
+        //                     int val = 0;
+        //                     for (int by = 0; by < Sector.SIZE_IN_BLOCKS_Y / 2; by++)
+        //                     {
+        //                         // Assume X-First
+        //                         int blockStart = bid * Sector.BLOCKS_IN_BRICK + Sector.ToBlockIdx(0, by + byhalf * Sector.SIZE_IN_BLOCKS_Y / 2, bz);
+        //
+        //                         for (int bx = 0; bx < Sector.SIZE_IN_BLOCKS_X; bx++)
+        //                         {
+        //                             val |= ((sector.voxels[blockStart + bx].isEmpty ? 0 : 1) << (bx + by * 8));
+        //                         }
+        //                     }
+        //                     brickData[bp + 1 + (byhalf + bz * 2)] = val;
+        //                 }
+        //             }
+        //             
+        //     // ......
+        // }
 
         public static Material sectorMaterial;
 
         private SectorRef sectorRef;
+        private bool hasRenderable = false;
         private int sectorASHandle;
         private MaterialPropertyBlock matProps = null;
 
@@ -219,7 +194,9 @@ namespace Voxelis.Rendering
         private NativeList<int> hostBrickBuffer;
 
         public ulong MemoryUsage =>
-            (ulong)(hostBrickBuffer.Capacity * sizeof(int) + hostAABBBuffer.Capacity * sizeof(float) * 6);
+            (ulong)(hostBrickBuffer.IsCreated
+                ? (hostBrickBuffer.Capacity * sizeof(int))
+                : 0 + (hostAABBBuffer.IsCreated ? hostAABBBuffer.Capacity * sizeof(float) * 6 : 0));
 
         public ulong VRAMUsage =>
             (ulong)(Sector.SIZE_IN_BRICKS_X * Sector.SIZE_IN_BRICKS_Y * Sector.SIZE_IN_BRICKS_Z * 24 +
@@ -299,8 +276,11 @@ namespace Voxelis.Rendering
         private GenerateSectorRenderDataJob rendererJob;
         private int previousAABBCount;
         private bool isRealloc, jobScheduled, shouldUpdateAABB;
+        private RayTracingAABBsInstanceConfig AABBconfig;
+        private bool isDirty;
+        private bool shouldRemove = false;
 
-        public void Render(ref RayTracingAccelerationStructure AS)
+        public void Render()
         {
             if (!jobScheduled)
             {
@@ -344,37 +324,59 @@ namespace Voxelis.Rendering
                 {
                     matProps = new MaterialPropertyBlock();
                 }
-                else
-                {
-                    AS.RemoveInstance(sectorASHandle);
-                }
                 
-                var config = new RayTracingAABBsInstanceConfig(
+                AABBconfig = new RayTracingAABBsInstanceConfig(
                     aabbBuffer, sectorRef.sector.RendererNonEmptyBrickCount, false, sectorMaterial);
                     // aabbBuffer, 4096, false, sectorMaterial);
-                config.accelerationStructureBuildFlags = RayTracingAccelerationStructureBuildFlags.PreferFastTrace;
-                config.materialProperties = matProps;
+                AABBconfig.accelerationStructureBuildFlags = RayTracingAccelerationStructureBuildFlags.PreferFastTrace;
+                AABBconfig.materialProperties = matProps;
             
-                sectorASHandle = AS.AddInstance(config,
-                   sectorRef.entity.transform.localToWorldMatrix * Matrix4x4.Translate(sectorRef.sectorPos / 8));
                 // AS.RemoveInstance(sectorASHandle);
                 // Debug.Log(config.aabbCount);
                 
                 // Setup AABB instance config
                 matProps.SetBuffer("g_bricks", brickBuffer);
-                AS.UpdateInstancePropertyBlock(sectorASHandle, matProps);
+                isDirty = true;
+                
                 Profiler.EndSample();
             }
 
             isRealloc = false;
+        }
 
-            // AS.UpdateInstanceTransform(sectorASHandle,
-            //     sectorRef.entity.transform.localToWorldMatrix * Matrix4x4.Translate(sectorRef.sectorPos / 8));
+        public void RemoveMe(ref RayTracingAccelerationStructure AS)
+        {
+            if (shouldRemove)
+            {
+                AS.RemoveInstance(sectorASHandle);
+                // Debug.Log("Removed sector");
+                isDirty = false;
+                Dispose();
+            }
+        }
+
+        public void RenderModifyAS(ref RayTracingAccelerationStructure AS)
+        {
+            if (isDirty)
+            {
+                AS.RemoveInstance(sectorASHandle);
+                sectorASHandle = AS.AddInstance(AABBconfig,
+                   sectorRef.entity.transform.localToWorldMatrix * Matrix4x4.Translate(sectorRef.sectorPos * 128));
+                hasRenderable = true;
+                AS.UpdateInstancePropertyBlock(sectorASHandle, matProps);
+            }
+            else if(hasRenderable)
+            {
+                AS.UpdateInstanceTransform(sectorASHandle,
+                    sectorRef.entity.transform.localToWorldMatrix * Matrix4x4.Translate(sectorRef.sectorPos * 128));
+            }
+
+            isDirty = false;
         }
 
         public void RenderEmitJob()
         {
-            if (!sectorRef.sector.IsDirty)
+            if (shouldRemove || sectorRef.sector.IsRendererEmpty || (!sectorRef.sector.IsRendererDirty))
             {
                 return;
             }
@@ -394,18 +396,9 @@ namespace Voxelis.Rendering
             jobScheduled = true;
         }
 
-        public void Tick()
+        public void MarkRemove()
         {
-            Vector3 randomPos = Random.insideUnitSphere * 20.0f + 20.0f * Vector3.one;
-            int idx = Random.Range(0, 25499); 
-            aabbBuffer.SetData(new AABB[]
-            {
-                new AABB()
-                {
-                    min = randomPos,
-                    max = randomPos + Vector3.one
-                }
-            }, 0, idx, 1);
+            shouldRemove = true;
         }
 
         public void Dispose()

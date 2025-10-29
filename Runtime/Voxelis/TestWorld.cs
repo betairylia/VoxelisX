@@ -24,9 +24,9 @@ namespace Voxelis
                     {
                         for (int z = 0; z < Sector.SIZE_IN_BRICKS_Z * Sector.SIZE_IN_BLOCKS_Z; z++)
                         {
-                            int wx = x + sectorPos.x;
-                            int wy = y + sectorPos.y;
-                            int wz = z + sectorPos.z;
+                            int wx = x + sectorPos.x * 128;
+                            int wy = y + sectorPos.y * 128;
+                            int wz = z + sectorPos.z * 128;
                             
                             // if (wy > (math.sin(wx) + math.cos(wz)))
                             // if((wx & wy & wz) == 0 && wy < (600 + 200 * math.sin(wx / 100.0)))
@@ -50,7 +50,8 @@ namespace Voxelis
                             if (n > 0)
                             {
                                 // sector.SetBlock(x, y, z, new Block(1));
-                                sector.SetBlock(x, y, z, new Block(n, wy / 512.0f, 0.5f, ((wx & wy & wz) == 0) ? 1.0f : 0.0f));
+                                // sector.SetBlock(x, y, z, new Block(n, wy / 512.0f, 0.5f, ((wx & wy & wz) == 0) ? 1.0f : 0.0f));
+                                sector.SetBlock(x, y, z, new Block(n, wy / 512.0f, 0.5f, 0f));
                             }
                         }
                     }
@@ -73,7 +74,7 @@ namespace Voxelis
                 {
                     for (int k = 0; k < numSectors.y; k++)
                     {
-                        var secPos = new Vector3Int(i * 128, k * 128, j * 128);
+                        var secPos = new Vector3Int(i, k, j);
                         if (!Voxels.ContainsKey(secPos))
                         {
                             var sec = new SectorRef(

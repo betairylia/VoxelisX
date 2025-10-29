@@ -30,8 +30,8 @@ Material:
     m_Ints: []
     m_Floats:
     - _IOR: 1.51
-    - _Metallic: 0
-    - _Smoothness: 0
+    - _Metallic: 0.5
+    - _Smoothness: 0.5
     m_Colors: []
   m_BuildTextureStacks: []
   m_AllowLocking: 1

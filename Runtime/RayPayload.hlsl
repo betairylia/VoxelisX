@@ -9,4 +9,6 @@ struct RayPayload
     float3 bounceRayDirection;
     half3 worldNormal;
     uint rngState;          // Random number generator state.
+
+    int previousTransparentMaterial;
 };
