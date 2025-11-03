@@ -202,7 +202,7 @@ public class VoxelisXRenderer : MonoBehaviour
             e.Dispose();
         }
         
-        _voxelScene.Dispose();
+        _voxelScene?.Dispose();
     }
 
     [SerializeField] private bool autoTick = false;
@@ -228,6 +228,7 @@ public class VoxelisXRenderer : MonoBehaviour
         {
             if(e == null)
             {
+                Debug.LogError("Use either backward for loop or another list");
                 RemoveEntity(e);
                 break;
             }

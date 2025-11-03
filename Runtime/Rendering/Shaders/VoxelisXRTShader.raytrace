@@ -27,8 +27,8 @@ float4 g_mainLightColor;
 uint g_ConvergenceStep = 10;
 
 // Placeholder parameters
-static uint g_BounceCountOpaque = 2;
-static uint g_BounceCountTransparent = 2;
+static uint g_BounceCountOpaque = 5;
+static uint g_BounceCountTransparent = 5;
 
 static uint g_spp = 1;
 
@@ -190,7 +190,7 @@ void MainRayGenShader()
         // while (false);
         
         // Mix
-        radiance = 0.1f * radiance_direct + 1.0f * radiance;
+        // radiance = 0.1f * radiance_direct + 1.0f * radiance;
     }    
     // Miss
     else
@@ -224,8 +224,8 @@ void MainMissShader0(inout RayPayload payload: SV_RayPayload)
     VoxelMaterial tMat = GET_MATERIAL(payload.previousTransparentMaterial);
     float3 ext = payload.previousTransparentMaterial == 0 ? float3(1, 1, 1) : float3(0, 0, 0);
 
-    payload.emission = g_Sky.SampleLevel(sampler_g_Sky, WorldRayDirection(), 0).xyz * ext;
-    // payload.emission = float3(0.8, 0.9, 1.0);
+    // payload.emission = g_Sky.SampleLevel(sampler_g_Sky, WorldRayDirection(), 0).xyz * ext;
+    payload.emission = float3(0.8, 0.9, 1.0);
     // payload.emission = float3(0.4, 0.4, 0.5);
     // payload.emission = float3(0.015, 0.015, 0.02);
     // payload.emission = float3(0, 0, 0);

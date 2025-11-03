@@ -71,11 +71,11 @@ namespace Voxelis.Rendering
             // [minModified, maxModified]
             public NativeArray<int> syncRecord;
 
-            public BrickUpdateInfo? ProcessDirtyBrick(int index)
+            public BrickUpdateInfo? ConsumeDirtyBrick(int index)
             {
-                if (index >= sector.updateRecord.Length) return null;
+                if (sector.updateRecord.IsEmpty()) return null;
                 
-                short absolute_bid = sector.updateRecord[index];
+                short absolute_bid = sector.updateRecord.Dequeue();
                 
                 var result = new BrickUpdateInfo()
                 {
@@ -83,6 +83,8 @@ namespace Voxelis.Rendering
                     brickIdxAbsolute = absolute_bid,
                     type = sector.brickFlags[absolute_bid]
                 };
+
+                sector.brickFlags[absolute_bid] = BrickUpdateInfo.Type.Idle;
                 
                 return result;
             }
@@ -94,7 +96,7 @@ namespace Voxelis.Rendering
 
                 int id = 0;
                 
-                BrickUpdateInfo? record = ProcessDirtyBrick(id);
+                BrickUpdateInfo? record = ConsumeDirtyBrick(id);
                 while (record != null)
                 {
                     if (record.Value.type == BrickUpdateInfo.Type.Idle) continue;
@@ -145,7 +147,7 @@ namespace Voxelis.Rendering
                     
                     // Go to next brick
                     id++;
-                    record = ProcessDirtyBrick(id);
+                    record = ConsumeDirtyBrick(id);
                 }
             }
         }
@@ -403,8 +405,8 @@ namespace Voxelis.Rendering
 
         public void Dispose()
         {
-            hostAABBBuffer.Dispose();
-            hostBrickBuffer.Dispose();
+            if (hostAABBBuffer.IsCreated) hostAABBBuffer.Dispose();
+            if (hostBrickBuffer.IsCreated) hostBrickBuffer.Dispose();
             
             aabbBuffer?.Dispose();
             brickBuffer?.Dispose();

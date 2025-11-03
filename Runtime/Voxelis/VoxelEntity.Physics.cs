@@ -4,7 +4,6 @@ using System.Collections.Generic;
 using Unity.Collections;
 using Unity.Jobs;
 using Unity.Mathematics;
-using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Serialization;
@@ -40,56 +39,70 @@ namespace Voxelis
             // Center of Mass
             // Temp array for results
             var CoM = new NativeArray<float4>(1, Allocator.TempJob);
-            CoM[0] = new float4(0, 0, 0, 0);
-            
-            foreach (SectorRef sector in Voxels.Values)
+            try
             {
-                var sectorBPos = sector.sectorBlockPos;
-                
-                var sectorJob = new VoxelEntityPhysics.AccumulateSectorCenterOfMass
+                CoM[0] = new float4(0, 0, 0, 0);
+
+                foreach (SectorRef sector in Voxels.Values)
                 {
-                    settings = PhysicsSettings.Settings,
-                    sector = sector.sector,
-                    sectorPosition = new int3(sectorBPos.x, sectorBPos.y, sectorBPos.z),
-                    
-                    accumulatedCenter = CoM
-                };
-                
-                sectorJob.Schedule().Complete();
+                    var sectorBPos = sector.sectorBlockPos;
+
+                    var sectorJob = new VoxelEntityPhysics.AccumulateSectorCenterOfMass
+                    {
+                        settings = PhysicsSettings.Settings,
+                        sector = sector.sector,
+                        sectorPosition = new int3(sectorBPos.x, sectorBPos.y, sectorBPos.z),
+
+                        accumulatedCenter = CoM
+                    };
+
+                    sectorJob.Schedule().Complete();
+                }
+
+                body.mass = CoM[0].w;
+                if (CoM[0].w > 0)
+                {
+                    body.centerOfMass = CoM[0].xyz / CoM[0].w;
+                }
+                else
+                {
+                    body.centerOfMass = Vector3.zero;
+                }
+            }
+            finally
+            {
+                CoM.Dispose();
             }
 
-            body.mass = CoM[0].w;
-            if (CoM[0].w > 0)
-            {
-                body.centerOfMass = CoM[0].xyz / CoM[0].w;
-            }
-            else
-            {
-                body.centerOfMass = Vector3.zero;
-            }
-            
             // Inertia
             var Inertia = new NativeArray<float3>(1, Allocator.TempJob);
-            Inertia[0] = new float3(0, 0, 0);
-            foreach (SectorRef sector in Voxels.Values)
+            try
             {
-                var sectorBPos = sector.sectorBlockPos;
-                
-                var sectorJob = new VoxelEntityPhysics.AccumulateSectorInertia
+                Inertia[0] = new float3(0, 0, 0);
+                foreach (SectorRef sector in Voxels.Values)
                 {
-                    settings = PhysicsSettings.Settings,
-                    sector = sector.sector,
-                    sectorPosition = new int3(sectorBPos.x, sectorBPos.y, sectorBPos.z),
-                    
-                    centerOfMass = body.centerOfMass,
-                    accumulatedInertia = Inertia,
-                };
-                
-                sectorJob.Schedule().Complete();
-            }
+                    var sectorBPos = sector.sectorBlockPos;
 
-            body.inertiaTensor = Inertia[0];
-            body.inertiaTensorRotation = Quaternion.identity;
+                    var sectorJob = new VoxelEntityPhysics.AccumulateSectorInertia
+                    {
+                        settings = PhysicsSettings.Settings,
+                        sector = sector.sector,
+                        sectorPosition = new int3(sectorBPos.x, sectorBPos.y, sectorBPos.z),
+
+                        centerOfMass = body.centerOfMass,
+                        accumulatedInertia = Inertia,
+                    };
+
+                    sectorJob.Schedule().Complete();
+                }
+
+                body.inertiaTensor = Inertia[0];
+                body.inertiaTensorRotation = Quaternion.identity;
+            }
+            finally
+            {
+                Inertia.Dispose();
+            }
         }
 
         public static void ResolveContact(IEnumerable<VoxelCollisionSolver.ContactPoint> wsContactsB, VoxelEntity Ae, VoxelEntity Be)

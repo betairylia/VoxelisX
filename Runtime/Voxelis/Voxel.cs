@@ -73,20 +73,6 @@ namespace Voxelis
         public int3 position;
     }
 
-    // public struct Brick : IDisposable
-    // {
-    //     public const uint SIZE_IN_BLOCKS_X = 8;
-    //     public const uint SIZE_IN_BLOCKS_Y = 8;
-    //     public const uint SIZE_IN_BLOCKS_Z = 8;
-    //
-    //     public NativeArray<Block> data;
-    //
-    //     public void Dispose()
-    //     {
-    //         data.Dispose();
-    //     }
-    // }
-
     public struct BrickUpdateInfo
     {
         public enum Type
@@ -138,8 +124,8 @@ namespace Voxelis
         
         // Queue with Absolute IDs of dirty bricks
         // For internal renderer use only
-        internal NativeList<short> updateRecord;
-        internal bool IsRendererDirty => !updateRecord.IsEmpty;
+        internal NativeQueue<short> updateRecord;
+        internal bool IsRendererDirty => !updateRecord.IsEmpty();
         internal bool IsRendererEmpty => RendererNonEmptyBrickCount == 0;
         
         // Single-element array representing a number
@@ -174,7 +160,7 @@ namespace Voxelis
                     options),
                 brickFlags = new NativeArray<BrickUpdateInfo.Type>(
                     SIZE_IN_BRICKS_X * SIZE_IN_BRICKS_Y * SIZE_IN_BRICKS_Z, allocator, options),
-                updateRecord = new NativeList<short>(allocator),
+                updateRecord = new NativeQueue<short>(allocator),
                 currentBrickId = new(1, allocator),
                 
                 nonEmptyBricks = new NativeList<short>(allocator),
@@ -199,7 +185,7 @@ namespace Voxelis
                     allocator),
                 brickFlags = new NativeArray<BrickUpdateInfo.Type>(
                     SIZE_IN_BRICKS_X * SIZE_IN_BRICKS_Y * SIZE_IN_BRICKS_Z, allocator),
-                updateRecord = new NativeList<short>(allocator),
+                updateRecord = new NativeQueue<short>(allocator),
                 currentBrickId = new(1, allocator),
                 
                 nonEmptyBricks = new NativeList<short>(allocator),
@@ -214,11 +200,12 @@ namespace Voxelis
 
         public void Dispose()
         {
-            voxels.Dispose();
-            brickIdx.Dispose();
-            brickFlags.Dispose();
-            updateRecord.Dispose();
-            currentBrickId.Dispose();
+            if (voxels.IsCreated) voxels.Dispose();
+            if (brickIdx.IsCreated) brickIdx.Dispose();
+            if (brickFlags.IsCreated) brickFlags.Dispose();
+            if (updateRecord.IsCreated) updateRecord.Dispose();
+            if (currentBrickId.IsCreated) currentBrickId.Dispose();
+            if (nonEmptyBricks.IsCreated) nonEmptyBricks.Dispose();
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -311,7 +298,7 @@ namespace Voxelis
                 voxels.AddReplicate(Block.Empty, BLOCKS_IN_BRICK);
 
                 brickFlags[brick_sector_index_id] = BrickUpdateInfo.Type.Added;
-                updateRecord.Add((short)brick_sector_index_id);
+                updateRecord.Enqueue((short)brick_sector_index_id);
                 
                 currentBrickId[0]++;
 
@@ -330,7 +317,7 @@ namespace Voxelis
             if (brickFlags[brick_sector_index_id] == BrickUpdateInfo.Type.Idle)
             {
                 brickFlags[brick_sector_index_id] = BrickUpdateInfo.Type.Modified;
-                updateRecord.Add((short)brick_sector_index_id);
+                updateRecord.Enqueue((short)brick_sector_index_id);
             }
         }
 
@@ -364,12 +351,12 @@ namespace Voxelis
         {
             // TODO: Burst
             // TODO: Handle delete brick properly
-            foreach (var record in updateRecord)
-            {
-                brickFlags[record] = BrickUpdateInfo.Type.Idle;
-            }
-            
-            updateRecord.Clear();
+            // foreach (var record in updateRecord)
+            // {
+            //     brickFlags[record] = BrickUpdateInfo.Type.Idle;
+            // }
+            //
+            // updateRecord.Clear();
         }
         
         #region PHYSICS
