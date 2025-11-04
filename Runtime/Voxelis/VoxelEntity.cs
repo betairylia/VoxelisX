@@ -119,9 +119,9 @@ namespace Voxelis
         public Block GetBlock(Vector3Int pos)
         {
             Vector3Int sectorPos = new Vector3Int(
-                pos.x >> (Sector.SHIFT_IN_BLOCKS_X + Sector.SHIFT_IN_BRICKS_X),
-                pos.y >> (Sector.SHIFT_IN_BLOCKS_Y + Sector.SHIFT_IN_BRICKS_Y),
-                pos.z >> (Sector.SHIFT_IN_BLOCKS_Z + Sector.SHIFT_IN_BRICKS_Z));
+                pos.x >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS),
+                pos.y >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS),
+                pos.z >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS));
 
             var found = Voxels.TryGetValue(sectorPos, out SectorRef sector);
             if (!found)
@@ -130,9 +130,9 @@ namespace Voxelis
             }
 
             return sector.sector.GetBlock(
-                pos.x & (Sector.BRICK_MASK_X | (Sector.SECTOR_MASK_X << Sector.SHIFT_IN_BLOCKS_X)),
-                pos.y & (Sector.BRICK_MASK_Y | (Sector.SECTOR_MASK_Y << Sector.SHIFT_IN_BLOCKS_Y)),
-                pos.z & (Sector.BRICK_MASK_Z | (Sector.SECTOR_MASK_Z << Sector.SHIFT_IN_BLOCKS_Z))
+                pos.x & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
+                pos.y & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
+                pos.z & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS))
             );
         }
 
@@ -148,9 +148,9 @@ namespace Voxelis
         public void SetBlock(Vector3Int pos, Block b)
         {
             Vector3Int sectorPos = new Vector3Int(
-                pos.x >> (Sector.SHIFT_IN_BLOCKS_X + Sector.SHIFT_IN_BRICKS_X),
-                pos.y >> (Sector.SHIFT_IN_BLOCKS_Y + Sector.SHIFT_IN_BRICKS_Y),
-                pos.z >> (Sector.SHIFT_IN_BLOCKS_Z + Sector.SHIFT_IN_BRICKS_Z));
+                pos.x >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS),
+                pos.y >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS),
+                pos.z >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS));
 
             var found = Voxels.TryGetValue(sectorPos, out SectorRef sector);
             if (!found)
@@ -163,9 +163,9 @@ namespace Voxelis
             }
 
             sector.sector.SetBlock(
-                pos.x & (Sector.BRICK_MASK_X | (Sector.SECTOR_MASK_X << Sector.SHIFT_IN_BLOCKS_X)),
-                pos.y & (Sector.BRICK_MASK_Y | (Sector.SECTOR_MASK_Y << Sector.SHIFT_IN_BLOCKS_Y)),
-                pos.z & (Sector.BRICK_MASK_Z | (Sector.SECTOR_MASK_Z << Sector.SHIFT_IN_BLOCKS_Z)),
+                pos.x & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
+                pos.y & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
+                pos.z & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
                 b
             );
 

@@ -158,19 +158,19 @@ namespace Voxelis.Rendering
                     brickData[bp] = record.Value.brickIdxAbsolute;
 
                     // Brick data
-                    for (int bz = 0; bz < Sector.SIZE_IN_BLOCKS_Z; bz++)
+                    for (int bz = 0; bz < Sector.SIZE_IN_BLOCKS; bz++)
                     {
-                        for (int by = 0; by < Sector.SIZE_IN_BLOCKS_Y; by++)
+                        for (int by = 0; by < Sector.SIZE_IN_BLOCKS; by++)
                         {
                             // Assume X-First
                             int blockStart = bid * Sector.BLOCKS_IN_BRICK +
                                              Sector.ToBlockIdx(0, by, bz);
 
-                            for (int bx = 0; bx < Sector.SIZE_IN_BLOCKS_X; bx += 2)
+                            for (int bx = 0; bx < Sector.SIZE_IN_BLOCKS; bx += 2)
                             {
                                 brickData[
-                                        bp + 1 + bz * (Sector.SIZE_IN_BLOCKS_Y * Sector.SIZE_IN_BLOCKS_X / 2) +
-                                        by * (Sector.SIZE_IN_BLOCKS_X / 2) + bx / 2] =
+                                        bp + 1 + bz * (Sector.SIZE_IN_BLOCKS_SQUARED / 2) +
+                                        by * (Sector.SIZE_IN_BLOCKS / 2) + bx / 2] =
                                     ((sector.voxels[blockStart + bx].id << 16) | sector.voxels[blockStart + bx + 1].id);
                                     // ~(0x00010001);
                             }
@@ -184,8 +184,8 @@ namespace Voxelis.Rendering
                         Vector3 brickPos = Sector.ToBrickPos(record.Value.brickIdxAbsolute);
                         aabbBuffer[bid] = new AABB()
                         {
-                            min = brickPos * 8,
-                            max = (brickPos + Vector3.one) * 8
+                            min = brickPos * Sector.SIZE_IN_BLOCKS,
+                            max = (brickPos + Vector3.one) * Sector.SIZE_IN_BLOCKS
                         };
                     }
                     
@@ -202,17 +202,17 @@ namespace Voxelis.Rendering
         //     // ......
         //
         //             // Brick data
-        //             for (int bz = 0; bz < Sector.SIZE_IN_BLOCKS_Z; bz++)
+        //             for (int bz = 0; bz < Sector.SIZE_IN_BLOCKS; bz++)
         //             {
         //                 for (int byhalf = 0; byhalf < 2; byhalf++)
         //                 {
         //                     int val = 0;
-        //                     for (int by = 0; by < Sector.SIZE_IN_BLOCKS_Y / 2; by++)
+        //                     for (int by = 0; by < Sector.SIZE_IN_BLOCKS / 2; by++)
         //                     {
         //                         // Assume X-First
-        //                         int blockStart = bid * Sector.BLOCKS_IN_BRICK + Sector.ToBlockIdx(0, by + byhalf * Sector.SIZE_IN_BLOCKS_Y / 2, bz);
+        //                         int blockStart = bid * Sector.BLOCKS_IN_BRICK + Sector.ToBlockIdx(0, by + byhalf * Sector.SIZE_IN_BLOCKS / 2, bz);
         //
-        //                         for (int bx = 0; bx < Sector.SIZE_IN_BLOCKS_X; bx++)
+        //                         for (int bx = 0; bx < Sector.SIZE_IN_BLOCKS; bx++)
         //                         {
         //                             val |= ((sector.voxels[blockStart + bx].isEmpty ? 0 : 1) << (bx + by * 8));
         //                         }
@@ -259,7 +259,7 @@ namespace Voxelis.Rendering
         /// Gets the estimated VRAM usage in bytes for this renderer's GPU buffers.
         /// </summary>
         public ulong VRAMUsage =>
-            (ulong)(Sector.SIZE_IN_BRICKS_X * Sector.SIZE_IN_BRICKS_Y * Sector.SIZE_IN_BRICKS_Z * 24 +
+            (ulong)(Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * 24 +
                     currentCapacity * BRICK_DATA_LENGTH * 4);
 
         private GraphicsBuffer aabbBuffer;
@@ -311,7 +311,7 @@ namespace Voxelis.Rendering
                 
                 aabbBuffer = new GraphicsBuffer(
                     GraphicsBuffer.Target.Structured,
-                    Sector.SIZE_IN_BRICKS_X * Sector.SIZE_IN_BRICKS_Y * Sector.SIZE_IN_BRICKS_Z, 24);
+                    Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS, 24);
             }
             
             hostAABBBuffer.Resize(requestedCapacity, NativeArrayOptions.ClearMemory);
@@ -442,14 +442,14 @@ namespace Voxelis.Rendering
             {
                 AS.RemoveInstance(sectorASHandle);
                 sectorASHandle = AS.AddInstance(AABBconfig,
-                   sectorRef.entity.transform.localToWorldMatrix * Matrix4x4.Translate(sectorRef.sectorPos * 128));
+                   sectorRef.entity.transform.localToWorldMatrix * Matrix4x4.Translate(sectorRef.sectorPos * Sector.SECTOR_SIZE_IN_BLOCKS));
                 hasRenderable = true;
                 AS.UpdateInstancePropertyBlock(sectorASHandle, matProps);
             }
             else if(hasRenderable)
             {
                 AS.UpdateInstanceTransform(sectorASHandle,
-                    sectorRef.entity.transform.localToWorldMatrix * Matrix4x4.Translate(sectorRef.sectorPos * 128));
+                    sectorRef.entity.transform.localToWorldMatrix * Matrix4x4.Translate(sectorRef.sectorPos * Sector.SECTOR_SIZE_IN_BLOCKS));
             }
 
             isDirty = false;

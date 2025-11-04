@@ -194,10 +194,10 @@ public class VoxelisXRenderer : MonoBehaviour
             }
             else
             {
-                int cY = i / 256; // 1,024
-                int cX = i % 16;  //   128
-                int cZ = (i / 16) % 16; // 128
-                
+                int cY = i / Sector.SIZE_IN_BRICKS_SQUARED; // 1,024
+                int cX = i % Sector.SIZE_IN_BRICKS;  //   128
+                int cZ = (i / Sector.SIZE_IN_BRICKS) % Sector.SIZE_IN_BRICKS; // 128
+
                 rnd = new Vector3(cX, cY, cZ);
             }
             
@@ -229,8 +229,8 @@ public class VoxelisXRenderer : MonoBehaviour
                         new TestSector()
                         {
                             handle = _voxelScene.AddInstance(AABBconfig,
-                                Matrix4x4.Translate(Vector3.forward * 16 * i + Vector3.left * 16 * j)),
-                            mat = Matrix4x4.Translate(Vector3.forward * 16 * i + Vector3.left * 16 * j)
+                                Matrix4x4.Translate(Vector3.forward * Sector.SIZE_IN_BRICKS * i + Vector3.left * Sector.SIZE_IN_BRICKS * j)),
+                            mat = Matrix4x4.Translate(Vector3.forward * Sector.SIZE_IN_BRICKS * i + Vector3.left * Sector.SIZE_IN_BRICKS * j)
                         });
                 }
             }

@@ -38,9 +38,9 @@ namespace Voxelis
             bX = -1;
             bY = 0;
             bZ = 0;
-            x = 7;
-            y = 7;
-            z = 7;
+            x = Sector.BRICK_MASK;
+            y = Sector.BRICK_MASK;
+            z = Sector.BRICK_MASK;
 
             brick_acce_id = -1;
 
@@ -60,14 +60,14 @@ namespace Voxelis
             {
                 // Move to next block
                 x++;
-                if (x >= Sector.SIZE_IN_BLOCKS_X) { x = 0; y++; }
-                if (y >= Sector.SIZE_IN_BLOCKS_Y) { y = 0; z++; }
-                
+                if (x >= Sector.SIZE_IN_BLOCKS) { x = 0; y++; }
+                if (y >= Sector.SIZE_IN_BLOCKS) { y = 0; z++; }
+
                 // Move to new brick
-                if (z >= Sector.SIZE_IN_BLOCKS_Z)
+                if (z >= Sector.SIZE_IN_BLOCKS)
                 {
                     z = 0;
-                    
+
                     // Find next non-empty brick
                     short absolute_bid = Sector.BRICKID_EMPTY;
                     do
@@ -77,21 +77,20 @@ namespace Voxelis
                         absolute_bid = sector.GetNonEmptyBricks()[brick_acce_id];
                         sectorBrickIndex = sector.brickIdx[absolute_bid];
                     }while(sectorBrickIndex == Sector.BRICKID_EMPTY);
-                    
-                    bX = absolute_bid & ((1 << Sector.SHIFT_IN_BRICKS_X) - 1);
-                    bY = (absolute_bid >> Sector.SHIFT_IN_BRICKS_X) & ((1 << Sector.SHIFT_IN_BRICKS_Y) - 1);
-                    bZ = (absolute_bid >> (Sector.SHIFT_IN_BRICKS_X + Sector.SHIFT_IN_BRICKS_Y)) & ((1 << Sector.SHIFT_IN_BRICKS_Z) - 1);
+
+                    bX = absolute_bid & Sector.SECTOR_MASK;
+                    bY = (absolute_bid >> Sector.SHIFT_IN_BRICKS) & Sector.SECTOR_MASK;
+                    bZ = (absolute_bid >> (Sector.SHIFT_IN_BRICKS << 1)) & Sector.SECTOR_MASK;
                 }
 
-                sectorBlockIndex = (sectorBrickIndex
-                                   << (Sector.SHIFT_IN_BLOCKS_X + Sector.SHIFT_IN_BLOCKS_Y + Sector.SHIFT_IN_BLOCKS_Z))
+                sectorBlockIndex = (sectorBrickIndex << (Sector.SHIFT_IN_BLOCKS * 3))
                                    + Sector.ToBlockIdx(x, y, z);
             }while(sector.voxels[sectorBlockIndex].isEmpty);
 
             blockPosition = new int3(
-                (bX << Sector.SHIFT_IN_BLOCKS_X) + x,
-                (bY << Sector.SHIFT_IN_BLOCKS_Y) + y,
-                (bZ << Sector.SHIFT_IN_BLOCKS_Z) + z
+                (bX << Sector.SHIFT_IN_BLOCKS) + x,
+                (bY << Sector.SHIFT_IN_BLOCKS) + y,
+                (bZ << Sector.SHIFT_IN_BLOCKS) + z
             );
             
             return true;
@@ -105,9 +104,9 @@ namespace Voxelis
             bX = -1;
             bY = 0;
             bZ = 0;
-            x = 7;
-            y = 7;
-            z = 7;
+            x = Sector.BRICK_MASK;
+            y = Sector.BRICK_MASK;
+            z = Sector.BRICK_MASK;
 
             sectorBlockIndex = 0;
             sectorBrickIndex = 0;

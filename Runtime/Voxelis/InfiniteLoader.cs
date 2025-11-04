@@ -147,11 +147,11 @@ namespace Voxelis
         /// Gets the current sector position of the load center.
         /// </summary>
         /// <remarks>
-        /// Divides the load center's world position by 16 to convert from world space to sector space.
-        /// Note: This assumes 16 blocks per sector unit, but actual sector size is 128 blocks.
+        /// Divides the load center's world position by SIZE_IN_BRICKS to convert from world space to sector space.
+        /// Note: This divides by SIZE_IN_BRICKS (16), not SECTOR_SIZE_IN_BLOCKS (128).
         /// This may be a bug or intentional design choice.
         /// </remarks>
-        public Vector3Int loadCenterSectorPos => Vector3Int.FloorToInt(loadCenter.position / 16.0f);
+        public Vector3Int loadCenterSectorPos => Vector3Int.FloorToInt(loadCenter.position / Sector.SIZE_IN_BRICKS);
 
         /// <summary>
         /// Determines whether a sector should be unloaded based on its distance from the center.
@@ -163,7 +163,7 @@ namespace Voxelis
         {
             Vector3Int relativePos = sectorPos - loadCenterSectorPos;
             relativePos.y = 0;
-            return !((relativePos.magnitude * 128.0f) <= sectorUnloadRadiusInBlocks
+            return !((relativePos.magnitude * Sector.SECTOR_SIZE_IN_BLOCKS) <= sectorUnloadRadiusInBlocks
                 && Mathf.Abs(relativePos.x) <= sectorLoadBounds.x
                 && Mathf.Abs(relativePos.y) <= sectorLoadBounds.y
                 && Mathf.Abs(relativePos.z) <= sectorLoadBounds.z);
@@ -179,7 +179,7 @@ namespace Voxelis
         public void ResetSectorLoadOrder()
         {
             // Fill sector load order list
-            GeneratePointsInIntersection(sectorLoadBounds, sectorLoadRadiusInBlocks / 128.0f, ref sectorLoadOrder);
+            GeneratePointsInIntersection(sectorLoadBounds, sectorLoadRadiusInBlocks / Sector.SECTOR_SIZE_IN_BLOCKS, ref sectorLoadOrder);
         }
 
         /// <summary>

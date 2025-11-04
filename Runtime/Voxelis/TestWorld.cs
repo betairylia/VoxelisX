@@ -40,20 +40,20 @@ namespace Voxelis
             /// </remarks>
             public void Execute()
             {
-                for (int x = 0; x < Sector.SIZE_IN_BRICKS_X * Sector.SIZE_IN_BLOCKS_X; x++)
+                for (int x = 0; x < Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BLOCKS; x++)
                 {
-                    for (int y = 0; y < Sector.SIZE_IN_BRICKS_Y * Sector.SIZE_IN_BLOCKS_Y; y++)
+                    for (int y = 0; y < Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BLOCKS; y++)
                     {
-                        for (int z = 0; z < Sector.SIZE_IN_BRICKS_Z * Sector.SIZE_IN_BLOCKS_Z; z++)
+                        for (int z = 0; z < Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BLOCKS; z++)
                         {
-                            int wx = x + sectorPos.x * 128;
-                            int wy = y + sectorPos.y * 128;
-                            int wz = z + sectorPos.z * 128;
-                            
+                            int wx = x + sectorPos.x * Sector.SECTOR_SIZE_IN_BLOCKS;
+                            int wy = y + sectorPos.y * Sector.SECTOR_SIZE_IN_BLOCKS;
+                            int wz = z + sectorPos.z * Sector.SECTOR_SIZE_IN_BLOCKS;
+
                             // if (wy > (math.sin(wx) + math.cos(wz)))
                             // if((wx & wy & wz) == 0 && wy < (600 + 200 * math.sin(wx / 100.0)))
                             // if(wy < (600 + 200 * math.sin(wx / 100.0) + 100 * math.cos(wz / 150.0)))
-                            // if(wy < 128)
+                            // if(wy < Sector.SECTOR_SIZE_IN_BLOCKS)
                             // {
                             //     sector.SetBlock(x, y, z, new Block(1));
                             // }
@@ -174,13 +174,13 @@ namespace Voxelis
             /// </summary>
             public void Execute()
             {
-                const int Zs = 128;
-                for (int x = 0; x < 128; x++)
+                const int Zs = Sector.SECTOR_SIZE_IN_BLOCKS;
+                for (int x = 0; x < Sector.SECTOR_SIZE_IN_BLOCKS; x++)
                 {
                     for (int i = 0; i < Zs; i++)
                     {
-                        int y = p % 128;
-                        int z = ((p / 128) % (128 / Zs)) * Zs + i;
+                        int y = p % Sector.SECTOR_SIZE_IN_BLOCKS;
+                        int z = ((p / Sector.SECTOR_SIZE_IN_BLOCKS) % (Sector.SECTOR_SIZE_IN_BLOCKS / Zs)) * Zs + i;
                         sector.SetBlock(
                             x, y, z, new Block((ushort)(sector.GetBlock(x, y, z).isEmpty ? 1 : 0)));
                     }

@@ -122,9 +122,9 @@ namespace Voxelis.Simulation
                                 // Check out-of-bounds
                                 if (math.any(destination < 0) ||
                                     math.any(destination >= new int3(
-                                        Sector.SIZE_IN_BRICKS_X * Sector.SIZE_IN_BLOCKS_X,
-                                        Sector.SIZE_IN_BRICKS_Y * Sector.SIZE_IN_BLOCKS_Y,
-                                        Sector.SIZE_IN_BRICKS_Z * Sector.SIZE_IN_BLOCKS_Z
+                                        Sector.SECTOR_SIZE_IN_BLOCKS,
+                                        Sector.SECTOR_SIZE_IN_BLOCKS,
+                                        Sector.SECTOR_SIZE_IN_BLOCKS
                                     )))
                                 {
                                     continue;

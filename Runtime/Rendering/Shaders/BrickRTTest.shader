@@ -16,6 +16,11 @@ Shader "VoxelisX/BrickRTTest"
             
             HLSLPROGRAM
 
+            // Isometric sector constants (uniform across all axes)
+            #define SIZE_IN_BLOCKS 8
+            #define SIZE_IN_BRICKS 16
+            #define SIZE_IN_BRICKS_SQUARED 256
+
             #include "RayPayload.hlsl"
             #include "Utils.hlsl"
             #include "Assets/VoxelisX/VoxelMaterials.hlsl"
@@ -113,14 +118,14 @@ Shader "VoxelisX/BrickRTTest"
 
                 if(aabbIdx == -1){ return; }
                 
-                // Brick pos inside sector (16x16x16 grid)
-                int bX = 8.0f * (aabbIdx % 16);
-                int bY = 8.0f * ((aabbIdx / 16) % 16);
-                int bZ = 8.0f * (aabbIdx / 256);
-                
+                // Brick pos inside sector (SIZE_IN_BRICKS^3 grid)
+                int bX = SIZE_IN_BLOCKS * (aabbIdx % SIZE_IN_BRICKS);
+                int bY = SIZE_IN_BLOCKS * ((aabbIdx / SIZE_IN_BRICKS) % SIZE_IN_BRICKS);
+                int bZ = SIZE_IN_BLOCKS * (aabbIdx / SIZE_IN_BRICKS_SQUARED);
+
                 // Define the AABB for this primitive (unit size boxes)
                 float3 aabbMin = float3(bX, bY, bZ);
-                float3 aabbMax = float3(bX + 8.0f, bY + 8.0f, bZ + 8.0f);
+                float3 aabbMax = float3(bX + SIZE_IN_BLOCKS, bY + SIZE_IN_BLOCKS, bZ + SIZE_IN_BLOCKS);
                 
                 // Ray-AABB intersection with optimization for unit-sized boxes
                 float3 invDir = 1.0f / rayDir;
@@ -163,9 +168,9 @@ Shader "VoxelisX/BrickRTTest"
                     int3 sectorPos = floor(float3(objectToWorld[0][3], objectToWorld[1][3], objectToWorld[2][3]));
                     
                     int3 brickPos = (int3(bX, bY, bZ) + sectorPos);
-                    // int3 brickPos = (int3(bX, bY, bZ)) * 8;
-                    // float3 newRayPos = frac(rayOrigin + rayDir * (hitT + 0.0001f)) * 8.0f;
-                    float3 newRayPos = clamp(rayOrigin + rayDir * hitT - float3(bX, bY, bZ), 0.0f, 7.9999f);
+                    // int3 brickPos = (int3(bX, bY, bZ)) * SIZE_IN_BLOCKS;
+                    // float3 newRayPos = frac(rayOrigin + rayDir * (hitT + 0.0001f)) * SIZE_IN_BLOCKS;
+                    float3 newRayPos = clamp(rayOrigin + rayDir * hitT - float3(bX, bY, bZ), 0.0f, SIZE_IN_BLOCKS - 0.0001f);
                     int3 blockPos = floor(newRayPos + 0.);
                     int3 rayStep = int3(sign(rayDir));
                     float3 deltaDist = abs(length(rayDir) / rayDir);
@@ -180,7 +185,7 @@ Shader "VoxelisX/BrickRTTest"
                     [unroll]for(int i = 0; i < 36; i++)
                     // for(int i = 0; i < 0; i++)
                     {
-                        if(any(blockPos < 0) || any(blockPos >= 8)) break;
+                        if(any(blockPos < 0) || any(blockPos >= SIZE_IN_BLOCKS)) break;
                         // if(hit || map(blockPos + brickPos))
                         // if(hit || ReadBrickBuf(brick, blockPos))
                         int blk = ReadBrickBuf(bid, blockPos);

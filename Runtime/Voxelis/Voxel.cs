@@ -177,45 +177,30 @@ namespace Voxelis
     /// </remarks>
     public struct Sector : IDisposable
     {
-        /// <summary>Bit shift for brick size in X direction (brick is 8 blocks wide).</summary>
-        public const int SHIFT_IN_BLOCKS_X = 3;
-        /// <summary>Bit shift for brick size in Y direction (brick is 8 blocks tall).</summary>
-        public const int SHIFT_IN_BLOCKS_Y = 3;
-        /// <summary>Bit shift for brick size in Z direction (brick is 8 blocks deep).</summary>
-        public const int SHIFT_IN_BLOCKS_Z = 3;
-        /// <summary>Size of a brick in blocks along X axis (8 blocks).</summary>
-        public const int SIZE_IN_BLOCKS_X = (1 << SHIFT_IN_BLOCKS_X);
-        /// <summary>Size of a brick in blocks along Y axis (8 blocks).</summary>
-        public const int SIZE_IN_BLOCKS_Y = (1 << SHIFT_IN_BLOCKS_Y);
-        /// <summary>Size of a brick in blocks along Z axis (8 blocks).</summary>
-        public const int SIZE_IN_BLOCKS_Z = (1 << SHIFT_IN_BLOCKS_Z);
-        /// <summary>Bitmask for extracting block position within brick along X axis.</summary>
-        public const int BRICK_MASK_X = SIZE_IN_BLOCKS_X - 1;
-        /// <summary>Bitmask for extracting block position within brick along Y axis.</summary>
-        public const int BRICK_MASK_Y = SIZE_IN_BLOCKS_Y - 1;
-        /// <summary>Bitmask for extracting block position within brick along Z axis.</summary>
-        public const int BRICK_MASK_Z = SIZE_IN_BLOCKS_Z - 1;
+        // Brick-level constants (isometric: uniform across all axes)
+        /// <summary>Bit shift for brick size (brick is 8 blocks per axis).</summary>
+        public const int SHIFT_IN_BLOCKS = 3;
+        /// <summary>Size of a brick in blocks (8 blocks per axis).</summary>
+        public const int SIZE_IN_BLOCKS = (1 << SHIFT_IN_BLOCKS);
+        /// <summary>Bitmask for extracting block position within brick (0-7).</summary>
+        public const int BRICK_MASK = SIZE_IN_BLOCKS - 1;
+        /// <summary>Squared size for indexing calculations (8 * 8 = 64).</summary>
+        public const int SIZE_IN_BLOCKS_SQUARED = SIZE_IN_BLOCKS * SIZE_IN_BLOCKS;
         /// <summary>Total number of blocks in a single brick (8x8x8 = 512).</summary>
-        public const int BLOCKS_IN_BRICK = SIZE_IN_BLOCKS_X * SIZE_IN_BLOCKS_Y * SIZE_IN_BLOCKS_Z;
+        public const int BLOCKS_IN_BRICK = SIZE_IN_BLOCKS * SIZE_IN_BLOCKS * SIZE_IN_BLOCKS;
 
-        /// <summary>Bit shift for sector size in bricks along X axis (16 bricks).</summary>
-        public const int SHIFT_IN_BRICKS_X = 4;
-        /// <summary>Bit shift for sector size in bricks along Y axis (16 bricks).</summary>
-        public const int SHIFT_IN_BRICKS_Y = 4;
-        /// <summary>Bit shift for sector size in bricks along Z axis (16 bricks).</summary>
-        public const int SHIFT_IN_BRICKS_Z = 4;
-        /// <summary>Number of bricks in a sector along X axis (16 bricks = 128 blocks).</summary>
-        public const int SIZE_IN_BRICKS_X = (1 << SHIFT_IN_BRICKS_X);
-        /// <summary>Number of bricks in a sector along Y axis (16 bricks = 128 blocks).</summary>
-        public const int SIZE_IN_BRICKS_Y = (1 << SHIFT_IN_BRICKS_Y);
-        /// <summary>Number of bricks in a sector along Z axis (16 bricks = 128 blocks).</summary>
-        public const int SIZE_IN_BRICKS_Z = (1 << SHIFT_IN_BRICKS_Z);
-        /// <summary>Bitmask for extracting brick position within sector along X axis.</summary>
-        public const int SECTOR_MASK_X = SIZE_IN_BRICKS_X - 1;
-        /// <summary>Bitmask for extracting brick position within sector along Y axis.</summary>
-        public const int SECTOR_MASK_Y = SIZE_IN_BRICKS_Y - 1;
-        /// <summary>Bitmask for extracting brick position within sector along Z axis.</summary>
-        public const int SECTOR_MASK_Z = SIZE_IN_BRICKS_Z - 1;
+        // Sector-level constants (isometric: uniform across all axes)
+        /// <summary>Bit shift for sector size in bricks (16 bricks per axis).</summary>
+        public const int SHIFT_IN_BRICKS = 4;
+        /// <summary>Number of bricks in a sector per axis (16 bricks = 128 blocks).</summary>
+        public const int SIZE_IN_BRICKS = (1 << SHIFT_IN_BRICKS);
+        /// <summary>Bitmask for extracting brick position within sector (0-15).</summary>
+        public const int SECTOR_MASK = SIZE_IN_BRICKS - 1;
+        /// <summary>Squared size for indexing calculations (16 * 16 = 256).</summary>
+        public const int SIZE_IN_BRICKS_SQUARED = SIZE_IN_BRICKS * SIZE_IN_BRICKS;
+        /// <summary>Size of a sector in blocks (128 blocks per axis).</summary>
+        public const int SECTOR_SIZE_IN_BLOCKS = SIZE_IN_BRICKS << SHIFT_IN_BLOCKS;
+
         /// <summary>Special value indicating an empty/unallocated brick.</summary>
         public const short BRICKID_EMPTY = -1;
 
@@ -301,11 +286,11 @@ namespace Voxelis
                 voxels = new NativeList<Block>(
                     initialBricks * BLOCKS_IN_BRICK, allocator),
                 brickIdx = new NativeArray<short>(
-                    SIZE_IN_BRICKS_X * SIZE_IN_BRICKS_Y * SIZE_IN_BRICKS_Z,
+                    SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS,
                     allocator,
                     options),
                 brickFlags = new NativeArray<BrickUpdateInfo.Type>(
-                    SIZE_IN_BRICKS_X * SIZE_IN_BRICKS_Y * SIZE_IN_BRICKS_Z, allocator, options),
+                    SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS, allocator, options),
                 updateRecord = new NativeQueue<short>(allocator),
                 currentBrickId = new(1, allocator),
                 
@@ -327,10 +312,10 @@ namespace Voxelis
                 voxels = new NativeList<Block>(
                     from.NonEmptyBrickCount * BLOCKS_IN_BRICK, allocator),
                 brickIdx = new NativeArray<short>(
-                    SIZE_IN_BRICKS_X * SIZE_IN_BRICKS_Y * SIZE_IN_BRICKS_Z,
+                    SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS,
                     allocator),
                 brickFlags = new NativeArray<BrickUpdateInfo.Type>(
-                    SIZE_IN_BRICKS_X * SIZE_IN_BRICKS_Y * SIZE_IN_BRICKS_Z, allocator),
+                    SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS, allocator),
                 updateRecord = new NativeQueue<short>(allocator),
                 currentBrickId = new(1, allocator),
                 
@@ -367,11 +352,11 @@ namespace Voxelis
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static int ToBrickIdx(int x, int y, int z)
         {
-            Utils.BurstAssertSimpleExperssionsOnly.IsTrue(x < SIZE_IN_BRICKS_X);
-            Utils.BurstAssertSimpleExperssionsOnly.IsTrue(y < SIZE_IN_BRICKS_Y);
-            Utils.BurstAssertSimpleExperssionsOnly.IsTrue(z < SIZE_IN_BRICKS_Z);
+            Utils.BurstAssertSimpleExperssionsOnly.IsTrue(x < SIZE_IN_BRICKS);
+            Utils.BurstAssertSimpleExperssionsOnly.IsTrue(y < SIZE_IN_BRICKS);
+            Utils.BurstAssertSimpleExperssionsOnly.IsTrue(z < SIZE_IN_BRICKS);
 
-            return (x + y * SIZE_IN_BRICKS_X + z * (SIZE_IN_BRICKS_X * SIZE_IN_BRICKS_Y));
+            return (x + y * SIZE_IN_BRICKS + z * SIZE_IN_BRICKS_SQUARED);
         }
 
         /// <summary>
@@ -383,9 +368,9 @@ namespace Voxelis
         public static Vector3Int ToBrickPos(short bidAbsolute)
         {
             return new Vector3Int(
-                bidAbsolute & SECTOR_MASK_X,
-                (bidAbsolute >> SHIFT_IN_BRICKS_X) & SECTOR_MASK_Y,
-                (bidAbsolute >> (SHIFT_IN_BRICKS_X + SHIFT_IN_BRICKS_Y)));
+                bidAbsolute & SECTOR_MASK,
+                (bidAbsolute >> SHIFT_IN_BRICKS) & SECTOR_MASK,
+                (bidAbsolute >> (SHIFT_IN_BRICKS << 1)));  // >> (SHIFT_IN_BRICKS * 2)
         }
 
         /// <summary>
@@ -398,11 +383,11 @@ namespace Voxelis
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static int ToBlockIdx(int x, int y, int z)
         {
-            Utils.BurstAssertSimpleExperssionsOnly.IsTrue(x < SIZE_IN_BLOCKS_X);
-            Utils.BurstAssertSimpleExperssionsOnly.IsTrue(y < SIZE_IN_BLOCKS_Y);
-            Utils.BurstAssertSimpleExperssionsOnly.IsTrue(z < SIZE_IN_BLOCKS_Z);
+            Utils.BurstAssertSimpleExperssionsOnly.IsTrue(x < SIZE_IN_BLOCKS);
+            Utils.BurstAssertSimpleExperssionsOnly.IsTrue(y < SIZE_IN_BLOCKS);
+            Utils.BurstAssertSimpleExperssionsOnly.IsTrue(z < SIZE_IN_BLOCKS);
 
-            return (x + y * SIZE_IN_BLOCKS_X + z * (SIZE_IN_BLOCKS_X * SIZE_IN_BLOCKS_Y));
+            return (x + y * SIZE_IN_BLOCKS + z * SIZE_IN_BLOCKS_SQUARED);
         }
 
         /// <summary>
@@ -441,20 +426,20 @@ namespace Voxelis
         public Block GetBlock(int x, int y, int z)
         {
             int brick_sector_index_id =
-                ToBrickIdx(x >> SHIFT_IN_BLOCKS_X, y >> SHIFT_IN_BLOCKS_Y, z >> SHIFT_IN_BLOCKS_Z);
+                ToBrickIdx(x >> SHIFT_IN_BLOCKS, y >> SHIFT_IN_BLOCKS, z >> SHIFT_IN_BLOCKS);
             short bid = this.brickIdx[brick_sector_index_id];
-            
+
             if (bid == BRICKID_EMPTY)
             {
                 return Block.Empty;
             }
-            
+
             return voxels[
                 bid * BLOCKS_IN_BRICK
                 + ToBlockIdx(
-                    x & BRICK_MASK_X,
-                    y & BRICK_MASK_Y,
-                    z & BRICK_MASK_Z)
+                    x & BRICK_MASK,
+                    y & BRICK_MASK,
+                    z & BRICK_MASK)
             ];
         }
 
@@ -474,7 +459,7 @@ namespace Voxelis
         public void SetBlock(int x, int y, int z, Block b)
         {
             int brick_sector_index_id =
-                ToBrickIdx(x >> SHIFT_IN_BLOCKS_X, y >> SHIFT_IN_BLOCKS_Y, z >> SHIFT_IN_BLOCKS_Z);
+                ToBrickIdx(x >> SHIFT_IN_BLOCKS, y >> SHIFT_IN_BLOCKS, z >> SHIFT_IN_BLOCKS);
             short bid = this.brickIdx[brick_sector_index_id];
 
             // Skip setting empty to empty bricks
@@ -503,9 +488,9 @@ namespace Voxelis
             voxels[
                 bid * BLOCKS_IN_BRICK
                 + ToBlockIdx(
-                    x & BRICK_MASK_X,
-                    y & BRICK_MASK_Y,
-                    z & BRICK_MASK_Z)
+                    x & BRICK_MASK,
+                    y & BRICK_MASK,
+                    z & BRICK_MASK)
             ] = b;
 
             if (brickFlags[brick_sector_index_id] == BrickUpdateInfo.Type.Idle)
@@ -573,7 +558,7 @@ namespace Voxelis
             if (isNonEmptyBricksDirty)
             {
                 nonEmptyBricks.Clear();
-                for (short i = 0; i < (1 << (SHIFT_IN_BRICKS_X + SHIFT_IN_BRICKS_Y + SHIFT_IN_BRICKS_Z)); i++)
+                for (short i = 0; i < SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS; i++)
                 {
                     if (brickIdx[i] != BRICKID_EMPTY)
                     {
