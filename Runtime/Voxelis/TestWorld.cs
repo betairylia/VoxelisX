@@ -8,14 +8,36 @@ using UnityEngine.Serialization;
 
 namespace Voxelis
 {
+    /// <summary>
+    /// Test implementation of VoxelEntity that generates procedural voxel terrain using noise functions.
+    /// Includes a corruption test mode for testing dynamic voxel updates.
+    /// </summary>
     public class TestWorld : VoxelEntity
     {
+        /// <summary>
+        /// Burst-compiled job that fills a sector with procedurally generated voxel data.
+        /// Uses layered Simplex noise to create organic terrain shapes.
+        /// </summary>
         [BurstCompile]
         struct FillWorldSectorJob : IJob
         {
+            /// <summary>
+            /// Position of the sector being generated in sector coordinates.
+            /// </summary>
             public Vector3Int sectorPos;
+
+            /// <summary>
+            /// The sector to fill with generated voxel data.
+            /// </summary>
             public Sector sector;
 
+            /// <summary>
+            /// Executes the job, filling the sector with noise-based voxel data.
+            /// </summary>
+            /// <remarks>
+            /// Uses two octaves of Simplex noise at different scales to create terrain.
+            /// Blocks are colored based on their height (Y position) with a gradient effect.
+            /// </remarks>
             public void Execute()
             {
                 for (int x = 0; x < Sector.SIZE_IN_BRICKS_X * Sector.SIZE_IN_BLOCKS_X; x++)
@@ -59,8 +81,19 @@ namespace Voxelis
             }
         }
 
+        /// <summary>
+        /// Number of sectors to generate in each dimension.
+        /// </summary>
         public Vector3Int numSectors;
 
+        /// <summary>
+        /// Initializes the test world by generating all sectors with procedural terrain.
+        /// Can be called from the context menu in the Unity Editor.
+        /// </summary>
+        /// <remarks>
+        /// Generates sectors in parallel using Unity Jobs for performance.
+        /// Logs total brick count and memory usage when complete.
+        /// </remarks>
         [ContextMenu("Initialize")]
         public void Initialize()
         {
@@ -107,19 +140,38 @@ namespace Voxelis
             Debug.Log($"Total: {totalBricks} Bricks ({totalBricks * 2 / 1024} MiB)");
         }
 
+        /// <summary>
+        /// Initializes the test world on scene start.
+        /// </summary>
         void Start()
         {
             Initialize();
         }
 
+        /// <summary>
+        /// When enabled, continuously modifies voxels every frame to test dynamic updates.
+        /// </summary>
         [FormerlySerializedAs("Tick")] public bool CorruptionTick = false;
 
+        /// <summary>
+        /// Burst-compiled job that toggles blocks in a sector for testing dynamic voxel updates.
+        /// </summary>
         [BurstCompile]
         struct TestUpdate : IJob
         {
+            /// <summary>
+            /// The sector to modify.
+            /// </summary>
             public Sector sector;
+
+            /// <summary>
+            /// Frame counter used to determine which blocks to toggle.
+            /// </summary>
             public int p;
-            
+
+            /// <summary>
+            /// Toggles a horizontal slice of blocks in the sector.
+            /// </summary>
             public void Execute()
             {
                 const int Zs = 128;
@@ -136,12 +188,15 @@ namespace Voxelis
             }
         }
 
+        /// <summary>
+        /// If CorruptionTick is enabled, modifies voxels every frame to test rendering updates.
+        /// </summary>
         public void Update()
         {
             if (CorruptionTick)
             {
                 NativeList<JobHandle> jobs = new NativeList<JobHandle>(Allocator.Temp);
-                
+
                 foreach (var sec in Voxels.Values)
                 {
                     int p = Time.frameCount;
@@ -152,7 +207,7 @@ namespace Voxelis
                         sector = sec.sector
                     }.Schedule());
                 }
-                
+
                 JobHandle.CompleteAll(jobs);
                 jobs.Dispose();
             }

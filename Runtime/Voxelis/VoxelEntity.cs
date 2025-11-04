@@ -13,31 +13,65 @@ using Voxelis.Simulation;
 
 namespace Voxelis
 {
+    /// <summary>
+    /// Represents a voxel-based entity in the game world. This is the main component for managing
+    /// collections of voxel sectors, handling rendering, and interfacing with the physics system.
+    /// </summary>
+    /// <remarks>
+    /// VoxelEntity organizes voxels into sectors for efficient storage and rendering. Each sector
+    /// contains a fixed-size grid of bricks, which in turn contain individual voxel blocks.
+    /// The entity automatically registers/unregisters itself with the VoxelisXRenderer on enable/disable.
+    /// </remarks>
     public partial class VoxelEntity : MonoBehaviour, IDisposable
     {
+        /// <summary>
+        /// Dictionary mapping sector positions to their corresponding sector references.
+        /// Key is the sector position in sector-space coordinates.
+        /// </summary>
         public Dictionary<Vector3Int, SectorRef> Voxels = new Dictionary<Vector3Int, SectorRef>();
+
+        /// <summary>
+        /// Queue of sectors that are scheduled for removal and cleanup.
+        /// Used to defer disposal of sectors until after rendering is complete.
+        /// </summary>
         public Queue<SectorRef> sectorsToRemove = new Queue<SectorRef>();
 
+        /// <summary>
+        /// Indicates whether physics simulation is enabled for this voxel entity.
+        /// When enabled, the entity will participate in collision detection and response.
+        /// </summary>
         [FormerlySerializedAs("collisionEnabled")] public bool physicsEnabled = false;
         private Rigidbody body;
         private UnityPhysicsCollider debugBody;
 
+        /// <summary>
+        /// Called when the component is enabled. Registers this entity with the renderer and initializes physics body.
+        /// </summary>
         private void OnEnable()
         {
             FindFirstObjectByType<VoxelisXRenderer>()?.AddEntity(this);
             InitializeBody();
         }
 
+        /// <summary>
+        /// Called when the component is disabled. Unregisters this entity from the renderer.
+        /// </summary>
         private void OnDisable()
         {
             FindFirstObjectByType<VoxelisXRenderer>()?.RemoveEntity(this);
         }
 
+        /// <summary>
+        /// Called when the component is destroyed. Disposes all voxel data.
+        /// </summary>
         private void OnDestroy()
         {
             Dispose();
         }
 
+        /// <summary>
+        /// Disposes all resources used by this voxel entity, including all sectors and their data.
+        /// </summary>
         public void Dispose()
         {
             foreach (var sector in Voxels.Values)
@@ -47,6 +81,10 @@ namespace Voxelis
             Voxels.Clear();
         }
 
+        /// <summary>
+        /// Calculates the total host (CPU) memory usage of all sectors in this entity.
+        /// </summary>
+        /// <returns>Total memory usage in kilobytes.</returns>
         public ulong GetHostMemoryUsageKB()
         {
             ulong result = 0;
@@ -58,6 +96,10 @@ namespace Voxelis
             return result;
         }
 
+        /// <summary>
+        /// Calculates the total GPU (VRAM) memory usage of all sectors in this entity.
+        /// </summary>
+        /// <returns>Total VRAM usage in kilobytes.</returns>
         public ulong GetGPUMemoryUsageKB()
         {
             ulong result = 0;
@@ -69,6 +111,11 @@ namespace Voxelis
             return result;
         }
 
+        /// <summary>
+        /// Gets the block at the specified world position.
+        /// </summary>
+        /// <param name="pos">World position of the block in block coordinates.</param>
+        /// <returns>The block at the specified position, or Block.Empty if no sector exists at that location.</returns>
         public Block GetBlock(Vector3Int pos)
         {
             Vector3Int sectorPos = new Vector3Int(
@@ -89,6 +136,15 @@ namespace Voxelis
             );
         }
 
+        /// <summary>
+        /// Sets the block at the specified world position. Creates a new sector if one doesn't exist.
+        /// </summary>
+        /// <param name="pos">World position of the block in block coordinates.</param>
+        /// <param name="b">The block data to set.</param>
+        /// <remarks>
+        /// If the sector doesn't exist at the calculated sector position, a new sector will be automatically created.
+        /// The method also triggers a physics body update (marked as temporary and should be removed).
+        /// </remarks>
         public void SetBlock(Vector3Int pos, Block b)
         {
             Vector3Int sectorPos = new Vector3Int(
@@ -112,22 +168,41 @@ namespace Voxelis
                 pos.z & (Sector.BRICK_MASK_Z | (Sector.SECTOR_MASK_Z << Sector.SHIFT_IN_BLOCKS_Z)),
                 b
             );
-            
+
             // TODO: TEST ONLY: Remove me
             UpdateBody();
         }
 
+        /// <summary>
+        /// Gets the object-to-world transformation matrix for this entity.
+        /// </summary>
+        /// <returns>The local-to-world matrix of this entity's transform.</returns>
         public float4x4 ObjectToWorld()
         {
             return transform.localToWorldMatrix;
         }
-        
+
+        /// <summary>
+        /// Gets the world-to-object transformation matrix for this entity.
+        /// </summary>
+        /// <returns>The world-to-local matrix of this entity's transform.</returns>
         public float4x4 WorldToObject()
         {
             return transform.worldToLocalMatrix;
         }
 
-        // The hell this is mess
+        /// <summary>
+        /// Tests collision between this voxel entity and another voxel entity.
+        /// Calculates contact points and resolves penetrations between the two entities.
+        /// </summary>
+        /// <param name="other">The other voxel entity to test collision against.</param>
+        /// <param name="contactBuf">List buffer to store contact points (managed).</param>
+        /// <param name="nativeContactBuf">Native list buffer for intermediate contact point calculations.</param>
+        /// <remarks>
+        /// This method performs sector-by-sector collision detection between both entities.
+        /// It chooses the smaller sector as the source for optimization and accumulates all contact points.
+        /// The collision resolution is performed via VoxelEntity.ResolveContact.
+        /// </remarks>
         public void TestCollision(
             VoxelEntity other, 
             List<VoxelCollisionSolver.ContactPoint> contactBuf,

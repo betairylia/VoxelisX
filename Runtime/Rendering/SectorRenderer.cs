@@ -13,8 +13,22 @@ using Random = UnityEngine.Random;
 
 namespace Voxelis.Rendering
 {
+    /// <summary>
+    /// Manages rendering of a single voxel sector, including GPU buffer management
+    /// and ray tracing acceleration structure updates.
+    /// </summary>
+    /// <remarks>
+    /// SectorRenderer is responsible for:
+    /// - Converting voxel data to GPU-friendly formats
+    /// - Managing AABB and brick data buffers for ray tracing
+    /// - Scheduling Burst-compiled jobs to prepare render data
+    /// - Updating the ray tracing acceleration structure when geometry changes
+    /// </remarks>
     public class SectorRenderer : IDisposable
     {
+        /// <summary>
+        /// Axis-aligned bounding box structure for ray tracing.
+        /// </summary>
         [StructLayout(LayoutKind.Sequential)]
         struct AABB
         {
@@ -22,7 +36,10 @@ namespace Voxelis.Rendering
             internal Vector3 max;
         }
 
-        // Only for reference
+        /// <summary>
+        /// Reference structure for a potential future optimization using 1-bit-per-block encoding.
+        /// Currently not used.
+        /// </summary>
         [StructLayout(LayoutKind.Sequential)]
         struct ZeroOnePassBrick
         {
@@ -31,11 +48,19 @@ namespace Voxelis.Rendering
             internal ulong ul0, ul1, ul2, ul3, ul4, ul5, ul6, ul7;
         }
 
-        public static readonly int BRICK_DATA_LENGTH_01PASS = 
+        /// <summary>
+        /// Data length for 1-bit-per-block encoding (not currently used).
+        /// 2 ints for brick position + 16 ints for block occupancy (512 blocks / 32 bits).
+        /// </summary>
+        public static readonly int BRICK_DATA_LENGTH_01PASS =
             2           // 64 bit for brick position
             + 512 / 32; // 1 bit per block
-        
-        public static readonly int BRICK_DATA_LENGTH = 
+
+        /// <summary>
+        /// Data length for current 16-bit-per-block encoding.
+        /// 1 int for brick position + 256 ints for block data (512 blocks / 2 blocks per int).
+        /// </summary>
+        public static readonly int BRICK_DATA_LENGTH =
             1           // 32 bit for brick position
             + 512 / 2;  // 16 bit per block
 
@@ -57,20 +82,39 @@ namespace Voxelis.Rendering
             }
         }
         
+        /// <summary>
+        /// Burst-compiled job that generates GPU-ready render data from sector voxel data.
+        /// Processes dirty bricks and updates AABB and brick data buffers.
+        /// </summary>
         [BurstCompile]
         struct GenerateSectorRenderDataJob : IJob
         {
+            /// <summary>
+            /// The sector to generate render data from.
+            /// </summary>
             public Sector sector;
-            
-            // Buffer of all AABB bounding boxes used for RayTracingAccelerationStructure
+
+            /// <summary>
+            /// Buffer of all AABB bounding boxes used for RayTracingAccelerationStructure.
+            /// </summary>
             public NativeList<AABB> aabbBuffer;
-            
-            // Buffers for RayTracing Shaders
+
+            /// <summary>
+            /// Buffer containing packed brick data for ray tracing shaders.
+            /// </summary>
             public NativeList<int> brickData;
 
-            // [minModified, maxModified]
+            /// <summary>
+            /// Array recording the range of modified bricks: [minModified, maxModified].
+            /// Used to optimize GPU buffer uploads by only sending changed data.
+            /// </summary>
             public NativeArray<int> syncRecord;
 
+            /// <summary>
+            /// Consumes the next dirty brick from the update queue.
+            /// </summary>
+            /// <param name="index">Index parameter (currently unused).</param>
+            /// <returns>Update info for the dirty brick, or null if no more dirty bricks.</returns>
             public BrickUpdateInfo? ConsumeDirtyBrick(int index)
             {
                 if (sector.updateRecord.IsEmpty()) return null;
@@ -180,6 +224,10 @@ namespace Voxelis.Rendering
         //     // ......
         // }
 
+        /// <summary>
+        /// Shared material used for rendering all sectors.
+        /// Set globally by VoxelisXRenderer on initialization.
+        /// </summary>
         public static Material sectorMaterial;
 
         private SectorRef sectorRef;
@@ -187,6 +235,10 @@ namespace Voxelis.Rendering
         private int sectorASHandle;
         private MaterialPropertyBlock matProps = null;
 
+        /// <summary>
+        /// Constructs a new sector renderer for the specified sector reference.
+        /// </summary>
+        /// <param name="sectorRef">The sector to render.</param>
         public SectorRenderer(SectorRef sectorRef)
         {
             this.sectorRef = sectorRef;
@@ -195,11 +247,17 @@ namespace Voxelis.Rendering
         private NativeList<AABB> hostAABBBuffer;
         private NativeList<int> hostBrickBuffer;
 
+        /// <summary>
+        /// Gets the estimated host memory usage in bytes for this renderer's buffers.
+        /// </summary>
         public ulong MemoryUsage =>
             (ulong)(hostBrickBuffer.IsCreated
                 ? (hostBrickBuffer.Capacity * sizeof(int))
                 : 0 + (hostAABBBuffer.IsCreated ? hostAABBBuffer.Capacity * sizeof(float) * 6 : 0));
 
+        /// <summary>
+        /// Gets the estimated VRAM usage in bytes for this renderer's GPU buffers.
+        /// </summary>
         public ulong VRAMUsage =>
             (ulong)(Sector.SIZE_IN_BRICKS_X * Sector.SIZE_IN_BRICKS_Y * Sector.SIZE_IN_BRICKS_Z * 24 +
                     currentCapacity * BRICK_DATA_LENGTH * 4);
@@ -223,6 +281,10 @@ namespace Voxelis.Rendering
             return result;
         }
         
+        /// <summary>
+        /// Prepares and resizes GPU buffers if needed to accommodate current brick count.
+        /// </summary>
+        /// <returns>True if buffers were reallocated; false if existing buffers are sufficient.</returns>
         public bool PrepareBuffers()
         {
             Profiler.BeginSample("PrepareBuffers");
@@ -282,13 +344,21 @@ namespace Voxelis.Rendering
         private bool isDirty;
         private bool shouldRemove = false;
 
+        /// <summary>
+        /// Completes the render job and uploads data to GPU buffers.
+        /// Must be called after RenderEmitJob() in the same frame.
+        /// </summary>
+        /// <remarks>
+        /// This method waits for the Burst job to complete, then uploads modified brick data
+        /// and AABBs to the GPU. Only the dirty range of data is uploaded to minimize bandwidth.
+        /// </remarks>
         public void Render()
         {
             if (!jobScheduled)
             {
                 return;
             }
-            
+
             // Let the job complete and copy buffers
             jobHandle.Complete();
             jobScheduled = false;
@@ -357,6 +427,15 @@ namespace Voxelis.Rendering
             }
         }
 
+        /// <summary>
+        /// Updates the ray tracing acceleration structure with this sector's geometry.
+        /// </summary>
+        /// <param name="AS">The acceleration structure to update.</param>
+        /// <remarks>
+        /// If the sector is dirty (geometry changed), removes and re-adds the instance to the RTAS.
+        /// If just the transform changed, updates the instance transform only.
+        /// This method should be called after Render() to synchronize the RTAS with current voxel data.
+        /// </remarks>
         public void RenderModifyAS(ref RayTracingAccelerationStructure AS)
         {
             if (isDirty)
@@ -376,6 +455,17 @@ namespace Voxelis.Rendering
             isDirty = false;
         }
 
+        /// <summary>
+        /// Schedules a Burst job to generate render data from dirty voxel data.
+        /// Must be followed by Render() to complete the job and upload to GPU.
+        /// </summary>
+        /// <remarks>
+        /// Skips scheduling if:
+        /// - Sector is marked for removal
+        /// - Sector is empty
+        /// - No dirty bricks need updating
+        /// This allows the job to run in parallel with other sector jobs.
+        /// </remarks>
         public void RenderEmitJob()
         {
             if (shouldRemove || sectorRef.sector.IsRendererEmpty || (!sectorRef.sector.IsRendererDirty))
@@ -384,7 +474,7 @@ namespace Voxelis.Rendering
             }
 
             isRealloc = PrepareBuffers();
-            
+
             // Job generating renderer buffers
             rendererJob = new GenerateSectorRenderDataJob()
             {
@@ -398,11 +488,17 @@ namespace Voxelis.Rendering
             jobScheduled = true;
         }
 
+        /// <summary>
+        /// Marks this sector for removal from the acceleration structure.
+        /// </summary>
         public void MarkRemove()
         {
             shouldRemove = true;
         }
 
+        /// <summary>
+        /// Disposes all resources used by this renderer, including host and GPU buffers.
+        /// </summary>
         public void Dispose()
         {
             if (hostAABBBuffer.IsCreated) hostAABBBuffer.Dispose();

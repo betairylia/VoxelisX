@@ -6,11 +6,26 @@ using UnityEngine.Rendering.Universal;
 
 namespace Voxelis.Utils
 {
+    /// <summary>
+    /// Post-processing render pass for VoxelisX (currently unimplemented).
+    /// Intended for temporal anti-aliasing (TAA) and other post-processing effects.
+    /// </summary>
+    /// <remarks>
+    /// This pass is currently not finished and will throw NotImplementedException when executed.
+    /// TODO: Implement TAA accumulation and other post-processing effects.
+    /// </remarks>
     public class VoxelisXPostProcessPass : ScriptableRenderPass
     {
         private int maximumAverageFrames;
+
+        /// <summary>
+        /// Material for temporal anti-aliasing post-processing.
+        /// </summary>
         public Material VoxelisX_TAA;
 
+        /// <summary>
+        /// Data passed to the render graph for post-processing.
+        /// </summary>
         internal class PassData
         {
             internal TextureHandle Color_Current;
@@ -19,11 +34,21 @@ namespace Voxelis.Utils
             internal Material taaMat;
         }
 
+        /// <summary>
+        /// Constructs the post-process pass with the specified maximum accumulation frames.
+        /// </summary>
+        /// <param name="maxAvgFrames">Maximum frames for TAA accumulation (default: 120).</param>
         public VoxelisXPostProcessPass(int maxAvgFrames = 120)
         {
             maximumAverageFrames = maxAvgFrames;
         }
 
+        /// <summary>
+        /// Records the post-process pass into the render graph.
+        /// </summary>
+        /// <param name="renderGraph">The render graph to record into.</param>
+        /// <param name="frameData">Frame context data.</param>
+        /// <exception cref="NotImplementedException">This pass is not yet implemented.</exception>
         public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
         {
             // Get camera data to help define texture properties

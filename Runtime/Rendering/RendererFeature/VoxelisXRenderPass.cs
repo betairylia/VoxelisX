@@ -9,25 +9,46 @@ using UnityEngine.Rendering;
 using UnityEngine.Rendering.RenderGraphModule;
 using UnityEngine.Rendering.Universal;
 
+/// <summary>
+/// Main render pass for ray-traced voxel rendering in Unity's URP render graph.
+/// </summary>
+/// <remarks>
+/// This pass uses DXR (DirectX Raytracing) to render voxels stored in ray tracing
+/// acceleration structures. It supports temporal accumulation for progressive rendering
+/// and outputs color, albedo, normal, and depth information.
+/// </remarks>
 public class VoxelisXRenderPass : ScriptableRenderPass
 {
+    /// <summary>
+    /// Ray tracing shader for voxel rendering.
+    /// </summary>
     public RayTracingShader rayTracingShader = null;
+
     private VoxelisXRenderer voxelisX;
 
     private int maximumAverageFrames;
-    
-    // Post process
+
+    /// <summary>
+    /// Post-process material for copying depth and flipping render targets if needed.
+    /// </summary>
     private Material flip;
 
+    /// <summary>
+    /// Stores previous camera state for temporal accumulation.
+    /// </summary>
     internal struct PrevCameraState
     {
         internal Matrix4x4 mat;
         internal int frames;
     }
-    
+
     private static Dictionary<Camera, PrevCameraState> prevFrameState = new Dictionary<Camera, PrevCameraState>();
     private int EnvMapID = Shader.PropertyToID("_GlossyEnvironmentCubeMap");
 
+    /// <summary>
+    /// Data passed to the render graph execution function.
+    /// Contains all resources and parameters needed for ray tracing.
+    /// </summary>
     internal class PassData
     {
         internal uint width;
@@ -77,11 +98,21 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         internal bool needsFlip;
     }
 
+    /// <summary>
+    /// Constructs the render pass with the specified maximum accumulation frames.
+    /// </summary>
+    /// <param name="maxAvgFrames">Maximum frames to accumulate for temporal anti-aliasing (default: 120).</param>
     public VoxelisXRenderPass(int maxAvgFrames = 120)
     {
         maximumAverageFrames = maxAvgFrames;
     }
-    
+
+    /// <summary>
+    /// Initializes the render pass with the VoxelisX renderer and required shaders/materials.
+    /// </summary>
+    /// <param name="rtShader">Ray tracing shader for voxel rendering.</param>
+    /// <param name="vox">VoxelisX renderer instance.</param>
+    /// <param name="flip">Material for post-processing and depth copying.</param>
     public void InitVoxelisX(RayTracingShader rtShader, VoxelisXRenderer vox, Material flip)
     {
         rayTracingShader = rtShader;
@@ -89,6 +120,11 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         this.flip = flip;
     }
 
+    /// <summary>
+    /// Records the render pass into Unity's render graph.
+    /// </summary>
+    /// <param name="renderGraph">The render graph to record into.</param>
+    /// <param name="frameData">Frame context data including camera and lighting information.</param>
     public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
     {
         // Get camera data to help define texture properties

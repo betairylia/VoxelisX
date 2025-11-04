@@ -9,29 +9,57 @@ using Random = UnityEngine.Random;
 using Voxelis;
 using Voxelis.Rendering;
 
+/// <summary>
+/// Main rendering system for VoxelisX. Manages ray tracing acceleration structures
+/// and coordinates rendering of all voxel entities in the scene.
+/// </summary>
+/// <remarks>
+/// This renderer uses Unity's ray tracing pipeline to render voxel data efficiently.
+/// It maintains a ray tracing acceleration structure (RTAS) containing all voxel sectors,
+/// and coordinates the update process for all registered voxel entities.
+/// </remarks>
 // [ExecuteInEditMode]
 public class VoxelisXRenderer : MonoBehaviour
 {
     private List<VoxelEntity> entities = new();
+
+    /// <summary>
+    /// Test world reference (for testing purposes).
+    /// </summary>
     public TestWorld test;
 
+    /// <summary>
+    /// Registers a voxel entity with this renderer.
+    /// </summary>
+    /// <param name="e">The entity to add.</param>
     public void AddEntity(VoxelEntity e)
     {
         if (entities.Contains(e))
         {
             return;
         }
-        
+
         entities.Add(e);
     }
 
+    /// <summary>
+    /// Unregisters a voxel entity from this renderer.
+    /// </summary>
+    /// <param name="e">The entity to remove.</param>
     public void RemoveEntity(VoxelEntity e)
     {
         entities.Remove(e);
     }
 
+    /// <summary>
+    /// Gets a copy of all registered voxel entities.
+    /// </summary>
     public List<VoxelEntity> AllEntities => new List<VoxelEntity>(entities);
-    
+
+    /// <summary>
+    /// Gets the ray tracing acceleration structure containing all voxel geometry.
+    /// Automatically creates the structure if it doesn't exist.
+    /// </summary>
     public RayTracingAccelerationStructure voxelScene
     {
         get
@@ -42,20 +70,35 @@ public class VoxelisXRenderer : MonoBehaviour
     }
     private RayTracingAccelerationStructure _voxelScene;
 
+    /// <summary>
+    /// Internal structure for testing RTAS instances.
+    /// </summary>
     internal struct TestSector
     {
         internal int handle;
         internal Matrix4x4 mat;
     }
-    
+
     private List<TestSector> handles = new();
 
+    /// <summary>
+    /// Material used for rendering voxel bricks.
+    /// </summary>
     public Material brickMat;
 
+    /// <summary>
+    /// Current frame ID for rendering. Incremented each Tick().
+    /// </summary>
     public uint frameId { get; private set; }
 
+    /// <summary>
+    /// Debug field showing the current number of instances in the acceleration structure.
+    /// </summary>
     [Header("Debug Utils")] public int instanceCount;
 
+    /// <summary>
+    /// Creates the ray tracing acceleration structure for voxel rendering.
+    /// </summary>
     private void CreateRayTracingAccelerationStructure()
     {
         if (_voxelScene == null)
@@ -71,20 +114,31 @@ public class VoxelisXRenderer : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Initializes the renderer on scene start.
+    /// </summary>
     void Start()
     {
         SectorRenderer.sectorMaterial = brickMat;
         ReloadAS();
     }
-    
-    [ContextMenu("Re-init voxAS")] 
+
+    /// <summary>
+    /// Reinitializes the ray tracing acceleration structure and resets the frame counter.
+    /// Can be called from the context menu in the Unity Editor.
+    /// </summary>
+    [ContextMenu("Re-init voxAS")]
     public void ReloadAS()
     {
         CreateRayTracingAccelerationStructure();
-        
+
         frameId = 0;
     }
 
+    /// <summary>
+    /// Finds all voxel entities and rebuilds the acceleration structure with all sectors.
+    /// Can be called from the context menu in the Unity Editor.
+    /// </summary>
     [ContextMenu("Render all")]
     public void RenderAll()
     {
@@ -185,11 +239,17 @@ public class VoxelisXRenderer : MonoBehaviour
         _voxelScene.Build();
     }
 
+    /// <summary>
+    /// Releases all resources when the renderer is disabled.
+    /// </summary>
     private void OnDisable()
     {
         ReleaseResources();
     }
 
+    /// <summary>
+    /// Releases all GPU resources and disposes all entities.
+    /// </summary>
     void ReleaseResources()
     {
         if (aabbBuffer != null && aabbBuffer.IsValid())
@@ -201,17 +261,32 @@ public class VoxelisXRenderer : MonoBehaviour
         {
             e.Dispose();
         }
-        
+
         _voxelScene?.Dispose();
     }
 
+    /// <summary>
+    /// When enabled, automatically calls Tick() every frame.
+    /// </summary>
     [SerializeField] private bool autoTick = false;
 
+    /// <summary>
+    /// Called every frame. If autoTick is enabled, calls Tick().
+    /// </summary>
     void Update()
     {
         if(autoTick){ Tick(); }
     }
 
+    /// <summary>
+    /// Performs one render update tick for all voxel entities.
+    /// </summary>
+    /// <remarks>
+    /// This method runs in two passes:
+    /// Pass 1: Emits render jobs for all sectors and removes sectors marked for deletion.
+    /// Pass 2: Synchronizes GPU buffers and updates the acceleration structure.
+    /// This two-pass approach allows for parallel job execution while maintaining proper synchronization.
+    /// </remarks>
     public void Tick()
     {
         frameId += 1;
