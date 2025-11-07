@@ -9,6 +9,8 @@ namespace Voxelis.Simulation
         [Header("Test zone")]
         [SerializeField] private List<VoxelBody> dynamicbodies = new();
         [SerializeField] private List<VoxelBody> staticBodies = new();
+
+        private int frameCount = 0;
         
         public override void Init()
         {
@@ -18,6 +20,7 @@ namespace Voxelis.Simulation
         
         public void PrepareTestWorld()
         {
+            Debug.Log($"[PrepareTestWorld] Static bodies: {staticBodies.Count}, Dynamic bodies: {dynamicbodies.Count}");
             physicsWorld.Reset(staticBodies.Count, dynamicbodies.Count, 0);
 
             int bodyIndex = 0;
@@ -26,37 +29,7 @@ namespace Voxelis.Simulation
             var motionDatas = physicsWorld.MotionDatas;
             var motionVelocities = physicsWorld.MotionVelocities;
 
-            // Add static bodies (with box colliders)
-            for (int i = 0; i < staticBodies.Count; i++)
-            {
-                VoxelBody vb = staticBodies[i];
-                Transform t = vb.transform;
-
-                // Create box collider
-                var boxGeometry = new Unity.Physics.BoxGeometry
-                {
-                    Center = Unity.Mathematics.float3.zero,
-                    Orientation = Unity.Mathematics.quaternion.identity,
-                    Size = new Unity.Mathematics.float3(1f, 1f, 1f),
-                    BevelRadius = 0.05f
-                };
-                var boxCollider = Unity.Physics.BoxCollider.Create(boxGeometry);
-
-                // Create rigid body
-                bodies[bodyIndex] = new Unity.Physics.RigidBody
-                {
-                    WorldFromBody = new Unity.Mathematics.RigidTransform(
-                        new Unity.Mathematics.quaternion(t.rotation.x, t.rotation.y, t.rotation.z, t.rotation.w),
-                        new Unity.Mathematics.float3(t.position.x, t.position.y, t.position.z)
-                    ),
-                    Collider = boxCollider,
-                    Entity = Unity.Entities.Entity.Null,
-                    Scale = 1.0f,
-                    CustomTags = 0
-                };
-
-                bodyIndex++;
-            }
+            Debug.Log($"[PrepareTestWorld] Bodies array length: {bodies.Length}, MotionDatas length: {motionDatas.Length}");
 
             // Add dynamic bodies (with sphere colliders)
             for (int i = 0; i < dynamicbodies.Count; i++)
@@ -64,13 +37,19 @@ namespace Voxelis.Simulation
                 VoxelBody vb = dynamicbodies[i];
                 Transform t = vb.transform;
 
-                // Create sphere collider
+                Debug.Log($"[Dynamic {i}] Position: {t.position}, Rotation: {t.rotation}");
+
+                // Create sphere collider with explicit collision filter
                 var sphereGeometry = new Unity.Physics.SphereGeometry
                 {
                     Center = Unity.Mathematics.float3.zero,
                     Radius = 0.5f
                 };
-                var sphereCollider = Unity.Physics.SphereCollider.Create(sphereGeometry);
+                var sphereCollider = Unity.Physics.SphereCollider.Create(
+                    sphereGeometry,
+                    Unity.Physics.CollisionFilter.Default,
+                    Unity.Physics.Material.Default
+                );
 
                 // Create rigid body
                 bodies[bodyIndex] = new Unity.Physics.RigidBody
@@ -111,24 +90,101 @@ namespace Voxelis.Simulation
 
                 bodyIndex++;
             }
+            
+            // Add static bodies (with box colliders)
+            for (int i = 0; i < staticBodies.Count; i++)
+            {
+                VoxelBody vb = staticBodies[i];
+                Transform t = vb.transform;
+
+                Debug.Log($"[Static {i}] Position: {t.position}, Rotation: {t.rotation}");
+
+                // Create box collider with explicit collision filter
+                var boxGeometry = new Unity.Physics.BoxGeometry
+                {
+                    Center = Unity.Mathematics.float3.zero,
+                    Orientation = Unity.Mathematics.quaternion.identity,
+                    Size = new Unity.Mathematics.float3(100f, 1f, 100f),
+                    BevelRadius = 0.05f
+                };
+                var boxCollider = Unity.Physics.BoxCollider.Create(
+                    boxGeometry,
+                    Unity.Physics.CollisionFilter.Default,
+                    Unity.Physics.Material.Default
+                );
+
+                // Create rigid body
+                bodies[bodyIndex] = new Unity.Physics.RigidBody
+                {
+                    WorldFromBody = new Unity.Mathematics.RigidTransform(
+                        new Unity.Mathematics.quaternion(t.rotation.x, t.rotation.y, t.rotation.z, t.rotation.w),
+                        new Unity.Mathematics.float3(t.position.x, t.position.y, t.position.z)
+                    ),
+                    Collider = boxCollider,
+                    Entity = Unity.Entities.Entity.Null,
+                    Scale = 1.0f,
+                    CustomTags = 0
+                };
+
+                bodyIndex++;
+            }
+
+            haveStaticBodiesChanged.Value = 1;
+            Debug.Log($"[PrepareTestWorld] Complete. Total bodies added: {bodyIndex}");
+
+            // Verify collision detection setup
+            Debug.Log($"[PrepareTestWorld] Verifying PhysicsWorld - NumBodies: {physicsWorld.NumBodies}, NumDynamicBodies: {physicsWorld.NumDynamicBodies}, NumStaticBodies: {physicsWorld.NumStaticBodies}");
         }
 
         public void ExportTestWorld()
         {
+            var motionDatas = physicsWorld.MotionDatas;
+            var motionVelocities = physicsWorld.MotionVelocities;
+
             for (int i = 0; i < dynamicbodies.Count; i++)
             {
-                dynamicbodies[i].transform.position = physicsWorld.Bodies[i + staticBodies.Count].WorldFromBody.pos;
+                // Get motion data for this dynamic body
+                Unity.Physics.MotionData md = motionDatas[i];
+                Unity.Physics.MotionVelocity mv = motionVelocities[i];
+
+                // Calculate world transform: WorldFromBody = WorldFromMotion * inverse(BodyFromMotion)
+                Unity.Mathematics.RigidTransform worldFromBody = Unity.Mathematics.math.mul(
+                    md.WorldFromMotion,
+                    Unity.Mathematics.math.inverse(md.BodyFromMotion)
+                );
+
+                if (frameCount <= 5)  // Only log first 5 frames
+                {
+                    Debug.Log($"[Export Dynamic {i}] Pos: {worldFromBody.pos}, Velocity: {mv.LinearVelocity}");
+                }
+
+                // Update GameObject transform
+                dynamicbodies[i].transform.position = new Vector3(
+                    worldFromBody.pos.x,
+                    worldFromBody.pos.y,
+                    worldFromBody.pos.z
+                );
+                dynamicbodies[i].transform.rotation = new Quaternion(
+                    worldFromBody.rot.value.x,
+                    worldFromBody.rot.value.y,
+                    worldFromBody.rot.value.z,
+                    worldFromBody.rot.value.w
+                );
             }
         }
 
-        public override void SimulateStep(float dt)
+        public override void OnSimulationFinished()
         {
-            base.SimulateStep(dt);
             ExportTestWorld();
         }
 
         private void Update()
         {
+            frameCount++;
+            if (frameCount <= 5)  // Only log first 5 frames to avoid spam
+            {
+                Debug.Log($"[Frame {frameCount}] dt={Time.deltaTime}, Simulating...");
+            }
             SimulateStep(Time.deltaTime);
         }
     }
