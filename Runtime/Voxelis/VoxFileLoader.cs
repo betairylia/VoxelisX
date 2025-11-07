@@ -56,7 +56,6 @@ namespace Voxelis
         void Start()
         {
             Initialize();
-            entity.UpdateBody();
         }
     }
 }

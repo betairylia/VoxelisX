@@ -117,9 +117,9 @@ namespace Voxelis.Rendering
             /// <returns>Update info for the dirty brick, or null if no more dirty bricks.</returns>
             public BrickUpdateInfo? ConsumeDirtyBrick(int index)
             {
-                if (sector.updateRecord.IsEmpty()) return null;
+                if (index >= sector.updateRecord.Length) return null;
                 
-                short absolute_bid = sector.updateRecord.Dequeue();
+                short absolute_bid = sector.updateRecord[index];
                 
                 var result = new BrickUpdateInfo()
                 {
@@ -128,7 +128,7 @@ namespace Voxelis.Rendering
                     type = sector.brickFlags[absolute_bid]
                 };
 
-                sector.brickFlags[absolute_bid] = BrickUpdateInfo.Type.Idle;
+                // sector.brickFlags[absolute_bid] = BrickUpdateInfo.Type.Idle;
                 
                 return result;
             }

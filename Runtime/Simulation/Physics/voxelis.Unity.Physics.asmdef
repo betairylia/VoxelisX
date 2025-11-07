@@ -1,0 +1,38 @@
+{
+    "name": "voxelis.Unity.Physics",
+    "rootNamespace": "",
+    "references": [
+        "Unity.Burst",
+        "Unity.Collections",
+        "Unity.Entities",
+        "Unity.Mathematics",
+        "Unity.Numerics.Memory",
+        "Unity.Numerics.Random",
+        "Unity.Numerics.Linear",
+        "Unity.Numerics.Linear.Dense",
+        "Unity.Numerics.Linear.Sparse",
+        "Unity.Numerics.Linear.Solvers.Lowlevel",
+        "Unity.Profiling.Core",
+        "Unity.Transforms"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": true,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [
+        {
+            "name": "com.havok.physics",
+            "expression": "0.0.0",
+            "define": "HAVOK_PHYSICS_EXISTS"
+        },
+        {
+            "name": "com.unity.package-validation-suite",
+            "expression": "0.0.0",
+            "define": "UNITY_SKIP_UPDATES_WITH_VALIDATION_SUITE"
+        }
+    ],
+    "noEngineReferences": false
+}

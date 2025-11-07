@@ -223,15 +223,15 @@ namespace Voxelis
         public NativeArray<BrickUpdateInfo.Type> brickFlags;
 
         /// <summary>
-        /// Queue containing absolute IDs of bricks that have been modified and need rendering updates.
-        /// For internal renderer use only.
+        /// List containing absolute IDs of bricks that have been modified and need rendering updates.
+        /// For renderer, updater, physics etc. use.
         /// </summary>
-        internal NativeQueue<short> updateRecord;
+        internal NativeList<short> updateRecord;
 
         /// <summary>
         /// Returns true if there are pending brick updates for the renderer.
         /// </summary>
-        internal bool IsRendererDirty => !updateRecord.IsEmpty();
+        internal bool IsRendererDirty => !updateRecord.IsEmpty;
 
         /// <summary>
         /// Returns true if the sector contains no allocated bricks.
@@ -291,7 +291,7 @@ namespace Voxelis
                     options),
                 brickFlags = new NativeArray<BrickUpdateInfo.Type>(
                     SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS, allocator, options),
-                updateRecord = new NativeQueue<short>(allocator),
+                updateRecord = new NativeList<short>(allocator),
                 currentBrickId = new(1, allocator),
                 
                 nonEmptyBricks = new NativeList<short>(allocator),
@@ -316,7 +316,7 @@ namespace Voxelis
                     allocator),
                 brickFlags = new NativeArray<BrickUpdateInfo.Type>(
                     SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS, allocator),
-                updateRecord = new NativeQueue<short>(allocator),
+                updateRecord = new NativeList<short>(allocator),
                 currentBrickId = new(1, allocator),
                 
                 nonEmptyBricks = new NativeList<short>(allocator),
@@ -477,7 +477,7 @@ namespace Voxelis
                 voxels.AddReplicate(Block.Empty, BLOCKS_IN_BRICK);
 
                 brickFlags[brick_sector_index_id] = BrickUpdateInfo.Type.Added;
-                updateRecord.Enqueue((short)brick_sector_index_id);
+                updateRecord.Add((short)brick_sector_index_id);
                 
                 currentBrickId[0]++;
 
@@ -496,7 +496,7 @@ namespace Voxelis
             if (brickFlags[brick_sector_index_id] == BrickUpdateInfo.Type.Idle)
             {
                 brickFlags[brick_sector_index_id] = BrickUpdateInfo.Type.Modified;
-                updateRecord.Enqueue((short)brick_sector_index_id);
+                updateRecord.Add((short)brick_sector_index_id);
             }
         }
 
@@ -526,16 +526,21 @@ namespace Voxelis
             return;
         }
 
+        /// <summary>
+        /// Clean-up dirty-related data in sector.
+        /// This is necessary since multiple systems may consume the dirty data for update.
+        /// In-place consumption of dirtyness will only allow one system to use.
+        /// </summary>
         public void EndTick()
         {
             // TODO: Burst
             // TODO: Handle delete brick properly
-            // foreach (var record in updateRecord)
-            // {
-            //     brickFlags[record] = BrickUpdateInfo.Type.Idle;
-            // }
-            //
-            // updateRecord.Clear();
+            foreach (var record in updateRecord)
+            {
+                brickFlags[record] = BrickUpdateInfo.Type.Idle;
+            }
+            
+            updateRecord.Clear();
         }
         
         #region PHYSICS

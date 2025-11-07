@@ -37,20 +37,11 @@ namespace Voxelis
         public Queue<SectorRef> sectorsToRemove = new Queue<SectorRef>();
 
         /// <summary>
-        /// Indicates whether physics simulation is enabled for this voxel entity.
-        /// When enabled, the entity will participate in collision detection and response.
-        /// </summary>
-        [FormerlySerializedAs("collisionEnabled")] public bool physicsEnabled = false;
-        private Rigidbody body;
-        private UnityPhysicsCollider debugBody;
-
-        /// <summary>
         /// Called when the component is enabled. Registers this entity with the renderer and initializes physics body.
         /// </summary>
         private void OnEnable()
         {
-            FindFirstObjectByType<VoxelisXRenderer>()?.AddEntity(this);
-            InitializeBody();
+            VoxelisXRenderer.instance.AddEntity(this);
         }
 
         /// <summary>
@@ -58,7 +49,7 @@ namespace Voxelis
         /// </summary>
         private void OnDisable()
         {
-            FindFirstObjectByType<VoxelisXRenderer>()?.RemoveEntity(this);
+            VoxelisXRenderer.instance.RemoveEntity(this);
         }
 
         /// <summary>
@@ -168,9 +159,6 @@ namespace Voxelis
                 pos.z & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
                 b
             );
-
-            // TODO: TEST ONLY: Remove me
-            UpdateBody();
         }
 
         /// <summary>
@@ -189,108 +177,6 @@ namespace Voxelis
         public float4x4 WorldToObject()
         {
             return transform.worldToLocalMatrix;
-        }
-
-        /// <summary>
-        /// Tests collision between this voxel entity and another voxel entity.
-        /// Calculates contact points and resolves penetrations between the two entities.
-        /// </summary>
-        /// <param name="other">The other voxel entity to test collision against.</param>
-        /// <param name="contactBuf">List buffer to store contact points (managed).</param>
-        /// <param name="nativeContactBuf">Native list buffer for intermediate contact point calculations.</param>
-        /// <remarks>
-        /// This method performs sector-by-sector collision detection between both entities.
-        /// It chooses the smaller sector as the source for optimization and accumulates all contact points.
-        /// The collision resolution is performed via VoxelEntity.ResolveContact.
-        /// </remarks>
-        public void TestCollision(
-            VoxelEntity other, 
-            List<VoxelCollisionSolver.ContactPoint> contactBuf,
-            NativeList<VoxelCollisionSolver.ContactPoint> nativeContactBuf)
-        {
-            if (!physicsEnabled || !other.physicsEnabled)
-            {
-                return;
-            }
-
-            // alias
-            var otherContacts = contactBuf;
-            otherContacts.Clear();
-            
-            // Temp array for results
-            var resultBuf = nativeContactBuf;
-            int totalContacts = 0;
-            
-            foreach(SectorRef sector in Voxels.Values)
-            {
-                Vector3 f3thisSectorPos = sector.sectorBlockPos;
-                float4x4 mySectorToWorld =
-                    math.mul(ObjectToWorld(), float4x4.Translate(f3thisSectorPos));
-                
-                foreach (SectorRef otherSector in other.Voxels.Values)
-                {
-                    Vector3 f3otherSectorPos = otherSector.sectorBlockPos;
-                    float4x4 otherSectorToWorld =
-                        math.mul(other.ObjectToWorld(), float4x4.Translate(f3otherSectorPos));
-                    
-                    // Pick the smaller sector as src
-                    int srcSize = sector.sector.NonEmptyBrickCount;
-                    int dstSize = otherSector.sector.NonEmptyBrickCount;
-                    
-                    resultBuf.Clear();
-
-                    // this => other
-                    if (srcSize <= dstSize)
-                    {
-                        var sectorJob = new VoxelCollisionSolver.SectorJob
-                        {
-                            srcToDst = math.mul(math.fastinverse(otherSectorToWorld), mySectorToWorld),
-                            src = sector.sector,
-                            dst = otherSector.sector,
-                            dstSpaceResults = resultBuf
-                        };
-
-                        sectorJob.Schedule().Complete();
-
-                        var wsContacts = resultBuf.ToArrayNBC()
-                            .Select(x => x
-                                .TranslateVia(otherSectorToWorld)
-                                .ApplySectorPos(sector.sectorBlockPos, otherSector.sectorBlockPos)).ToList();
-                        otherContacts.AddRange(wsContacts);
-                        // thisContacts.AddRange(wsContacts.Select(x => x.Invert()));
-                    }
-                    // other => this
-                    else
-                    {
-                        var sectorJob = new VoxelCollisionSolver.SectorJob
-                        {
-                            srcToDst = math.mul(math.fastinverse(mySectorToWorld), otherSectorToWorld),
-                            dst = sector.sector,
-                            src = otherSector.sector,
-                            dstSpaceResults = resultBuf
-                        };
-
-                        sectorJob.Schedule().Complete();
-                        
-                        var wsContacts = resultBuf.ToArrayNBC()
-                            .Select(x => x
-                                .TranslateVia(mySectorToWorld)
-                                .ApplySectorPos(otherSector.sectorBlockPos, sector.sectorBlockPos)).ToList();
-                        // thisContacts.AddRange(wsContacts);
-                        otherContacts.AddRange(wsContacts.Select(x => x.Invert().Flip()));
-                    }
-                }
-            }
-
-            totalContacts = otherContacts.Count;
-            Debug.Log($"Total Contacts: {totalContacts}");
-
-            foreach (var cp in otherContacts)
-            {
-                Debug.DrawRay(cp.position, cp.normal, Color.red);
-            }
-            
-            VoxelEntity.ResolveContact(otherContacts, this, other);
         }
     }
 }

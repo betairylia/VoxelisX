@@ -19,7 +19,7 @@ using Voxelis.Rendering;
 /// and coordinates the update process for all registered voxel entities.
 /// </remarks>
 // [ExecuteInEditMode]
-public class VoxelisXRenderer : MonoBehaviour
+public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
 {
     private List<VoxelEntity> entities = new();
 
@@ -117,7 +117,7 @@ public class VoxelisXRenderer : MonoBehaviour
     /// <summary>
     /// Initializes the renderer on scene start.
     /// </summary>
-    void Start()
+    public override void Init() 
     {
         SectorRenderer.sectorMaterial = brickMat;
         ReloadAS();
