@@ -77,30 +77,34 @@ namespace Voxelis
             // Temp array for results
             var resultBuf = nativeContactBuf;
             int totalContacts = 0;
-            
-            foreach(SectorRef sector in entity.Voxels.Values)
+
+            foreach(var kvp in entity.sectors)
             {
-                Vector3 f3thisSectorPos = sector.sectorBlockPos;
+                Vector3Int sectorPos = kvp.Key;
+                Sector sector = kvp.Value;
+                Vector3 f3thisSectorPos = VoxelEntity.GetSectorBlockPos(sectorPos);
                 float4x4 mySectorToWorld =
                     math.mul(entity.ObjectToWorld(), float4x4.Translate(f3thisSectorPos));
-                
-                foreach (SectorRef otherSector in other.entity.Voxels.Values)
+
+                foreach (var otherKvp in other.entity.sectors)
                 {
-                    Vector3 f3otherSectorPos = otherSector.sectorBlockPos;
+                    Vector3Int otherSectorPos = otherKvp.Key;
+                    Sector otherSector = otherKvp.Value;
+                    Vector3 f3otherSectorPos = VoxelEntity.GetSectorBlockPos(otherSectorPos);
                     float4x4 otherSectorToWorld =
                         math.mul(other.entity.ObjectToWorld(), float4x4.Translate(f3otherSectorPos));
-                    
+
                     // Pick the smaller sector as src
-                    int srcSize = sector.sector.NonEmptyBrickCount;
-                    int dstSize = otherSector.sector.NonEmptyBrickCount;
-                    
+                    int srcSize = sector.NonEmptyBrickCount;
+                    int dstSize = otherSector.NonEmptyBrickCount;
+
                     resultBuf.Clear();
 
                     var sectorJob = new VoxelCollisionSolver.SectorJob
                     {
                         srcToDst = math.mul(math.fastinverse(otherSectorToWorld), mySectorToWorld),
-                        src = sector.sector,
-                        dst = otherSector.sector,
+                        src = sector,
+                        dst = otherSector,
                         dstSpaceResults = resultBuf
                     };
 
@@ -135,14 +139,15 @@ namespace Voxelis
             {
                 CoM[0] = new float4(0, 0, 0, 0);
 
-                foreach (SectorRef sector in entity.Voxels.Values)
+                foreach (var kvp in entity.sectors)
                 {
-                    var sectorBPos = sector.sectorBlockPos;
+                    Vector3Int sectorPos = kvp.Key;
+                    var sectorBPos = VoxelEntity.GetSectorBlockPos(sectorPos);
 
                     var sectorJob = new VoxelEntityPhysics.AccumulateSectorCenterOfMass
                     {
                         settings = PhysicsSettings.Settings,
-                        sector = sector.sector,
+                        sector = kvp.Value,
                         sectorPosition = new int3(sectorBPos.x, sectorBPos.y, sectorBPos.z),
 
                         accumulatedCenter = CoM
@@ -171,14 +176,15 @@ namespace Voxelis
             try
             {
                 Inertia[0] = new float3(0, 0, 0);
-                foreach (SectorRef sector in entity.Voxels.Values)
+                foreach (var kvp in entity.sectors)
                 {
-                    var sectorBPos = sector.sectorBlockPos;
+                    Vector3Int sectorPos = kvp.Key;
+                    var sectorBPos = VoxelEntity.GetSectorBlockPos(sectorPos);
 
                     var sectorJob = new VoxelEntityPhysics.AccumulateSectorInertia
                     {
                         settings = PhysicsSettings.Settings,
-                        sector = sector.sector,
+                        sector = kvp.Value,
                         sectorPosition = new int3(sectorBPos.x, sectorBPos.y, sectorBPos.z),
 
                         centerOfMass = body.centerOfMass,

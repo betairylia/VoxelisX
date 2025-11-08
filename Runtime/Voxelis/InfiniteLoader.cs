@@ -193,26 +193,26 @@ namespace Voxelis
         public virtual void Tick()
         {
             Vector3Int lsp = loadCenterSectorPos;
-            
+
             // Unload sectors
-            var list = entity.Voxels.Values.ToList();
-            foreach (var sector in list)
+            var list = entity.sectors.Keys.ToList();
+            foreach (var sectorPos in list)
             {
-                if (ShouldUnload(sector.sectorPos, lsp))
+                if (ShouldUnload(sectorPos, lsp))
                 {
-                    sector.Remove();
-                    entity.Voxels.Remove(sector.sectorPos);
-                    entity.sectorsToRemove.Enqueue(sector);
+                    entity.sectors[sectorPos].Dispose();
+                    entity.sectors.Remove(sectorPos);
+                    entity.sectorsToRemove.Enqueue(sectorPos);
                 }
             }
-            
+
             // Load sectors
             // TODO: Split to frames
             for (currentIndex = 0; currentIndex < sectorLoadOrder.Count; currentIndex++)
             {
                 Vector3Int targetSectorPos = lsp + sectorLoadOrder[currentIndex];
                 // Debug.Log($"Loaded sector @ {targetSectorPos}");
-                if (loadingSectors.Contains(targetSectorPos) || entity.Voxels.ContainsKey(targetSectorPos))
+                if (loadingSectors.Contains(targetSectorPos) || entity.sectors.ContainsKey(targetSectorPos))
                 {
                     continue;
                 }
@@ -220,7 +220,7 @@ namespace Voxelis
                 loadingSectors.Add(targetSectorPos);
                 LoadSector(targetSectorPos);
             }
-            
+
             EndLoadTick();
         }
 
@@ -228,11 +228,12 @@ namespace Voxelis
         /// Marks a sector as fully loaded and adds it to the entity's sector collection.
         /// Should be called by derived classes when LoadSector completes.
         /// </summary>
-        /// <param name="sector">The sector reference that has finished loading.</param>
-        public void MarkSectorLoaded(SectorRef sector)
+        /// <param name="sectorPos">The position of the sector that has finished loading.</param>
+        /// <param name="sector">The sector data that has finished loading.</param>
+        public void MarkSectorLoaded(Vector3Int sectorPos, Sector sector)
         {
-            loadingSectors.Remove(sector.sectorPos);
-            entity.Voxels.Add(sector.sectorPos, sector);
+            loadingSectors.Remove(sectorPos);
+            entity.sectors.Add(sectorPos, sector);
         }
     }
 }

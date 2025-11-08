@@ -108,19 +108,15 @@ namespace Voxelis
                     for (int k = 0; k < numSectors.y; k++)
                     {
                         var secPos = new Vector3Int(i, k, j);
-                        if (!Voxels.ContainsKey(secPos))
+                        if (!sectors.ContainsKey(secPos))
                         {
-                            var sec = new SectorRef(
-                                this,
-                                Sector.New(Allocator.Persistent, 128),
-                                secPos);
-                            Voxels.Add(secPos, sec);
+                            sectors.Add(secPos, Sector.New(Allocator.Persistent, 128));
                         }
 
                         var job = new FillWorldSectorJob()
                         {
                             sectorPos = secPos,
-                            sector = Voxels[secPos].sector
+                            sector = sectors[secPos]
                         };
 
                         fillWorldJobs.Add(job.Schedule());
@@ -133,9 +129,9 @@ namespace Voxelis
             Debug.Log("Done!");
 
             int totalBricks = 0;
-            foreach (var sector in Voxels.Values)
+            foreach (var sector in sectors.Values)
             {
-                totalBricks += sector.sector.NonEmptyBrickCount;
+                totalBricks += sector.NonEmptyBrickCount;
             }
             Debug.Log($"Total: {totalBricks} Bricks ({totalBricks * 2 / 1024} MiB)");
         }
@@ -197,14 +193,14 @@ namespace Voxelis
             {
                 NativeList<JobHandle> jobs = new NativeList<JobHandle>(Allocator.Temp);
 
-                foreach (var sec in Voxels.Values)
+                foreach (var sec in sectors.Values)
                 {
                     int p = Time.frameCount;
 
                     jobs.Add(new TestUpdate()
                     {
                         p = p,
-                        sector = sec.sector
+                        sector = sec
                     }.Schedule());
                 }
 

@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.InteropServices;
 using Unity.Collections;
 using Unity.Collections.NotBurstCompatible;
 using Unity.Jobs;
@@ -14,26 +15,26 @@ namespace Voxelis
 {
     /// <summary>
     /// Represents a voxel-based entity in the game world. This is the main component for managing
-    /// collections of voxel sectors, handling rendering, and interfacing with the physics system.
+    /// collections of voxel sectors and interfacing with the physics system.
     /// </summary>
     /// <remarks>
-    /// VoxelEntity organizes voxels into sectors for efficient storage and rendering. Each sector
+    /// VoxelEntity organizes voxels into sectors for efficient storage. Each sector
     /// contains a fixed-size grid of bricks, which in turn contain individual voxel blocks.
-    /// The entity automatically registers/unregisters itself with the VoxelisXRenderer on enable/disable.
+    /// Rendering is managed separately by VoxelisXRenderer.
     /// </remarks>
     public partial class VoxelEntity : MonoBehaviour, IDisposable
     {
         /// <summary>
-        /// Dictionary mapping sector positions to their corresponding sector references.
+        /// Dictionary mapping sector positions to their corresponding sector data.
         /// Key is the sector position in sector-space coordinates.
         /// </summary>
-        public Dictionary<Vector3Int, SectorRef> Voxels = new Dictionary<Vector3Int, SectorRef>();
+        public Dictionary<Vector3Int, Sector> sectors = new Dictionary<Vector3Int, Sector>();
 
         /// <summary>
-        /// Queue of sectors that are scheduled for removal and cleanup.
+        /// Queue of sector positions that are scheduled for removal and cleanup.
         /// Used to defer disposal of sectors until after rendering is complete.
         /// </summary>
-        public Queue<SectorRef> sectorsToRemove = new Queue<SectorRef>();
+        public Queue<Vector3Int> sectorsToRemove = new Queue<Vector3Int>();
 
         /// <summary>
         /// Called when the component is enabled. Registers this entity with the renderer and initializes physics body.
@@ -64,11 +65,12 @@ namespace Voxelis
         /// </summary>
         public void Dispose()
         {
-            foreach (var sector in Voxels.Values)
+            foreach (var kvp in sectors)
             {
-                sector?.Dispose();
+                // Dispose sector data directly
+                sectors[kvp.Key].Dispose();
             }
-            Voxels.Clear();
+            sectors.Clear();
         }
 
         /// <summary>
@@ -78,27 +80,20 @@ namespace Voxelis
         public ulong GetHostMemoryUsageKB()
         {
             ulong result = 0;
-            foreach (var s in Voxels.Values)
+            foreach (var sector in sectors.Values)
             {
-                result += (ulong)(s.MemoryUsage / 1024);
+                result += (ulong)(sector.MemoryUsage / 1024);
             }
 
             return result;
         }
 
         /// <summary>
-        /// Calculates the total GPU (VRAM) memory usage of all sectors in this entity.
+        /// Helper to get sector block position from sector position.
         /// </summary>
-        /// <returns>Total VRAM usage in kilobytes.</returns>
-        public ulong GetGPUMemoryUsageKB()
+        public static Vector3Int GetSectorBlockPos(Vector3Int sectorPos)
         {
-            ulong result = 0;
-            foreach (var s in Voxels.Values)
-            {
-                result += (ulong)(s.VRAMUsage / 1024);
-            }
-
-            return result;
+            return sectorPos * Sector.SECTOR_SIZE_IN_BLOCKS;
         }
 
         /// <summary>
@@ -113,13 +108,12 @@ namespace Voxelis
                 pos.y >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS),
                 pos.z >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS));
 
-            var found = Voxels.TryGetValue(sectorPos, out SectorRef sector);
-            if (!found)
+            if (!sectors.ContainsKey(sectorPos))
             {
                 return Block.Empty;
             }
 
-            return sector.sector.GetBlock(
+            return sectors[sectorPos].GetBlock(
                 pos.x & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
                 pos.y & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
                 pos.z & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS))
@@ -133,7 +127,6 @@ namespace Voxelis
         /// <param name="b">The block data to set.</param>
         /// <remarks>
         /// If the sector doesn't exist at the calculated sector position, a new sector will be automatically created.
-        /// The method also triggers a physics body update (marked as temporary and should be removed).
         /// </remarks>
         public void SetBlock(Vector3Int pos, Block b)
         {
@@ -142,17 +135,13 @@ namespace Voxelis
                 pos.y >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS),
                 pos.z >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS));
 
-            var found = Voxels.TryGetValue(sectorPos, out SectorRef sector);
-            if (!found)
+            if (!sectors.ContainsKey(sectorPos))
             {
-                sector = new SectorRef(
-                    this,
-                    Sector.New(Allocator.Persistent, 1),
-                    sectorPos);
-                Voxels.Add(sectorPos, sector);
+                sectors.Add(sectorPos, Sector.New(Allocator.Persistent, 1));
             }
 
-            sector.sector.SetBlock(
+            // Modify sector directly in dictionary
+            sectors[sectorPos].SetBlock(
                 pos.x & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
                 pos.y & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
                 pos.z & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
