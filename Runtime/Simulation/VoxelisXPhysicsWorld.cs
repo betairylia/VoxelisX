@@ -14,6 +14,8 @@ namespace Voxelis.Simulation
         protected PhysicsWorld physicsWorld;
         protected Unity.Physics.Simulation simulation;
 
+        private int debugFrameCount = 0;
+
         [Header("Gravity")]
         public Vector3 gravity = new Vector3(0, -9.81f, 0);
 
@@ -67,6 +69,8 @@ namespace Voxelis.Simulation
         {
             // TODO: Update physics World
             // PhysicsWorldBuilder.cs:88
+            
+            BeforeSimulationStart();
 
             // Create solver stabilization settings
             Solver.StabilizationHeuristicSettings stabilizationSettings = enableSolverStabilization
@@ -92,10 +96,55 @@ namespace Voxelis.Simulation
                 HaveStaticBodiesChanged = haveStaticBodiesChanged
             };
 
+            debugFrameCount++;
+
+            // Debug: Check collision world before simulation (first 10 frames only)
+            if (debugFrameCount <= 10)
+            {
+                UnityEngine.Debug.Log($"[SimStep {debugFrameCount}] CollisionWorld NumBodies: {physicsWorld.CollisionWorld.NumBodies}, NumDynamic: {physicsWorld.CollisionWorld.NumDynamicBodies}, NumStatic: {physicsWorld.CollisionWorld.NumStaticBodies}");
+            }
+
+            // Build the broadphase BVH trees before simulation
+            var buildBroadphaseHandle = physicsWorld.CollisionWorld.ScheduleBuildBroadphaseJobs(
+                ref physicsWorld, dt, gravity, haveStaticBodiesChanged, default, true);
+            buildBroadphaseHandle.Complete();
+
+            if (debugFrameCount <= 10)
+            {
+                UnityEngine.Debug.Log($"[SimStep {debugFrameCount}] Broadphase built successfully");
+            }
+
             simulation.ResetSimulationContext(stepInput);
-            var handles = simulation.ScheduleStepJobs(stepInput, default, false);
-            
+            var handles = simulation.ScheduleStepJobs(stepInput, default, true);
+
             handles.FinalExecutionHandle.Complete();
+
+            // Debug: Check for collision events (first 10 frames only)
+            // if (debugFrameCount <= 10)
+            {
+                var collisionEvents = simulation.CollisionEvents;
+                if (true)
+                {
+                    int eventCount = 0;
+                    foreach (var collisionEvent in collisionEvents)
+                    {
+                        eventCount++;
+                        if (eventCount <= 5) // Only log first 5 collision events per frame
+                        {
+                            UnityEngine.Debug.Log($"[Collision] BodyA: {collisionEvent.BodyIndexA}, BodyB: {collisionEvent.BodyIndexB}, Normal: {collisionEvent.Normal}");
+                        }
+                    }
+                    if (eventCount > 0)
+                    {
+                        UnityEngine.Debug.Log($"[Collision] Total events in frame {debugFrameCount}: {eventCount}");
+                    }
+                    else
+                    {
+                        UnityEngine.Debug.Log($"[Collision] No collision events in frame {debugFrameCount}");
+                    }
+                }
+            }
+
             OnSimulationFinished();
             handles.FinalDisposeHandle.Complete();
 
@@ -106,13 +155,16 @@ namespace Voxelis.Simulation
             }
         }
 
+        public virtual void BeforeSimulationStart() { }
         public virtual void OnSimulationFinished() { }
 
-        private void OnDestroy()
+        private void OnDisable()
         {
             simulation.Dispose();
             physicsWorld.Dispose();
             haveStaticBodiesChanged.Dispose();
+            
+            Debug.Log("Physics Disposed!");
         }
     }
 }

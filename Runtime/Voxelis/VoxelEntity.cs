@@ -9,7 +9,6 @@ using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Serialization;
-using Voxelis.Simulation;
 
 namespace Voxelis
 {

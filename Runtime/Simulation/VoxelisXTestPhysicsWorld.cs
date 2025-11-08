@@ -11,6 +11,9 @@ namespace Voxelis.Simulation
         [SerializeField] private List<VoxelBody> staticBodies = new();
 
         private int frameCount = 0;
+
+        // Store collider blob assets to prevent garbage collection
+        private List<Unity.Entities.BlobAssetReference<Unity.Physics.Collider>> colliders = new();
         
         public override void Init()
         {
@@ -21,6 +24,17 @@ namespace Voxelis.Simulation
         public void PrepareTestWorld()
         {
             Debug.Log($"[PrepareTestWorld] Static bodies: {staticBodies.Count}, Dynamic bodies: {dynamicbodies.Count}");
+
+            // Dispose existing colliders before creating new ones
+            foreach (var collider in colliders)
+            {
+                if (collider.IsCreated)
+                {
+                    collider.Dispose();
+                }
+            }
+            colliders.Clear();
+
             physicsWorld.Reset(staticBodies.Count, dynamicbodies.Count, 0);
 
             int bodyIndex = 0;
@@ -39,17 +53,31 @@ namespace Voxelis.Simulation
 
                 Debug.Log($"[Dynamic {i}] Position: {t.position}, Rotation: {t.rotation}");
 
-                // Create sphere collider with explicit collision filter
+                // Create sphere collider with collision events enabled
                 var sphereGeometry = new Unity.Physics.SphereGeometry
                 {
                     Center = Unity.Mathematics.float3.zero,
                     Radius = 0.5f
                 };
+
+                // Create material that raises collision events
+                var material = new Unity.Physics.Material
+                {
+                    Friction = 0.5f,
+                    Restitution = 0.0f,
+                    FrictionCombinePolicy = Unity.Physics.Material.CombinePolicy.GeometricMean,
+                    RestitutionCombinePolicy = Unity.Physics.Material.CombinePolicy.GeometricMean,
+                    CollisionResponse = Unity.Physics.CollisionResponsePolicy.CollideRaiseCollisionEvents
+                };
+
                 var sphereCollider = Unity.Physics.SphereCollider.Create(
                     sphereGeometry,
                     Unity.Physics.CollisionFilter.Default,
-                    Unity.Physics.Material.Default
+                    material
                 );
+
+                // Store collider to prevent garbage collection
+                colliders.Add(sphereCollider);
 
                 // Create rigid body
                 bodies[bodyIndex] = new Unity.Physics.RigidBody
@@ -99,7 +127,7 @@ namespace Voxelis.Simulation
 
                 Debug.Log($"[Static {i}] Position: {t.position}, Rotation: {t.rotation}");
 
-                // Create box collider with explicit collision filter
+                // Create box collider with collision events enabled
                 var boxGeometry = new Unity.Physics.BoxGeometry
                 {
                     Center = Unity.Mathematics.float3.zero,
@@ -107,11 +135,25 @@ namespace Voxelis.Simulation
                     Size = new Unity.Mathematics.float3(100f, 1f, 100f),
                     BevelRadius = 0.05f
                 };
+
+                // Create material that raises collision events
+                var boxMaterial = new Unity.Physics.Material
+                {
+                    Friction = 0.5f,
+                    Restitution = 0.0f,
+                    FrictionCombinePolicy = Unity.Physics.Material.CombinePolicy.GeometricMean,
+                    RestitutionCombinePolicy = Unity.Physics.Material.CombinePolicy.GeometricMean,
+                    CollisionResponse = Unity.Physics.CollisionResponsePolicy.CollideRaiseCollisionEvents
+                };
+
                 var boxCollider = Unity.Physics.BoxCollider.Create(
                     boxGeometry,
                     Unity.Physics.CollisionFilter.Default,
-                    Unity.Physics.Material.Default
+                    boxMaterial
                 );
+
+                // Store collider to prevent garbage collection
+                colliders.Add(boxCollider);
 
                 // Create rigid body
                 bodies[bodyIndex] = new Unity.Physics.RigidBody
@@ -134,6 +176,12 @@ namespace Voxelis.Simulation
 
             // Verify collision detection setup
             Debug.Log($"[PrepareTestWorld] Verifying PhysicsWorld - NumBodies: {physicsWorld.NumBodies}, NumDynamicBodies: {physicsWorld.NumDynamicBodies}, NumStaticBodies: {physicsWorld.NumStaticBodies}");
+
+            // Check if colliders are valid
+            for (int i = 0; i < bodies.Length; i++)
+            {
+                Debug.Log($"[Body {i}] Collider IsCreated: {bodies[i].Collider.IsCreated}, ColliderType: {bodies[i].Collider.Value.Type}");
+            }
         }
 
         public void ExportTestWorld()
@@ -173,6 +221,12 @@ namespace Voxelis.Simulation
             }
         }
 
+        public override void BeforeSimulationStart()
+        {
+            base.BeforeSimulationStart();
+            // PrepareTestWorld();
+        }
+
         public override void OnSimulationFinished()
         {
             ExportTestWorld();
@@ -186,6 +240,19 @@ namespace Voxelis.Simulation
                 Debug.Log($"[Frame {frameCount}] dt={Time.deltaTime}, Simulating...");
             }
             SimulateStep(Time.deltaTime);
+        }
+
+        private void OnDestroy()
+        {
+            // Dispose all colliders on cleanup
+            foreach (var collider in colliders)
+            {
+                if (collider.IsCreated)
+                {
+                    collider.Dispose();
+                }
+            }
+            colliders.Clear();
         }
     }
 }
