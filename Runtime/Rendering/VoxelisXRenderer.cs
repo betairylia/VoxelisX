@@ -17,11 +17,17 @@ using Voxelis.Rendering;
 /// This renderer uses Unity's ray tracing pipeline to render voxel data efficiently.
 /// It maintains a ray tracing acceleration structure (RTAS) containing all voxel sectors,
 /// and coordinates the update process for all registered voxel entities.
+/// Rendering state is managed separately from entity data.
 /// </remarks>
 // [ExecuteInEditMode]
 public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
 {
     private List<VoxelEntity> entities = new();
+
+    /// <summary>
+    /// Maps (entity, sectorPos) → SectorRenderer for tracking rendering state independently from entity data.
+    /// </summary>
+    private Dictionary<(VoxelEntity entity, Vector3Int sectorPos), SectorRenderer> sectorRenderers = new();
 
     /// <summary>
     /// Test world reference (for testing purposes).
@@ -143,27 +149,31 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
     public void RenderAll()
     {
         SectorRenderer.sectorMaterial = brickMat;
-        
+
         foreach (var e in FindObjectsByType<VoxelEntity>(FindObjectsSortMode.None))
         {
             AddEntity(e);
         }
-        
+
         _voxelScene.ClearInstances();
-        
+
         foreach (var e in entities)
         {
-            foreach (var kvp in e.Voxels)
+            foreach (var kvp in e.sectors)
             {
-                var position = kvp.Key;
-                var sector = kvp.Value;
-                
-                if(sector.renderer == null) continue;
+                Vector3Int sectorPos = kvp.Key;
+                Sector sector = kvp.Value;
 
-                sector.renderer.RenderModifyAS(ref _voxelScene);
+                var key = (e, sectorPos);
+                if (!sectorRenderers.ContainsKey(key))
+                {
+                    sectorRenderers[key] = new SectorRenderer();
+                }
+
+                sectorRenderers[key].RenderModifyAS(ref _voxelScene, e, sectorPos, sector);
             }
         }
-        
+
         _voxelScene.Build();
     }
 
@@ -292,12 +302,6 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
         frameId += 1;
         instanceCount = (int)voxelScene.GetInstanceCount();
 
-        // foreach (var h in handles)
-        // {
-            // voxelScene.UpdateInstanceTransform(h.handle, h.mat * Matrix4x4.Rotate(Quaternion.AngleAxis(Time.time * 10.0f, Vector3.up)));
-            // voxelScene.UpdateInstanceTransform(h.handle, h.mat * Matrix4x4.Rotate(Quaternion.AngleAxis(90.0f, Vector3.up)));
-        // }
-        
         // Pass 1: Emit jobs & Remove unused sectors
         foreach (var e in entities)
         {
@@ -308,22 +312,33 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
                 break;
             }
 
-            while (e.sectorsToRemove.TryDequeue(out SectorRef result))
+            // Handle sector removal
+            while (e.sectorsToRemove.TryDequeue(out Vector3Int sectorPos))
             {
-                result.renderer?.RemoveMe(ref _voxelScene);
+                var key = (e, sectorPos);
+                if (sectorRenderers.ContainsKey(key))
+                {
+                    sectorRenderers[key].RemoveMe(ref _voxelScene);
+                    sectorRenderers.Remove(key);
+                }
             }
-            
-            foreach (var kvp in e.Voxels)
-            {
-                var position = kvp.Key;
-                var sector = kvp.Value;
-                
-                if(sector.renderer == null) continue;
 
-                sector.renderer.RenderEmitJob();
+            // Emit render jobs for all sectors
+            foreach (var kvp in e.sectors)
+            {
+                Vector3Int sectorPos = kvp.Key;
+                Sector sector = kvp.Value;
+
+                var key = (e, sectorPos);
+                if (!sectorRenderers.ContainsKey(key))
+                {
+                    sectorRenderers[key] = new SectorRenderer();
+                }
+
+                sectorRenderers[key].RenderEmitJob(sector);
             }
         }
-        
+
         // Pass 2: Sync buffers
         foreach (var e in entities)
         {
@@ -333,35 +348,45 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
                 throw new InvalidOperationException();
             }
 
-            foreach (var kvp in e.Voxels)
+            foreach (var kvp in e.sectors)
             {
-                var sector = kvp.Value;
-                
-                if(sector.renderer == null) continue;
+                Vector3Int sectorPos = kvp.Key;
+                Sector sector = kvp.Value;
 
-                sector.renderer.Render();
-                sector.renderer.RenderModifyAS(ref _voxelScene);
-                sector.Tick();
+                var key = (e, sectorPos);
+                if (!sectorRenderers.ContainsKey(key)) continue;
+
+                sectorRenderers[key].Render();
+                sectorRenderers[key].RenderModifyAS(ref _voxelScene, e, sectorPos, sector);
+
+                // Call sector tick
+                sector.ReorderBricks();
+                sector.EndTick();
             }
         }
     }
 
     private void OnGUI()
     {
-        GUILayout.BeginVertical(); 
+        GUILayout.BeginVertical();
 
         ulong hostMemory = 0;
         ulong deviceMemory = 0;
         foreach (var e in entities)
         {
             hostMemory += e.GetHostMemoryUsageKB();
-            deviceMemory += e.GetGPUMemoryUsageKB();
         }
-        
+
+        // Calculate GPU memory from renderers
+        foreach (var renderer in sectorRenderers.Values)
+        {
+            deviceMemory += renderer.VRAMUsage / 1024;
+        }
+
         GUILayout.Box($"AS: {_voxelScene.GetSize() / 1024 / 1024} MB\n" +
                       $"hRAM: {hostMemory / 1024} MB\n" +
                       $"vRAM: {deviceMemory / 1024} MB");
-        
+
         GUILayout.EndVertical();
     }
 }

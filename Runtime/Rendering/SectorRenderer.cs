@@ -230,18 +230,15 @@ namespace Voxelis.Rendering
         /// </summary>
         public static Material sectorMaterial;
 
-        private SectorRef sectorRef;
         private bool hasRenderable = false;
         private int sectorASHandle;
         private MaterialPropertyBlock matProps = null;
 
         /// <summary>
-        /// Constructs a new sector renderer for the specified sector reference.
+        /// Constructs a new sector renderer.
         /// </summary>
-        /// <param name="sectorRef">The sector to render.</param>
-        public SectorRenderer(SectorRef sectorRef)
+        public SectorRenderer()
         {
-            this.sectorRef = sectorRef;
         }
 
         private NativeList<AABB> hostAABBBuffer;
@@ -284,19 +281,20 @@ namespace Voxelis.Rendering
         /// <summary>
         /// Prepares and resizes GPU buffers if needed to accommodate current brick count.
         /// </summary>
+        /// <param name="sector">The sector to prepare buffers for.</param>
         /// <returns>True if buffers were reallocated; false if existing buffers are sufficient.</returns>
-        public bool PrepareBuffers()
+        public bool PrepareBuffers(Sector sector)
         {
             Profiler.BeginSample("PrepareBuffers");
 
-            if (sectorRef.sector.RendererNonEmptyBrickCount != previousAABBCount)
+            if (sector.RendererNonEmptyBrickCount != previousAABBCount)
             {
                 shouldUpdateAABB = true;
             }
 
-            previousAABBCount = sectorRef.sector.RendererNonEmptyBrickCount;
-            
-            int requestedCapacity = GetCapacity(sectorRef.sector.RendererNonEmptyBrickCount);
+            previousAABBCount = sector.RendererNonEmptyBrickCount;
+
+            int requestedCapacity = GetCapacity(sector.RendererNonEmptyBrickCount);
             if (requestedCapacity == currentCapacity)
             {
                 Profiler.EndSample();
@@ -397,11 +395,8 @@ namespace Voxelis.Rendering
                     matProps = new MaterialPropertyBlock();
                 }
                 
-                AABBconfig = new RayTracingAABBsInstanceConfig(
-                    aabbBuffer, sectorRef.sector.RendererNonEmptyBrickCount, false, sectorMaterial);
-                    // aabbBuffer, 4096, false, sectorMaterial);
-                AABBconfig.accelerationStructureBuildFlags = RayTracingAccelerationStructureBuildFlags.PreferFastTrace;
-                AABBconfig.materialProperties = matProps;
+                // Will be set by RenderModifyAS when we have sector info
+                AABBconfig = null;
             
                 // AS.RemoveInstance(sectorASHandle);
                 // Debug.Log(config.aabbCount);
@@ -431,25 +426,37 @@ namespace Voxelis.Rendering
         /// Updates the ray tracing acceleration structure with this sector's geometry.
         /// </summary>
         /// <param name="AS">The acceleration structure to update.</param>
+        /// <param name="entity">The voxel entity this sector belongs to.</param>
+        /// <param name="sectorPos">The position of this sector in sector coordinates.</param>
+        /// <param name="sector">The sector data.</param>
         /// <remarks>
         /// If the sector is dirty (geometry changed), removes and re-adds the instance to the RTAS.
         /// If just the transform changed, updates the instance transform only.
         /// This method should be called after Render() to synchronize the RTAS with current voxel data.
         /// </remarks>
-        public void RenderModifyAS(ref RayTracingAccelerationStructure AS)
+        public void RenderModifyAS(ref RayTracingAccelerationStructure AS, VoxelEntity entity, Vector3Int sectorPos, Sector sector)
         {
             if (isDirty)
             {
+                // Create AABB config here now that we have sector info
+                if (AABBconfig == null && matProps != null)
+                {
+                    AABBconfig = new RayTracingAABBsInstanceConfig(
+                        aabbBuffer, sector.RendererNonEmptyBrickCount, false, sectorMaterial);
+                    AABBconfig.accelerationStructureBuildFlags = RayTracingAccelerationStructureBuildFlags.PreferFastTrace;
+                    AABBconfig.materialProperties = matProps;
+                }
+
                 AS.RemoveInstance(sectorASHandle);
                 sectorASHandle = AS.AddInstance(AABBconfig,
-                   sectorRef.entity.transform.localToWorldMatrix * Matrix4x4.Translate(sectorRef.sectorPos * Sector.SECTOR_SIZE_IN_BLOCKS));
+                   entity.transform.localToWorldMatrix * Matrix4x4.Translate(sectorPos * Sector.SECTOR_SIZE_IN_BLOCKS));
                 hasRenderable = true;
                 AS.UpdateInstancePropertyBlock(sectorASHandle, matProps);
             }
             else if(hasRenderable)
             {
                 AS.UpdateInstanceTransform(sectorASHandle,
-                    sectorRef.entity.transform.localToWorldMatrix * Matrix4x4.Translate(sectorRef.sectorPos * Sector.SECTOR_SIZE_IN_BLOCKS));
+                    entity.transform.localToWorldMatrix * Matrix4x4.Translate(sectorPos * Sector.SECTOR_SIZE_IN_BLOCKS));
             }
 
             isDirty = false;
@@ -459,6 +466,7 @@ namespace Voxelis.Rendering
         /// Schedules a Burst job to generate render data from dirty voxel data.
         /// Must be followed by Render() to complete the job and upload to GPU.
         /// </summary>
+        /// <param name="sector">The sector to render.</param>
         /// <remarks>
         /// Skips scheduling if:
         /// - Sector is marked for removal
@@ -466,19 +474,19 @@ namespace Voxelis.Rendering
         /// - No dirty bricks need updating
         /// This allows the job to run in parallel with other sector jobs.
         /// </remarks>
-        public void RenderEmitJob()
+        public void RenderEmitJob(Sector sector)
         {
-            if (shouldRemove || sectorRef.sector.IsRendererEmpty || (!sectorRef.sector.IsRendererDirty))
+            if (shouldRemove || sector.IsRendererEmpty || (!sector.IsRendererDirty))
             {
                 return;
             }
 
-            isRealloc = PrepareBuffers();
+            isRealloc = PrepareBuffers(sector);
 
             // Job generating renderer buffers
             rendererJob = new GenerateSectorRenderDataJob()
             {
-                sector = sectorRef.sector,
+                sector = sector,
                 aabbBuffer = hostAABBBuffer,
                 brickData = hostBrickBuffer,
                 syncRecord = new NativeArray<int>(2, Allocator.TempJob)
