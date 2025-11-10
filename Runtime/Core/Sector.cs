@@ -204,6 +204,11 @@ namespace Voxelis
         }
 
         public static Sector CloneNoRecord(
+            SectorHandle from,
+            Allocator allocator)
+            => CloneNoRecord(*(from.Ptr), allocator);
+        
+        public static Sector CloneNoRecord(
             Sector from,
             Allocator allocator)
         {

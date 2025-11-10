@@ -1,4 +1,5 @@
 using System;
+using Unity.Burst;
 using Unity.Collections.LowLevel.Unsafe;
 
 namespace Voxelis
@@ -7,6 +8,7 @@ namespace Voxelis
     /// A handle to a Sector that can be used in jobs without requiring the job struct to be marked unsafe.
     /// Internally stores a Sector pointer.
     /// </summary>
+    [BurstCompile]
     public unsafe struct SectorHandle
     {
         [NativeDisableUnsafePtrRestriction]
