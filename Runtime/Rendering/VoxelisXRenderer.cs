@@ -135,7 +135,7 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
             foreach (var kvp in e.sectors)
             {
                 Vector3Int sectorPos = kvp.Key;
-                Sector sector = kvp.Value;
+                ref Sector sector = ref e.GetSectorAt(kvp.Key);
 
                 var key = (e, sectorPos);
                 if (!sectorRenderers.ContainsKey(key))
@@ -300,7 +300,7 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
             foreach (var kvp in e.sectors)
             {
                 Vector3Int sectorPos = kvp.Key;
-                Sector sector = kvp.Value;
+                ref Sector sector = ref e.GetSectorAt(kvp.Key);
 
                 var key = (e, sectorPos);
                 if (!sectorRenderers.ContainsKey(key))
@@ -324,7 +324,7 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
             foreach (var kvp in e.sectors)
             {
                 Vector3Int sectorPos = kvp.Key;
-                Sector sector = kvp.Value;
+                ref Sector sector = ref e.GetSectorAt(kvp.Key);
 
                 var key = (e, sectorPos);
                 if (!sectorRenderers.ContainsKey(key)) continue;

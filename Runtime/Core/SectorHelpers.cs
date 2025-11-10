@@ -53,7 +53,7 @@ namespace Voxelis
         /// Advances the enumerator to the next non-empty block.
         /// </summary>
         /// <returns>True if a non-empty block was found; false if enumeration is complete.</returns>
-        public bool MoveNext()
+        public unsafe bool MoveNext()
         {
             // Find next non-empty block
             do
@@ -74,7 +74,7 @@ namespace Voxelis
                     {
                         brick_acce_id++;
                         if (brick_acce_id >= sector.NonEmptyBrickCount) return false;
-                        absolute_bid = sector.GetNonEmptyBricks()[brick_acce_id];
+                        absolute_bid = sector.NonEmptyBricks[brick_acce_id];
                         sectorBrickIndex = sector.brickIdx[absolute_bid];
                     }while(sectorBrickIndex == Sector.BRICKID_EMPTY);
 

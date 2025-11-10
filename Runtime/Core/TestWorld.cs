@@ -29,7 +29,7 @@ namespace Voxelis
             /// <summary>
             /// The sector to fill with generated voxel data.
             /// </summary>
-            public Sector sector;
+            public SectorHandle sector;
 
             /// <summary>
             /// Executes the job, filling the sector with noise-based voxel data.
@@ -110,13 +110,13 @@ namespace Voxelis
                         var secPos = new Vector3Int(i, k, j);
                         if (!sectors.ContainsKey(secPos))
                         {
-                            sectors.Add(secPos, Sector.New(Allocator.Persistent, 128));
+                            AddEmptySectorAt(secPos);
                         }
 
                         var job = new FillWorldSectorJob()
                         {
                             sectorPos = secPos,
-                            sector = sectors[secPos]
+                            sector = GetSectorHandle(secPos)
                         };
 
                         fillWorldJobs.Add(job.Schedule());
@@ -129,9 +129,9 @@ namespace Voxelis
             Debug.Log("Done!");
 
             int totalBricks = 0;
-            foreach (var sector in sectors.Values)
+            foreach (var kvp in sectors)
             {
-                totalBricks += sector.NonEmptyBrickCount;
+                totalBricks += GetSectorAt(kvp.Key).NonEmptyBrickCount;
             }
             Debug.Log($"Total: {totalBricks} Bricks ({totalBricks * 2 / 1024} MiB)");
         }
@@ -158,7 +158,7 @@ namespace Voxelis
             /// <summary>
             /// The sector to modify.
             /// </summary>
-            public Sector sector;
+            public SectorHandle sector;
 
             /// <summary>
             /// Frame counter used to determine which blocks to toggle.
@@ -193,14 +193,14 @@ namespace Voxelis
             {
                 NativeList<JobHandle> jobs = new NativeList<JobHandle>(Allocator.Temp);
 
-                foreach (var sec in sectors.Values)
+                foreach (var kvp in sectors)
                 {
                     int p = Time.frameCount;
 
                     jobs.Add(new TestUpdate()
                     {
                         p = p,
-                        sector = sec
+                        sector = GetSectorHandle(kvp.Key)
                     }.Schedule());
                 }
 

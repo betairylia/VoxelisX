@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
 using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
 using Unity.Collections.NotBurstCompatible;
 using Unity.Jobs;
 using Unity.Mathematics;
@@ -22,13 +23,85 @@ namespace Voxelis
     /// contains a fixed-size grid of bricks, which in turn contain individual voxel blocks.
     /// Rendering is managed separately by VoxelisXRenderer.
     /// </remarks>
-    public partial class VoxelEntity : MonoBehaviour, IDisposable
+    public unsafe partial class VoxelEntity : MonoBehaviour, IDisposable
     {
         /// <summary>
         /// Dictionary mapping sector positions to their corresponding sector data.
         /// Key is the sector position in sector-space coordinates.
         /// </summary>
-        public Dictionary<Vector3Int, Sector> sectors = new Dictionary<Vector3Int, Sector>();
+        // public Dictionary<Vector3Int, Sector> sectors = new Dictionary<Vector3Int, Sector>();
+        public Dictionary<Vector3Int, IntPtr> sectors = new Dictionary<Vector3Int, IntPtr>();
+
+        public unsafe ref Sector GetSectorAt(Vector3Int pos)
+        {
+            if (!sectors.ContainsKey(pos)) throw new InvalidOperationException($"Sector {pos} does not exist!");
+            return ref (*(Sector*)(sectors[pos]));
+        }
+
+        /// <summary>
+        /// Gets a handle to the sector at the specified position.
+        /// The handle can be used in jobs without requiring unsafe context.
+        /// </summary>
+        public SectorHandle GetSectorHandle(Vector3Int pos)
+        {
+            if (!sectors.ContainsKey(pos)) throw new InvalidOperationException($"Sector {pos} does not exist!");
+            return new SectorHandle((Sector*)sectors[pos]);
+        }
+
+        public unsafe void AddEmptySectorAt(Vector3Int pos)
+        {
+            var sectorPtr = GetEmptySector();
+
+            // Store the pointer
+            sectors.Add(pos, (IntPtr)sectorPtr);
+        }
+
+        public Sector* GetEmptySector()
+        {
+            // Allocate memory for the Sector struct itself
+            Sector* sectorPtr = (Sector*)UnsafeUtility.Malloc(
+                UnsafeUtility.SizeOf<Sector>(),
+                UnsafeUtility.AlignOf<Sector>(),
+                Allocator.Persistent);
+
+            // Initialize the sector in-place
+            *sectorPtr = Sector.New(Allocator.Persistent, 1);
+
+            return sectorPtr;
+        }
+
+        public unsafe void CopyAndAddSectorAt(Vector3Int pos, Sector sector)
+        {
+            // Allocate memory for the Sector struct itself
+            Sector* sectorPtr = (Sector*)UnsafeUtility.Malloc(
+                UnsafeUtility.SizeOf<Sector>(),
+                UnsafeUtility.AlignOf<Sector>(),
+                Allocator.Persistent);
+
+            // Initialize the sector in-place
+            *sectorPtr = sector;
+            
+            sectors.Add(pos, (IntPtr)sectorPtr);
+        }
+
+        /// <summary>
+        /// Removes and disposes a sector at the specified position.
+        /// </summary>
+        /// <param name="pos">The sector position to remove.</param>
+        /// <returns>True if the sector was found and removed, false otherwise.</returns>
+        public bool RemoveSectorAt(Vector3Int pos)
+        {
+            if (!sectors.ContainsKey(pos))
+            {
+                return false;
+            }
+
+            Sector* sectorPtr = (Sector*)sectors[pos];
+            sectorPtr->Dispose(Allocator.Persistent);
+            UnsafeUtility.Free(sectorPtr, Allocator.Persistent);
+            sectors.Remove(pos);
+            return true;
+        }
 
         /// <summary>
         /// Queue of sector positions that are scheduled for removal and cleanup.
@@ -67,9 +140,16 @@ namespace Voxelis
         {
             foreach (var kvp in sectors)
             {
-                // Dispose sector data directly
-                sectors[kvp.Key].Dispose();
+                Sector* sectorPtr = (Sector*)kvp.Value;
+
+                // First dispose the sector's internal allocations
+                sectorPtr->Dispose(Allocator.Persistent);
+
+                // Then free the Sector struct memory itself
+                UnsafeUtility.Free(sectorPtr, Allocator.Persistent);
             }
+
+            // Clear and dispose the hashmap
             sectors.Clear();
         }
 
@@ -80,9 +160,9 @@ namespace Voxelis
         public ulong GetHostMemoryUsageKB()
         {
             ulong result = 0;
-            foreach (var sector in sectors.Values)
+            foreach (var kvp in sectors)
             {
-                result += (ulong)(sector.MemoryUsage / 1024);
+                result += (ulong)(GetSectorAt(kvp.Key).MemoryUsage / 1024);
             }
 
             return result;
@@ -113,7 +193,7 @@ namespace Voxelis
                 return Block.Empty;
             }
 
-            return sectors[sectorPos].GetBlock(
+            return GetSectorAt(sectorPos).GetBlock(
                 pos.x & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
                 pos.y & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
                 pos.z & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS))
@@ -137,11 +217,11 @@ namespace Voxelis
 
             if (!sectors.ContainsKey(sectorPos))
             {
-                sectors.Add(sectorPos, Sector.New(Allocator.Persistent, 1));
+                AddEmptySectorAt(sectorPos);
             }
 
             // Modify sector directly in dictionary
-            sectors[sectorPos].SetBlock(
+            GetSectorAt(sectorPos).SetBlock(
                 pos.x & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
                 pos.y & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
                 pos.z & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),

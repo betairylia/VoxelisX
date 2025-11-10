@@ -56,7 +56,7 @@ namespace Voxelis
     /// Only bricks containing non-empty blocks consume memory. This allows for efficient storage
     /// of large voxel worlds with sparse geometry.
     /// </remarks>
-    public struct Sector : IDisposable
+    public unsafe struct Sector
     {
         // Brick-level constants (isometric: uniform across all axes)
         /// <summary>Bit shift for brick size (brick is 8 blocks per axis).</summary>
@@ -89,25 +89,27 @@ namespace Voxelis
         /// Flattened array of all block data for non-empty bricks.
         /// Bricks are stored contiguously, with each brick containing BLOCKS_IN_BRICK elements.
         /// </summary>
-        public NativeList<Block> voxels;
+        public UnsafeList<Block> voxels;
 
         /// <summary>
         /// Maps absolute brick indices (position in 3D grid) to relative brick indices (position in voxels array).
         /// Contains BRICKID_EMPTY for bricks that have not been allocated.
         /// </summary>
-        public NativeArray<short> brickIdx;
+        [NativeDisableUnsafePtrRestriction]
+        public short* brickIdx;
 
         /// <summary>
         /// Tracks the update state of each brick for renderer synchronization.
         /// Indexed by absolute brick ID.
         /// </summary>
-        public NativeArray<BrickUpdateInfo.Type> brickFlags;
+        [NativeDisableUnsafePtrRestriction]
+        public BrickUpdateInfo.Type* brickFlags;
 
         /// <summary>
         /// List containing absolute IDs of bricks that have been modified and need rendering updates.
         /// For renderer, updater, physics etc. use.
         /// </summary>
-        public NativeList<short> updateRecord;
+        public UnsafeList<short> updateRecord;
 
         /// <summary>
         /// Returns true if there are pending brick updates for the renderer.
@@ -123,7 +125,8 @@ namespace Voxelis
         /// Single-element array storing the count of allocated bricks.
         /// Using an array allows modification within burst-compiled jobs.
         /// </summary>
-        private NativeArray<int> currentBrickId;
+        [NativeDisableUnsafePtrRestriction]
+        private int* currentBrickId;
 
         /// <summary>
         /// Gets the number of non-empty bricks allocated in this sector for rendering.
@@ -164,23 +167,39 @@ namespace Voxelis
         {
             Sector s = new Sector()
             {
-                voxels = new NativeList<Block>(
+                voxels = new UnsafeList<Block>(
                     initialBricks * BLOCKS_IN_BRICK, allocator),
-                brickIdx = new NativeArray<short>(
-                    SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS,
-                    allocator,
-                    options),
-                brickFlags = new NativeArray<BrickUpdateInfo.Type>(
-                    SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS, allocator, options),
-                updateRecord = new NativeList<short>(allocator),
-                currentBrickId = new(1, allocator),
+                brickIdx = (short*)UnsafeUtility.Malloc(
+                    SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS * sizeof(short),
+                    UnsafeUtility.AlignOf<short>(),
+                    allocator),
+                brickFlags = (BrickUpdateInfo.Type*)UnsafeUtility.Malloc(
+                    SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS * sizeof(BrickUpdateInfo.Type),
+                    UnsafeUtility.AlignOf<BrickUpdateInfo.Type>(),
+                    allocator),
+                updateRecord = new UnsafeList<short>(10, allocator),
+                currentBrickId = (int*)UnsafeUtility.Malloc(
+                    sizeof(int),
+                    UnsafeUtility.AlignOf<int>(),
+                    allocator), 
 
-                nonEmptyBricks = new NativeList<short>(allocator),
+                NonEmptyBricks = new UnsafeList<short>(initialBricks, allocator),
             };
 
-            var initJob = new InitBrickIdJob() { id = s.brickIdx };
-            initJob.Schedule(s.brickIdx.Length, s.brickIdx.Length).Complete();
+            // Initialize fixed arrays
+            if (options == NativeArrayOptions.ClearMemory)
+            {
+                UnsafeUtility.MemClear(s.brickIdx, SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS * sizeof(short));
+                UnsafeUtility.MemClear(s.brickFlags, SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS * sizeof(BrickUpdateInfo.Type));
+            }
 
+            for (int i = 0; i < SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS; i++)
+            {
+                s.brickIdx[i] = BRICKID_EMPTY;
+            }
+
+            *(s.currentBrickId) = 0;
+            
             return s;
         }
 
@@ -190,22 +209,29 @@ namespace Voxelis
         {
             Sector s = new Sector()
             {
-                voxels = new NativeList<Block>(
+                voxels = new UnsafeList<Block>(
                     from.NonEmptyBrickCount * BLOCKS_IN_BRICK, allocator),
-                brickIdx = new NativeArray<short>(
-                    SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS,
+                brickIdx = (short*)UnsafeUtility.Malloc(
+                    SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS * sizeof(short),
+                    UnsafeUtility.AlignOf<short>(),
                     allocator),
-                brickFlags = new NativeArray<BrickUpdateInfo.Type>(
-                    SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS, allocator),
-                updateRecord = new NativeList<short>(allocator),
-                currentBrickId = new(1, allocator),
+                brickFlags = (BrickUpdateInfo.Type*)UnsafeUtility.Malloc(
+                    SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS * sizeof(BrickUpdateInfo.Type),
+                    UnsafeUtility.AlignOf<BrickUpdateInfo.Type>(),
+                    allocator),
+                updateRecord = new UnsafeList<short>(10, allocator),
+                currentBrickId = (int*)UnsafeUtility.Malloc(
+                    sizeof(int),
+                    UnsafeUtility.AlignOf<int>(),
+                    allocator), 
 
-                nonEmptyBricks = new NativeList<short>(allocator),
+                NonEmptyBricks = new UnsafeList<short>(from.NonEmptyBrickCount, allocator),
             };
 
-            s.voxels.AddRange(from.voxels.AsArray());
-            s.brickIdx.CopyFrom(from.brickIdx);
-            s.currentBrickId.CopyFrom(from.currentBrickId);
+            s.voxels.AddRange(from.voxels);
+            UnsafeUtility.MemCpy(s.brickIdx, from.brickIdx,
+                SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS * sizeof(short));
+            *(s.currentBrickId) = *(from.currentBrickId);
 
             return s;
         }
@@ -213,14 +239,14 @@ namespace Voxelis
         /// <summary>
         /// Disposes all native collections used by this sector, releasing unmanaged memory.
         /// </summary>
-        public void Dispose()
+        public void Dispose(Allocator allocator)
         {
             if (voxels.IsCreated) voxels.Dispose();
-            if (brickIdx.IsCreated) brickIdx.Dispose();
-            if (brickFlags.IsCreated) brickFlags.Dispose();
+            if (brickIdx != null) UnsafeUtility.Free(brickIdx, allocator);
+            if (brickFlags != null) UnsafeUtility.Free(brickFlags, allocator);
             if (updateRecord.IsCreated) updateRecord.Dispose();
-            if (currentBrickId.IsCreated) currentBrickId.Dispose();
-            if (nonEmptyBricks.IsCreated) nonEmptyBricks.Dispose();
+            if (currentBrickId != null) UnsafeUtility.Free(currentBrickId, allocator);
+            if (NonEmptyBricks.IsCreated) NonEmptyBricks.Dispose();
         }
 
         /// <summary>
@@ -279,20 +305,20 @@ namespace Voxelis
         /// <param name="z">Brick Z coordinate.</param>
         /// <returns>A NativeSlice containing the brick's blocks, or null if the brick is empty.</returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public NativeSlice<Block>? GetBrick(int x, int y, int z)
+        public Block* GetBrick(int x, int y, int z)
         {
             short bid = this.brickIdx[ToBrickIdx(x, y, z)];
             return GetBrick(bid);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public NativeSlice<Block>? GetBrick(short bid)
+        public Block* GetBrick(short bid)
         {
             if (bid == BRICKID_EMPTY)
             {
                 return null;
             }
-            return new NativeSlice<Block>(voxels, bid * BLOCKS_IN_BRICK);
+            return voxels.Ptr + (bid * BLOCKS_IN_BRICK);
         }
 
         /// <summary>
@@ -361,8 +387,6 @@ namespace Voxelis
                 updateRecord.Add((short)brick_sector_index_id);
 
                 currentBrickId[0]++;
-
-                isNonEmptyBricksDirty = true;
             }
 
             // Set the block in target brick
@@ -412,28 +436,19 @@ namespace Voxelis
         ///////////////////////////////////
 
         // Accelerators
-        private bool isNonEmptyBricksDirty;
-
-        private NativeList<short> nonEmptyBricks;
+        [NativeDisableParallelForRestriction] public UnsafeList<short> NonEmptyBricks;
 
         [BurstCompile]
-        public NativeList<short> GetNonEmptyBricks()
+        public void UpdateNonEmptyBricks()
         {
-            if (isNonEmptyBricksDirty)
+            NonEmptyBricks.Clear();
+            for (short i = 0; i < SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS; i++)
             {
-                nonEmptyBricks.Clear();
-                for (short i = 0; i < SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS; i++)
+                if (brickIdx[i] != BRICKID_EMPTY)
                 {
-                    if (brickIdx[i] != BRICKID_EMPTY)
-                    {
-                        nonEmptyBricks.Add(i);
-                    }
+                    NonEmptyBricks.Add(i);
                 }
-
-                isNonEmptyBricksDirty = false;
             }
-
-            return nonEmptyBricks;
         }
 
         #endregion

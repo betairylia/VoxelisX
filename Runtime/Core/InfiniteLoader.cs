@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using Unity.Collections;
 using UnityEngine;
 
 namespace Voxelis
@@ -195,13 +196,12 @@ namespace Voxelis
             Vector3Int lsp = loadCenterSectorPos;
 
             // Unload sectors
-            var list = entity.sectors.Keys.ToList();
+            var list = entity.sectors.Keys;
             foreach (var sectorPos in list)
             {
                 if (ShouldUnload(sectorPos, lsp))
                 {
-                    entity.sectors[sectorPos].Dispose();
-                    entity.sectors.Remove(sectorPos);
+                    entity.RemoveSectorAt(sectorPos);
                     entity.sectorsToRemove.Enqueue(sectorPos);
                 }
             }
@@ -230,11 +230,11 @@ namespace Voxelis
         /// </summary>
         /// <param name="sectorPos">The position of the sector that has finished loading.</param>
         /// <param name="sector">The sector data that has finished loading.</param>
-        public void MarkSectorLoaded(Vector3Int sectorPos, Sector sector)
+        public unsafe void MarkSectorLoaded(Vector3Int sectorPos, Sector sector)
         {
             Debug.Log($"Sector Added at {sectorPos}");
             loadingSectors.Remove(sectorPos);
-            entity.sectors.Add(sectorPos, sector);
+            entity.CopyAndAddSectorAt(sectorPos, sector);
         }
     }
 }

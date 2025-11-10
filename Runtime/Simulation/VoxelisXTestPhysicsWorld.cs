@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
+using Unity.Physics;
 using UnityEngine;
+using Collider = Unity.Physics.Collider;
 
 namespace Voxelis.Simulation
 {
@@ -13,14 +15,17 @@ namespace Voxelis.Simulation
         private int frameCount = 0;
 
         // Store collider blob assets to prevent garbage collection
-        private List<Unity.Entities.BlobAssetReference<Unity.Physics.Collider>> colliders = new();
+        private List<Unity.Entities.BlobAssetReference<Collider>> colliders = new();
+
+        private bool prepared = false;
         
         public override void Init()
         {
             base.Init();
-            PrepareTestWorld();
+            // PrepareTestWorld();
         }
         
+        [ContextMenu("Prepare Test World")]
         public void PrepareTestWorld()
         {
             Debug.Log($"[PrepareTestWorld] Static bodies: {staticBodies.Count}, Dynamic bodies: {dynamicbodies.Count}");
@@ -50,15 +55,10 @@ namespace Voxelis.Simulation
             {
                 VoxelBody vb = dynamicbodies[i];
                 Transform t = vb.transform;
+                
+                vb.BeforePhysicsTick();
 
                 Debug.Log($"[Dynamic {i}] Position: {t.position}, Rotation: {t.rotation}");
-
-                // Create sphere collider with collision events enabled
-                var sphereGeometry = new Unity.Physics.SphereGeometry
-                {
-                    Center = Unity.Mathematics.float3.zero,
-                    Radius = 0.5f
-                };
 
                 // Create material that raises collision events
                 var material = new Unity.Physics.Material
@@ -70,14 +70,14 @@ namespace Voxelis.Simulation
                     CollisionResponse = Unity.Physics.CollisionResponsePolicy.CollideRaiseCollisionEvents
                 };
 
-                var sphereCollider = Unity.Physics.SphereCollider.Create(
-                    sphereGeometry,
+                var voxelCollider = Unity.Physics.VoxelCollider.Create(
+                    vb.entity.sectors,
                     Unity.Physics.CollisionFilter.Default,
                     material
                 );
 
                 // Store collider to prevent garbage collection
-                colliders.Add(sphereCollider);
+                colliders.Add(voxelCollider);
 
                 // Create rigid body
                 bodies[bodyIndex] = new Unity.Physics.RigidBody
@@ -86,7 +86,7 @@ namespace Voxelis.Simulation
                         new Unity.Mathematics.quaternion(t.rotation.x, t.rotation.y, t.rotation.z, t.rotation.w),
                         new Unity.Mathematics.float3(t.position.x, t.position.y, t.position.z)
                     ),
-                    Collider = sphereCollider,
+                    Collider = voxelCollider,
                     Entity = Unity.Entities.Entity.Null,
                     Scale = 1.0f,
                     CustomTags = 0
@@ -124,17 +124,10 @@ namespace Voxelis.Simulation
             {
                 VoxelBody vb = staticBodies[i];
                 Transform t = vb.transform;
+                
+                vb.BeforePhysicsTick();
 
                 Debug.Log($"[Static {i}] Position: {t.position}, Rotation: {t.rotation}");
-
-                // Create box collider with collision events enabled
-                var boxGeometry = new Unity.Physics.BoxGeometry
-                {
-                    Center = Unity.Mathematics.float3.zero,
-                    Orientation = Unity.Mathematics.quaternion.identity,
-                    Size = new Unity.Mathematics.float3(100f, 1f, 100f),
-                    BevelRadius = 0.05f
-                };
 
                 // Create material that raises collision events
                 var boxMaterial = new Unity.Physics.Material
@@ -146,14 +139,14 @@ namespace Voxelis.Simulation
                     CollisionResponse = Unity.Physics.CollisionResponsePolicy.CollideRaiseCollisionEvents
                 };
 
-                var boxCollider = Unity.Physics.BoxCollider.Create(
-                    boxGeometry,
+                var voxelCollider = Unity.Physics.VoxelCollider.Create(
+                    vb.entity.sectors,
                     Unity.Physics.CollisionFilter.Default,
                     boxMaterial
                 );
 
                 // Store collider to prevent garbage collection
-                colliders.Add(boxCollider);
+                colliders.Add(voxelCollider);
 
                 // Create rigid body
                 bodies[bodyIndex] = new Unity.Physics.RigidBody
@@ -162,7 +155,7 @@ namespace Voxelis.Simulation
                         new Unity.Mathematics.quaternion(t.rotation.x, t.rotation.y, t.rotation.z, t.rotation.w),
                         new Unity.Mathematics.float3(t.position.x, t.position.y, t.position.z)
                     ),
-                    Collider = boxCollider,
+                    Collider = voxelCollider,
                     Entity = Unity.Entities.Entity.Null,
                     Scale = 1.0f,
                     CustomTags = 0
@@ -182,10 +175,14 @@ namespace Voxelis.Simulation
             {
                 Debug.Log($"[Body {i}] Collider IsCreated: {bodies[i].Collider.IsCreated}, ColliderType: {bodies[i].Collider.Value.Type}");
             }
+
+            prepared = true;
         }
 
         public void ExportTestWorld()
         {
+            if (!prepared) return;
+            
             var motionDatas = physicsWorld.MotionDatas;
             var motionVelocities = physicsWorld.MotionVelocities;
 
@@ -234,6 +231,8 @@ namespace Voxelis.Simulation
 
         private void Update()
         {
+            if (!prepared) return;
+            
             frameCount++;
             if (frameCount <= 5)  // Only log first 5 frames to avoid spam
             {
@@ -249,6 +248,15 @@ namespace Voxelis.Simulation
             {
                 if (collider.IsCreated)
                 {
+                    if (collider.Value.Type == ColliderType.Voxel)
+                    {
+                        unsafe
+                        {
+                            var voxelCollider = (VoxelCollider*)collider.GetUnsafePtr();
+                            voxelCollider->Dispose();
+                        }
+                    }
+
                     collider.Dispose();
                 }
             }

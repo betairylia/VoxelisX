@@ -45,6 +45,8 @@ namespace Voxelis.Simulation
         [Tooltip("Inertia scaling factor")]
         public float inertiaScalingFactor = 0.75f;
 
+        [Tooltip("Multithreading enabled")] public bool multiThreaded = true;
+
         [HideInInspector] public NativeReference<int> haveStaticBodiesChanged;
 
         public override void Init()
@@ -106,7 +108,7 @@ namespace Voxelis.Simulation
 
             // Build the broadphase BVH trees before simulation
             var buildBroadphaseHandle = physicsWorld.CollisionWorld.ScheduleBuildBroadphaseJobs(
-                ref physicsWorld, dt, gravity, haveStaticBodiesChanged, default, true);
+                ref physicsWorld, dt, gravity, haveStaticBodiesChanged, default, multiThreaded);
             buildBroadphaseHandle.Complete();
 
             if (debugFrameCount <= 10)
@@ -115,7 +117,7 @@ namespace Voxelis.Simulation
             }
 
             simulation.ResetSimulationContext(stepInput);
-            var handles = simulation.ScheduleStepJobs(stepInput, default, true);
+            var handles = simulation.ScheduleStepJobs(stepInput, default, multiThreaded);
 
             handles.FinalExecutionHandle.Complete();
 

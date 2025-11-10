@@ -115,7 +115,7 @@ namespace Voxelis.Rendering
             /// </summary>
             /// <param name="index">Index parameter (currently unused).</param>
             /// <returns>Update info for the dirty brick, or null if no more dirty bricks.</returns>
-            public BrickUpdateInfo? ConsumeDirtyBrick(int index)
+            public unsafe BrickUpdateInfo? ConsumeDirtyBrick(int index)
             {
                 if (index >= sector.updateRecord.Length) return null;
                 
