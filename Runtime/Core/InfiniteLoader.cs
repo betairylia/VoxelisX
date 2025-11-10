@@ -232,6 +232,7 @@ namespace Voxelis
         /// <param name="sector">The sector data that has finished loading.</param>
         public void MarkSectorLoaded(Vector3Int sectorPos, Sector sector)
         {
+            Debug.Log($"Sector Added at {sectorPos}");
             loadingSectors.Remove(sectorPos);
             entity.sectors.Add(sectorPos, sector);
         }

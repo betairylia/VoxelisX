@@ -31,7 +31,7 @@ namespace Voxelis
         /// The voxel world renderer containing all voxel entities to raycast against.
         /// </summary>
         [Tooltip("Reference to the VoxelisX world renderer")]
-        public VoxelisXRenderer targetWorld;
+        public VoxelisXWorld targetWorld;
 
         /// <summary>
         /// The block type ID currently held by the player for placement.

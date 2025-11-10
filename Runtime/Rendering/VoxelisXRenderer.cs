@@ -22,8 +22,8 @@ using Voxelis.Rendering;
 // [ExecuteInEditMode]
 public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
 {
-    private List<VoxelEntity> entities = new();
-
+    public VoxelisXWorld world;
+    
     /// <summary>
     /// Maps (entity, sectorPos) → SectorRenderer for tracking rendering state independently from entity data.
     /// </summary>
@@ -33,34 +33,6 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
     /// Test world reference (for testing purposes).
     /// </summary>
     public TestWorld test;
-
-    /// <summary>
-    /// Registers a voxel entity with this renderer.
-    /// </summary>
-    /// <param name="e">The entity to add.</param>
-    public void AddEntity(VoxelEntity e)
-    {
-        if (entities.Contains(e))
-        {
-            return;
-        }
-
-        entities.Add(e);
-    }
-
-    /// <summary>
-    /// Unregisters a voxel entity from this renderer.
-    /// </summary>
-    /// <param name="e">The entity to remove.</param>
-    public void RemoveEntity(VoxelEntity e)
-    {
-        entities.Remove(e);
-    }
-
-    /// <summary>
-    /// Gets a copy of all registered voxel entities.
-    /// </summary>
-    public List<VoxelEntity> AllEntities => new List<VoxelEntity>(entities);
 
     /// <summary>
     /// Gets the ray tracing acceleration structure containing all voxel geometry.
@@ -126,6 +98,7 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
     public override void Init() 
     {
         SectorRenderer.sectorMaterial = brickMat;
+        world = VoxelisXWorld.instance;
         ReloadAS();
     }
 
@@ -152,12 +125,12 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
 
         foreach (var e in FindObjectsByType<VoxelEntity>(FindObjectsSortMode.None))
         {
-            AddEntity(e);
+            world.AddEntity(e);
         }
 
         _voxelScene.ClearInstances();
 
-        foreach (var e in entities)
+        foreach (var e in world.entities)
         {
             foreach (var kvp in e.sectors)
             {
@@ -267,9 +240,9 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
             aabbBuffer.Release();
         }
 
-        foreach (var e in entities)
+        foreach (var kvp in sectorRenderers)
         {
-            e.Dispose();
+            kvp.Value.Dispose();
         }
 
         _voxelScene?.Dispose();
@@ -303,12 +276,12 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
         instanceCount = (int)voxelScene.GetInstanceCount();
 
         // Pass 1: Emit jobs & Remove unused sectors
-        foreach (var e in entities)
+        foreach (var e in world.entities)
         {
             if(e == null)
             {
                 Debug.LogError("Use either backward for loop or another list");
-                RemoveEntity(e);
+                world.RemoveEntity(e);
                 break;
             }
 
@@ -340,7 +313,7 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
         }
 
         // Pass 2: Sync buffers
-        foreach (var e in entities)
+        foreach (var e in world.entities)
         {
             if (e == null)
             {
@@ -372,7 +345,7 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
 
         ulong hostMemory = 0;
         ulong deviceMemory = 0;
-        foreach (var e in entities)
+        foreach (var e in world.entities)
         {
             hostMemory += e.GetHostMemoryUsageKB();
         }

@@ -107,17 +107,17 @@ namespace Voxelis
         /// List containing absolute IDs of bricks that have been modified and need rendering updates.
         /// For renderer, updater, physics etc. use.
         /// </summary>
-        internal NativeList<short> updateRecord;
+        public NativeList<short> updateRecord;
 
         /// <summary>
         /// Returns true if there are pending brick updates for the renderer.
         /// </summary>
-        internal bool IsRendererDirty => !updateRecord.IsEmpty;
+        public bool IsRendererDirty => !updateRecord.IsEmpty;
 
         /// <summary>
         /// Returns true if the sector contains no allocated bricks.
         /// </summary>
-        internal bool IsRendererEmpty => RendererNonEmptyBrickCount == 0;
+        public bool IsRendererEmpty => RendererNonEmptyBrickCount == 0;
 
         /// <summary>
         /// Single-element array storing the count of allocated bricks.

@@ -396,7 +396,7 @@ namespace Voxelis.Rendering
                 }
                 
                 // Will be set by RenderModifyAS when we have sector info
-                AABBconfig = null;
+                AABBconfig = default;
             
                 // AS.RemoveInstance(sectorASHandle);
                 // Debug.Log(config.aabbCount);
@@ -439,7 +439,7 @@ namespace Voxelis.Rendering
             if (isDirty)
             {
                 // Create AABB config here now that we have sector info
-                if (AABBconfig == null && matProps != null)
+                if (AABBconfig.aabbCount == 0 && matProps != null)
                 {
                     AABBconfig = new RayTracingAABBsInstanceConfig(
                         aabbBuffer, sector.RendererNonEmptyBrickCount, false, sectorMaterial);

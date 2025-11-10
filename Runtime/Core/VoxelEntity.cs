@@ -41,7 +41,7 @@ namespace Voxelis
         /// </summary>
         private void OnEnable()
         {
-            VoxelisXRenderer.instance.AddEntity(this);
+            VoxelisXWorld.instance.AddEntity(this);
         }
 
         /// <summary>
@@ -49,7 +49,7 @@ namespace Voxelis
         /// </summary>
         private void OnDisable()
         {
-            VoxelisXRenderer.instance.RemoveEntity(this);
+            VoxelisXWorld.instance.RemoveEntity(this);
         }
 
         /// <summary>
