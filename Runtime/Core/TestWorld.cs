@@ -116,7 +116,7 @@ namespace Voxelis
                         var job = new FillWorldSectorJob()
                         {
                             sectorPos = secPos,
-                            sector = GetSectorHandle(secPos)
+                            sector = sectors[secPos]
                         };
 
                         fillWorldJobs.Add(job.Schedule());
@@ -131,7 +131,7 @@ namespace Voxelis
             int totalBricks = 0;
             foreach (var kvp in sectors)
             {
-                totalBricks += GetSectorAt(kvp.Key).NonEmptyBrickCount;
+                totalBricks += kvp.Value.NonEmptyBrickCount;
             }
             Debug.Log($"Total: {totalBricks} Bricks ({totalBricks * 2 / 1024} MiB)");
         }
@@ -200,7 +200,7 @@ namespace Voxelis
                     jobs.Add(new TestUpdate()
                     {
                         p = p,
-                        sector = GetSectorHandle(kvp.Key)
+                        sector = kvp.Value
                     }.Schedule());
                 }
 

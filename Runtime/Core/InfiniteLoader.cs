@@ -196,7 +196,7 @@ namespace Voxelis
             Vector3Int lsp = loadCenterSectorPos;
 
             // Unload sectors
-            var list = entity.sectors.Keys;
+            var list = entity.sectors.Keys.ToList();
             foreach (var sectorPos in list)
             {
                 if (ShouldUnload(sectorPos, lsp))
@@ -230,11 +230,11 @@ namespace Voxelis
         /// </summary>
         /// <param name="sectorPos">The position of the sector that has finished loading.</param>
         /// <param name="sector">The sector data that has finished loading.</param>
-        public unsafe void MarkSectorLoaded(Vector3Int sectorPos, Sector sector)
+        public unsafe void MarkSectorLoaded(Vector3Int sectorPos, SectorHandle sector)
         {
             Debug.Log($"Sector Added at {sectorPos}");
             loadingSectors.Remove(sectorPos);
-            entity.CopyAndAddSectorAt(sectorPos, sector);
+            entity.AddSectorAt(sectorPos, sector);
         }
     }
 }

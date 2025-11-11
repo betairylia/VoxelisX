@@ -1,5 +1,6 @@
 using System;
 using Unity.Burst;
+using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 
 namespace Voxelis
@@ -13,6 +14,26 @@ namespace Voxelis
     {
         [NativeDisableUnsafePtrRestriction]
         private Sector* _ptr;
+
+        public static SectorHandle AllocEmpty(int initialBricks = 1, Allocator allocator = Allocator.Persistent)
+        {
+            // Allocate memory for the Sector struct itself
+            Sector* sectorPtr = (Sector*)UnsafeUtility.Malloc(
+                UnsafeUtility.SizeOf<Sector>(),
+                UnsafeUtility.AlignOf<Sector>(),
+                allocator);
+
+            // Initialize the sector in-place
+            *sectorPtr = Sector.New(allocator, initialBricks);
+
+            return new SectorHandle(sectorPtr);
+        }
+
+        public void Dispose(Allocator allocator)
+        {
+            _ptr->Dispose(allocator);
+            UnsafeUtility.Free(_ptr, allocator);
+        }
 
         /// <summary>
         /// Creates a new SectorHandle from a sector pointer.

@@ -8,6 +8,7 @@ using Unity.Collections.LowLevel.Unsafe;
 using Unity.Collections.NotBurstCompatible;
 using Unity.Jobs;
 using Unity.Mathematics;
+using Unity.VisualScripting.YamlDotNet.Core.Tokens;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Serialization;
@@ -30,44 +31,12 @@ namespace Voxelis
         /// Key is the sector position in sector-space coordinates.
         /// </summary>
         // public Dictionary<Vector3Int, Sector> sectors = new Dictionary<Vector3Int, Sector>();
-        public Dictionary<Vector3Int, IntPtr> sectors = new Dictionary<Vector3Int, IntPtr>();
-
-        public unsafe ref Sector GetSectorAt(Vector3Int pos)
-        {
-            if (!sectors.ContainsKey(pos)) throw new InvalidOperationException($"Sector {pos} does not exist!");
-            return ref (*(Sector*)(sectors[pos]));
-        }
-
-        /// <summary>
-        /// Gets a handle to the sector at the specified position.
-        /// The handle can be used in jobs without requiring unsafe context.
-        /// </summary>
-        public SectorHandle GetSectorHandle(Vector3Int pos)
-        {
-            if (!sectors.ContainsKey(pos)) throw new InvalidOperationException($"Sector {pos} does not exist!");
-            return new SectorHandle((Sector*)sectors[pos]);
-        }
+        public Dictionary<Vector3Int, SectorHandle> sectors = new Dictionary<Vector3Int, SectorHandle>();
 
         public unsafe void AddEmptySectorAt(Vector3Int pos)
         {
-            var sectorPtr = GetEmptySector();
-
-            // Store the pointer
-            sectors.Add(pos, (IntPtr)sectorPtr);
-        }
-
-        public Sector* GetEmptySector()
-        {
-            // Allocate memory for the Sector struct itself
-            Sector* sectorPtr = (Sector*)UnsafeUtility.Malloc(
-                UnsafeUtility.SizeOf<Sector>(),
-                UnsafeUtility.AlignOf<Sector>(),
-                Allocator.Persistent);
-
-            // Initialize the sector in-place
-            *sectorPtr = Sector.New(Allocator.Persistent, 1);
-
-            return sectorPtr;
+            // Store the handle
+            sectors.Add(pos, SectorHandle.AllocEmpty());
         }
 
         public unsafe void CopyAndAddSectorAt(Vector3Int pos, Sector sector)
@@ -80,8 +49,13 @@ namespace Voxelis
 
             // Initialize the sector in-place
             *sectorPtr = sector;
-            
-            sectors.Add(pos, (IntPtr)sectorPtr);
+
+            sectors.Add(pos, new SectorHandle(sectorPtr));
+        }
+
+        public void AddSectorAt(Vector3Int pos, SectorHandle sector)
+        {
+            sectors.Add(pos, sector);
         }
 
         /// <summary>
@@ -96,9 +70,7 @@ namespace Voxelis
                 return false;
             }
 
-            Sector* sectorPtr = (Sector*)sectors[pos];
-            sectorPtr->Dispose(Allocator.Persistent);
-            UnsafeUtility.Free(sectorPtr, Allocator.Persistent);
+            sectors[pos].Dispose(Allocator.Persistent);
             sectors.Remove(pos);
             return true;
         }
@@ -140,7 +112,7 @@ namespace Voxelis
         {
             foreach (var kvp in sectors)
             {
-                Sector* sectorPtr = (Sector*)kvp.Value;
+                Sector* sectorPtr = kvp.Value.Ptr;
 
                 // First dispose the sector's internal allocations
                 sectorPtr->Dispose(Allocator.Persistent);
@@ -162,7 +134,7 @@ namespace Voxelis
             ulong result = 0;
             foreach (var kvp in sectors)
             {
-                result += (ulong)(GetSectorAt(kvp.Key).MemoryUsage / 1024);
+                result += (ulong)(kvp.Value.Get().MemoryUsage / 1024);
             }
 
             return result;
@@ -193,7 +165,7 @@ namespace Voxelis
                 return Block.Empty;
             }
 
-            return GetSectorAt(sectorPos).GetBlock(
+            return sectors[sectorPos].GetBlock(
                 pos.x & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
                 pos.y & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
                 pos.z & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS))
@@ -221,7 +193,7 @@ namespace Voxelis
             }
 
             // Modify sector directly in dictionary
-            GetSectorAt(sectorPos).SetBlock(
+            sectors[sectorPos].SetBlock(
                 pos.x & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
                 pos.y & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
                 pos.z & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),

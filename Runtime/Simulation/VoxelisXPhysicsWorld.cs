@@ -62,6 +62,11 @@ namespace Voxelis.Simulation
             bodies.Add(b);
         }
 
+        internal void AddBodyToProperlySizedWorld(VoxelBody b)
+        {
+            
+        }
+
         public void RemoveBody(VoxelBody b)
         {
             bodies.Remove(b);
@@ -122,7 +127,7 @@ namespace Voxelis.Simulation
             handles.FinalExecutionHandle.Complete();
 
             // Debug: Check for collision events (first 10 frames only)
-            // if (debugFrameCount <= 10)
+            if (debugFrameCount <= 10)
             {
                 var collisionEvents = simulation.CollisionEvents;
                 if (true)

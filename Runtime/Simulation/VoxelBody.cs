@@ -19,9 +19,10 @@ namespace Voxelis
         /// When enabled, the entity will participate in collision detection and response.
         /// </summary>
         [FormerlySerializedAs("collisionEnabled")] public bool physicsEnabled = false;
-        private Rigidbody body;
-        private UnityPhysicsCollider debugBody;
 
+        public bool isStatic = false;
+        
+        private Rigidbody body;
         private VoxelEntity _entity;
 
         public VoxelEntity entity
@@ -94,7 +95,7 @@ namespace Voxelis
             foreach(var kvp in entity.sectors)
             {
                 Vector3Int sectorPos = kvp.Key;
-                Sector sector = entity.GetSectorAt(kvp.Key);
+                Sector sector = kvp.Value.Get();
                 Vector3 f3thisSectorPos = VoxelEntity.GetSectorBlockPos(sectorPos);
                 float4x4 mySectorToWorld =
                     math.mul(entity.ObjectToWorld(), float4x4.Translate(f3thisSectorPos));
@@ -102,7 +103,7 @@ namespace Voxelis
                 foreach (var otherKvp in other.entity.sectors)
                 {
                     Vector3Int otherSectorPos = otherKvp.Key;
-                    Sector otherSector = other.entity.GetSectorAt(otherKvp.Key);
+                    Sector otherSector = otherKvp.Value.Get();
                     Vector3 f3otherSectorPos = VoxelEntity.GetSectorBlockPos(otherSectorPos);
                     float4x4 otherSectorToWorld =
                         math.mul(other.entity.ObjectToWorld(), float4x4.Translate(f3otherSectorPos));
@@ -160,7 +161,7 @@ namespace Voxelis
                     var sectorJob = new VoxelEntityPhysics.AccumulateSectorCenterOfMass
                     {
                         settings = PhysicsSettings.Settings,
-                        sector = entity.GetSectorAt(kvp.Key),
+                        sector = kvp.Value.Get(),
                         sectorPosition = new int3(sectorBPos.x, sectorBPos.y, sectorBPos.z),
 
                         accumulatedCenter = CoM
@@ -197,7 +198,7 @@ namespace Voxelis
                     var sectorJob = new VoxelEntityPhysics.AccumulateSectorInertia
                     {
                         settings = PhysicsSettings.Settings,
-                        sector = entity.GetSectorAt(kvp.Key),
+                        sector = kvp.Value.Get(),
                         sectorPosition = new int3(sectorBPos.x, sectorBPos.y, sectorBPos.z),
 
                         centerOfMass = body.centerOfMass,
@@ -220,7 +221,7 @@ namespace Voxelis
         {
             foreach (var kvp in entity.sectors)
             {
-                ((Sector*)entity.sectors[kvp.Key])->UpdateNonEmptyBricks();
+                kvp.Value.Ptr->UpdateNonEmptyBricks();
             }
         }
 
