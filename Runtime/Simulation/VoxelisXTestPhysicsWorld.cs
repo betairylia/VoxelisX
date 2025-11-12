@@ -26,6 +26,16 @@ namespace Voxelis.Simulation
         private List<Unity.Entities.BlobAssetReference<Collider>> colliders = new();
 
         private bool prepared = false;
+
+        // Contact event tracking
+        private struct VoxelContactInfo
+        {
+            public int bodyIndex;
+            public Vector3Int voxelCoords;
+            public Block originalBlock;
+        }
+
+        private List<VoxelContactInfo> previousFrameContacts = new();
         
         public override void Init()
         {
@@ -331,7 +341,109 @@ namespace Voxelis.Simulation
 
         public override void OnSimulationFinished()
         {
+            // First, reset all previously marked voxels to their original state
+            foreach (var contactInfo in previousFrameContacts)
+            {
+                VoxelBody body = GetBodyByIndex(contactInfo.bodyIndex);
+                if (body != null)
+                {
+                    body.entity.SetBlock(contactInfo.voxelCoords, contactInfo.originalBlock);
+                }
+            }
+
+            // Clear the previous frame contacts list
+            previousFrameContacts.Clear();
+
+            // Now process the current frame's contact events
+            var voxelContactEvents = simulation.VoxelContactEvents;
+
+            // Create a red block for marking contacts
+            Block redBlock = new Block(31, 8, 8, false);
+            Block blueBlock = new Block(8, 8, 31, false);
+
+            foreach (var contactEvent in voxelContactEvents)
+            {
+                // Process body A
+                VoxelBody bodyA = GetBodyByIndex(contactEvent.BodyIndexA);
+                if (bodyA != null)
+                {
+                    Vector3Int voxelCoordsA = new Vector3Int(
+                        contactEvent.VoxelCoordsInA.x,
+                        contactEvent.VoxelCoordsInA.y,
+                        contactEvent.VoxelCoordsInA.z
+                    );
+
+                    // Store original block state
+                    Block originalBlockA = bodyA.entity.GetBlock(voxelCoordsA);
+
+                    // Only store and mark if not already red (avoids duplicates)
+                    if (originalBlockA != redBlock && originalBlockA != blueBlock)
+                    {
+                        previousFrameContacts.Add(new VoxelContactInfo
+                        {
+                            bodyIndex = contactEvent.BodyIndexA,
+                            voxelCoords = voxelCoordsA,
+                            originalBlock = originalBlockA
+                        });
+                    }
+                    
+                    // Mark in blue > red
+                    if (!contactEvent.IsPhysicsContact && originalBlockA != blueBlock)
+                        bodyA.entity.SetBlock(voxelCoordsA, redBlock);
+                    else
+                        bodyA.entity.SetBlock(voxelCoordsA, contactEvent.IsPhysicsContact ? blueBlock : redBlock);
+                }
+
+                // Process body B
+                VoxelBody bodyB = GetBodyByIndex(contactEvent.BodyIndexB);
+                if (bodyB != null)
+                {
+                    Vector3Int voxelCoordsB = new Vector3Int(
+                        contactEvent.VoxelCoordsInB.x,
+                        contactEvent.VoxelCoordsInB.y,
+                        contactEvent.VoxelCoordsInB.z
+                    );
+
+                    // Store original block state
+                    Block originalBlockB = bodyB.entity.GetBlock(voxelCoordsB);
+
+                    // Only store and mark if not already red (avoids duplicates)
+                    if (originalBlockB != redBlock && originalBlockB != blueBlock)
+                    {
+                        previousFrameContacts.Add(new VoxelContactInfo
+                        {
+                            bodyIndex = contactEvent.BodyIndexB,
+                            voxelCoords = voxelCoordsB,
+                            originalBlock = originalBlockB
+                        });
+                    }
+                    
+                    // Mark in blue > red
+                    if (!contactEvent.IsPhysicsContact && originalBlockB != blueBlock)
+                        bodyB.entity.SetBlock(voxelCoordsB, redBlock);
+                    else
+                        bodyB.entity.SetBlock(voxelCoordsB, contactEvent.IsPhysicsContact ? blueBlock : redBlock);
+                }
+            }
+
             ExportTestWorld();
+        }
+
+        private VoxelBody GetBodyByIndex(int bodyIndex)
+        {
+            if (bodyIndex < dynamicbodies.Count)
+            {
+                return dynamicbodies[bodyIndex];
+            }
+            else
+            {
+                int staticIndex = bodyIndex - dynamicbodies.Count;
+                if (staticIndex >= 0 && staticIndex < staticBodies.Count)
+                {
+                    return staticBodies[staticIndex];
+                }
+            }
+            return null;
         }
 
         private void Update()
