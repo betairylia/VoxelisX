@@ -56,7 +56,6 @@ namespace Voxelis
             {
                 body = gameObject.AddComponent<Rigidbody>();
             }
-            debugBody = gameObject.AddComponent<UnityPhysicsCollider>();
             
             body.automaticCenterOfMass = false;
             body.automaticInertiaTensor = false;
@@ -141,13 +140,24 @@ namespace Voxelis
             }
         }
 
-        // TODO: Incremental update with parallel axis theorem for inertia
-        public void UpdateBody()
+        public struct MassProperties
         {
-            if (body == null) return;
-            
-            // Center of Mass
-            // Temp array for results
+            public float mass;
+            public float3 centerOfMass;
+            public float3 inertiaTensor;
+        }
+
+        public MassProperties massProperties { get; private set; }
+
+        /// <summary>
+        /// Computes mass properties (mass, center of mass, inertia tensor) for this voxel body.
+        /// Uses the job system to accumulate properties across all sectors.
+        /// </summary>
+        public MassProperties ComputeMassProperties()
+        {
+            MassProperties result = new MassProperties();
+
+            // Compute center of mass
             var CoM = new NativeArray<float4>(1, Allocator.TempJob);
             try
             {
@@ -163,21 +173,20 @@ namespace Voxelis
                         settings = PhysicsSettings.Settings,
                         sector = kvp.Value.Get(),
                         sectorPosition = new int3(sectorBPos.x, sectorBPos.y, sectorBPos.z),
-
                         accumulatedCenter = CoM
                     };
 
                     sectorJob.Schedule().Complete();
                 }
 
-                body.mass = CoM[0].w;
+                result.mass = CoM[0].w;
                 if (CoM[0].w > 0)
                 {
-                    body.centerOfMass = CoM[0].xyz / CoM[0].w;
+                    result.centerOfMass = CoM[0].xyz / CoM[0].w;
                 }
                 else
                 {
-                    body.centerOfMass = Vector3.zero;
+                    result.centerOfMass = float3.zero;
                 }
             }
             finally
@@ -185,11 +194,12 @@ namespace Voxelis
                 CoM.Dispose();
             }
 
-            // Inertia
+            // Compute inertia tensor
             var Inertia = new NativeArray<float3>(1, Allocator.TempJob);
             try
             {
                 Inertia[0] = new float3(0, 0, 0);
+
                 foreach (var kvp in entity.sectors)
                 {
                     Vector3Int sectorPos = kvp.Key;
@@ -200,21 +210,24 @@ namespace Voxelis
                         settings = PhysicsSettings.Settings,
                         sector = kvp.Value.Get(),
                         sectorPosition = new int3(sectorBPos.x, sectorBPos.y, sectorBPos.z),
-
-                        centerOfMass = body.centerOfMass,
+                        centerOfMass = result.centerOfMass,
                         accumulatedInertia = Inertia,
                     };
 
                     sectorJob.Schedule().Complete();
                 }
 
-                body.inertiaTensor = Inertia[0];
-                body.inertiaTensorRotation = Quaternion.identity;
+                result.inertiaTensor = Inertia[0];
             }
             finally
             {
                 Inertia.Dispose();
             }
+            
+            // TODO: REMOVE ME
+            massProperties = result;
+            
+            return result;
         }
 
         public unsafe void BeforePhysicsTick()

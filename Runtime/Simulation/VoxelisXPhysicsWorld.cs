@@ -16,6 +16,8 @@ namespace Voxelis.Simulation
 
         private int debugFrameCount = 0;
 
+        [Header("Performance")] public float targetTPS = 100.0f;
+
         [Header("Gravity")]
         public Vector3 gravity = new Vector3(0, -9.81f, 0);
 
@@ -127,18 +129,19 @@ namespace Voxelis.Simulation
             handles.FinalExecutionHandle.Complete();
 
             // Debug: Check for collision events (first 10 frames only)
-            if (debugFrameCount <= 10)
+            // if (debugFrameCount <= 10)
             {
-                var collisionEvents = simulation.CollisionEvents;
+                // var collisionEvents = simulation.CollisionEvents;
+                var voxelContactEvents = simulation.VoxelContactEvents;
                 if (true)
                 {
                     int eventCount = 0;
-                    foreach (var collisionEvent in collisionEvents)
+                    foreach (var contactEvent in voxelContactEvents)
                     {
                         eventCount++;
                         if (eventCount <= 5) // Only log first 5 collision events per frame
                         {
-                            UnityEngine.Debug.Log($"[Collision] BodyA: {collisionEvent.BodyIndexA}, BodyB: {collisionEvent.BodyIndexB}, Normal: {collisionEvent.Normal}");
+                            UnityEngine.Debug.Log($"[Collision] BodyA: {contactEvent.BodyIndexA}:{contactEvent.VoxelCoordsInA}, BodyB: {contactEvent.BodyIndexB}:{contactEvent.VoxelCoordsInB}, Normal: {contactEvent.Normal}");
                         }
                     }
                     if (eventCount > 0)
