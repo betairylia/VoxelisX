@@ -24,10 +24,159 @@ namespace Voxelis
         // public Dictionary<Vector3Int, Sector> sectors = new Dictionary<Vector3Int, Sector>();
         public NativeHashMap<int3, SectorHandle> sectors;
         public NativeQueue<int3> sectorsToRemove;
-        
+
+        /// <summary>
+        /// The rigid transform representing position and rotation of this entity.
+        /// Synced with Unity Transform via SyncTransformToData/SyncTransformFromData.
+        /// </summary>
+        public RigidTransform transform;
+
+        /// <summary>
+        /// Adds an empty sector at the specified position.
+        /// </summary>
+        public void AddEmptySectorAt(int3 pos)
+        {
+            sectors.Add(pos, SectorHandle.AllocEmpty());
+        }
+
+        /// <summary>
+        /// Copies a sector and adds it at the specified position.
+        /// </summary>
+        public void CopyAndAddSectorAt(int3 pos, Sector sector)
+        {
+            // Allocate memory for the Sector struct itself
+            Sector* sectorPtr = (Sector*)UnsafeUtility.Malloc(
+                UnsafeUtility.SizeOf<Sector>(),
+                UnsafeUtility.AlignOf<Sector>(),
+                Allocator.Persistent);
+
+            // Initialize the sector in-place
+            *sectorPtr = sector;
+
+            sectors.Add(pos, new SectorHandle(sectorPtr));
+        }
+
+        /// <summary>
+        /// Adds a sector handle at the specified position.
+        /// </summary>
         public void AddSectorAt(int3 pos, SectorHandle sector)
         {
             sectors.Add(pos, sector);
+        }
+
+        /// <summary>
+        /// Removes and disposes a sector at the specified position.
+        /// </summary>
+        /// <param name="pos">The sector position to remove.</param>
+        /// <returns>True if the sector was found and removed, false otherwise.</returns>
+        public bool RemoveSectorAt(int3 pos)
+        {
+            if (!sectors.ContainsKey(pos))
+            {
+                return false;
+            }
+
+            sectors[pos].Dispose(Allocator.Persistent);
+            sectors.Remove(pos);
+            return true;
+        }
+
+        /// <summary>
+        /// Gets the block at the specified world position.
+        /// </summary>
+        /// <param name="pos">World position of the block in block coordinates.</param>
+        /// <returns>The block at the specified position, or Block.Empty if no sector exists at that location.</returns>
+        public Block GetBlock(int3 pos)
+        {
+            int3 sectorPos = new int3(
+                pos.x >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS),
+                pos.y >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS),
+                pos.z >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS));
+
+            if (!sectors.ContainsKey(sectorPos))
+            {
+                return Block.Empty;
+            }
+
+            return sectors[sectorPos].GetBlock(
+                pos.x & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
+                pos.y & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
+                pos.z & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS))
+            );
+        }
+
+        /// <summary>
+        /// Sets the block at the specified world position. Creates a new sector if one doesn't exist.
+        /// </summary>
+        /// <param name="pos">World position of the block in block coordinates.</param>
+        /// <param name="b">The block data to set.</param>
+        /// <remarks>
+        /// If the sector doesn't exist at the calculated sector position, a new sector will be automatically created.
+        /// </remarks>
+        public void SetBlock(int3 pos, Block b)
+        {
+            int3 sectorPos = new int3(
+                pos.x >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS),
+                pos.y >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS),
+                pos.z >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS));
+
+            if (!sectors.ContainsKey(sectorPos))
+            {
+                AddEmptySectorAt(sectorPos);
+            }
+
+            // Modify sector directly in dictionary
+            sectors[sectorPos].SetBlock(
+                pos.x & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
+                pos.y & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
+                pos.z & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
+                b
+            );
+        }
+
+        /// <summary>
+        /// Calculates the total host (CPU) memory usage of all sectors in this entity.
+        /// </summary>
+        /// <returns>Total memory usage in kilobytes.</returns>
+        public ulong GetHostMemoryUsageKB()
+        {
+            ulong result = 0;
+            foreach (var kvp in sectors)
+            {
+                result += (ulong)(kvp.Value.Get().MemoryUsage / 1024);
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Disposes all resources used by this voxel entity data, including all sectors and the native collections.
+        /// </summary>
+        public void Dispose()
+        {
+            foreach (var kvp in sectors)
+            {
+                Sector* sectorPtr = kvp.Value.Ptr;
+
+                // First dispose the sector's internal allocations
+                sectorPtr->Dispose(Allocator.Persistent);
+
+                // Then free the Sector struct memory itself
+                UnsafeUtility.Free(sectorPtr, Allocator.Persistent);
+            }
+
+            // Clear and dispose the hashmap
+            sectors.Clear();
+
+            // Dispose the native collections
+            if (sectors.IsCreated)
+            {
+                sectors.Dispose();
+            }
+            if (sectorsToRemove.IsCreated)
+            {
+                sectorsToRemove.Dispose();
+            }
         }
     }
     
@@ -45,29 +194,28 @@ namespace Voxelis
         private VoxelEntityData data;
         public NativeHashMap<int3, SectorHandle> Sectors => data.sectors;
 
-        public unsafe void AddEmptySectorAt(Vector3Int pos)
+        /// <summary>
+        /// Adds an empty sector at the specified position.
+        /// </summary>
+        public void AddEmptySectorAt(Vector3Int pos)
         {
-            // Store the handle
-            Sectors.Add(new int3(pos.x, pos.y, pos.z), SectorHandle.AllocEmpty());
+            data.AddEmptySectorAt(new int3(pos.x, pos.y, pos.z));
         }
 
-        public unsafe void CopyAndAddSectorAt(Vector3Int pos, Sector sector)
+        /// <summary>
+        /// Copies a sector and adds it at the specified position.
+        /// </summary>
+        public void CopyAndAddSectorAt(Vector3Int pos, Sector sector)
         {
-            // Allocate memory for the Sector struct itself
-            Sector* sectorPtr = (Sector*)UnsafeUtility.Malloc(
-                UnsafeUtility.SizeOf<Sector>(),
-                UnsafeUtility.AlignOf<Sector>(),
-                Allocator.Persistent);
-
-            // Initialize the sector in-place
-            *sectorPtr = sector;
-
-            Sectors.Add(new int3(pos.x, pos.y, pos.z), new SectorHandle(sectorPtr));
+            data.CopyAndAddSectorAt(new int3(pos.x, pos.y, pos.z), sector);
         }
 
+        /// <summary>
+        /// Adds a sector handle at the specified position.
+        /// </summary>
         public void AddSectorAt(Vector3Int pos, SectorHandle sector)
         {
-            Sectors.Add(new int3(pos.x, pos.y, pos.z), sector);
+            data.AddSectorAt(new int3(pos.x, pos.y, pos.z), sector);
         }
 
         /// <summary>
@@ -77,14 +225,25 @@ namespace Voxelis
         /// <returns>True if the sector was found and removed, false otherwise.</returns>
         public bool RemoveSectorAt(Vector3Int pos)
         {
-            if (!Sectors.ContainsKey(pos))
-            {
-                return false;
-            }
+            return data.RemoveSectorAt(new int3(pos.x, pos.y, pos.z));
+        }
 
-            Sectors[pos].Dispose(Allocator.Persistent);
-            Sectors.Remove(pos);
-            return true;
+        /// <summary>
+        /// Syncs the Unity Transform to the VoxelEntityData struct (inward sync).
+        /// Copies position and rotation from Unity's Transform component to the native RigidTransform.
+        /// </summary>
+        public void SyncTransformToData()
+        {
+            data.transform = new RigidTransform(transform.rotation, transform.position);
+        }
+
+        /// <summary>
+        /// Syncs the VoxelEntityData struct to the Unity Transform (outward sync).
+        /// Copies position and rotation from the native RigidTransform to Unity's Transform component.
+        /// </summary>
+        public void SyncTransformFromData()
+        {
+            transform.SetPositionAndRotation(data.transform.pos, data.transform.rot);
         }
 
         /// <summary>
@@ -122,19 +281,7 @@ namespace Voxelis
         /// </summary>
         public void Dispose()
         {
-            foreach (var kvp in Sectors)
-            {
-                Sector* sectorPtr = kvp.Value.Ptr;
-
-                // First dispose the sector's internal allocations
-                sectorPtr->Dispose(Allocator.Persistent);
-
-                // Then free the Sector struct memory itself
-                UnsafeUtility.Free(sectorPtr, Allocator.Persistent);
-            }
-
-            // Clear and dispose the hashmap
-            Sectors.Clear();
+            data.Dispose();
         }
 
         /// <summary>
@@ -143,13 +290,7 @@ namespace Voxelis
         /// <returns>Total memory usage in kilobytes.</returns>
         public ulong GetHostMemoryUsageKB()
         {
-            ulong result = 0;
-            foreach (var kvp in Sectors)
-            {
-                result += (ulong)(kvp.Value.Get().MemoryUsage / 1024);
-            }
-
-            return result;
+            return data.GetHostMemoryUsageKB();
         }
 
         /// <summary>
@@ -167,21 +308,7 @@ namespace Voxelis
         /// <returns>The block at the specified position, or Block.Empty if no sector exists at that location.</returns>
         public Block GetBlock(Vector3Int pos)
         {
-            Vector3Int sectorPos = new Vector3Int(
-                pos.x >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS),
-                pos.y >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS),
-                pos.z >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS));
-
-            if (!Sectors.ContainsKey(sectorPos))
-            {
-                return Block.Empty;
-            }
-
-            return Sectors[sectorPos].GetBlock(
-                pos.x & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
-                pos.y & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
-                pos.z & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS))
-            );
+            return data.GetBlock(new int3(pos.x, pos.y, pos.z));
         }
 
         /// <summary>
@@ -194,23 +321,7 @@ namespace Voxelis
         /// </remarks>
         public void SetBlock(Vector3Int pos, Block b)
         {
-            Vector3Int sectorPos = new Vector3Int(
-                pos.x >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS),
-                pos.y >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS),
-                pos.z >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS));
-
-            if (!Sectors.ContainsKey(sectorPos))
-            {
-                AddEmptySectorAt(sectorPos);
-            }
-
-            // Modify sector directly in dictionary
-            Sectors[sectorPos].SetBlock(
-                pos.x & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
-                pos.y & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
-                pos.z & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
-                b
-            );
+            data.SetBlock(new int3(pos.x, pos.y, pos.z), b);
         }
 
         /// <summary>
