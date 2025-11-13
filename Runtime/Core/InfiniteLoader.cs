@@ -196,7 +196,7 @@ namespace Voxelis
             Vector3Int lsp = loadCenterSectorPos;
 
             // Unload sectors
-            var list = entity.sectors.Keys.ToList();
+            var list = entity.Sectors.Keys.ToList();
             foreach (var sectorPos in list)
             {
                 if (ShouldUnload(sectorPos, lsp))
@@ -212,7 +212,7 @@ namespace Voxelis
             {
                 Vector3Int targetSectorPos = lsp + sectorLoadOrder[currentIndex];
                 // Debug.Log($"Loaded sector @ {targetSectorPos}");
-                if (loadingSectors.Contains(targetSectorPos) || entity.sectors.ContainsKey(targetSectorPos))
+                if (loadingSectors.Contains(targetSectorPos) || entity.Sectors.ContainsKey(targetSectorPos))
                 {
                     continue;
                 }

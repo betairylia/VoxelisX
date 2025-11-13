@@ -124,7 +124,7 @@ namespace Voxelis.Simulation
             var massProps = vb.ComputeMassProperties();
 
             VoxelCollider* vc = (VoxelCollider*)physicsWorld.Bodies[bodyIndex].Collider.GetUnsafePtr();
-            vc->ReloadSectors(vb.entity.sectors);
+            vc->ReloadSectors(vb.entity.Sectors);
 
             if (vb.isStatic) return;
             

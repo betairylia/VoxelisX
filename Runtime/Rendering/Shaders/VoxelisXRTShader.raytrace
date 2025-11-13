@@ -27,7 +27,7 @@ float4 g_mainLightColor;
 uint g_ConvergenceStep = 10;
 
 // Placeholder parameters
-static uint g_BounceCountOpaque = 5;
+static uint g_BounceCountOpaque = 2;
 static uint g_BounceCountTransparent = 5;
 
 static uint g_spp = 1;

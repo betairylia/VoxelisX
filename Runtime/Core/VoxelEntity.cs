@@ -15,6 +15,22 @@ using UnityEngine.Serialization;
 
 namespace Voxelis
 {
+    public unsafe struct VoxelEntityData
+    {
+        /// <summary>
+        /// Dictionary mapping sector positions to their corresponding sector data.
+        /// Key is the sector position in sector-space coordinates.
+        /// </summary>
+        // public Dictionary<Vector3Int, Sector> sectors = new Dictionary<Vector3Int, Sector>();
+        public NativeHashMap<int3, SectorHandle> sectors;
+        public NativeQueue<int3> sectorsToRemove;
+        
+        public void AddSectorAt(int3 pos, SectorHandle sector)
+        {
+            sectors.Add(pos, sector);
+        }
+    }
+    
     /// <summary>
     /// Represents a voxel-based entity in the game world. This is the main component for managing
     /// collections of voxel sectors and interfacing with the physics system.
@@ -26,17 +42,13 @@ namespace Voxelis
     /// </remarks>
     public unsafe partial class VoxelEntity : MonoBehaviour, IDisposable
     {
-        /// <summary>
-        /// Dictionary mapping sector positions to their corresponding sector data.
-        /// Key is the sector position in sector-space coordinates.
-        /// </summary>
-        // public Dictionary<Vector3Int, Sector> sectors = new Dictionary<Vector3Int, Sector>();
-        public Dictionary<Vector3Int, SectorHandle> sectors = new Dictionary<Vector3Int, SectorHandle>();
+        private VoxelEntityData data;
+        public NativeHashMap<int3, SectorHandle> Sectors => data.sectors;
 
         public unsafe void AddEmptySectorAt(Vector3Int pos)
         {
             // Store the handle
-            sectors.Add(pos, SectorHandle.AllocEmpty());
+            Sectors.Add(new int3(pos.x, pos.y, pos.z), SectorHandle.AllocEmpty());
         }
 
         public unsafe void CopyAndAddSectorAt(Vector3Int pos, Sector sector)
@@ -50,12 +62,12 @@ namespace Voxelis
             // Initialize the sector in-place
             *sectorPtr = sector;
 
-            sectors.Add(pos, new SectorHandle(sectorPtr));
+            Sectors.Add(new int3(pos.x, pos.y, pos.z), new SectorHandle(sectorPtr));
         }
 
         public void AddSectorAt(Vector3Int pos, SectorHandle sector)
         {
-            sectors.Add(pos, sector);
+            Sectors.Add(new int3(pos.x, pos.y, pos.z), sector);
         }
 
         /// <summary>
@@ -65,13 +77,13 @@ namespace Voxelis
         /// <returns>True if the sector was found and removed, false otherwise.</returns>
         public bool RemoveSectorAt(Vector3Int pos)
         {
-            if (!sectors.ContainsKey(pos))
+            if (!Sectors.ContainsKey(pos))
             {
                 return false;
             }
 
-            sectors[pos].Dispose(Allocator.Persistent);
-            sectors.Remove(pos);
+            Sectors[pos].Dispose(Allocator.Persistent);
+            Sectors.Remove(pos);
             return true;
         }
 
@@ -110,7 +122,7 @@ namespace Voxelis
         /// </summary>
         public void Dispose()
         {
-            foreach (var kvp in sectors)
+            foreach (var kvp in Sectors)
             {
                 Sector* sectorPtr = kvp.Value.Ptr;
 
@@ -122,7 +134,7 @@ namespace Voxelis
             }
 
             // Clear and dispose the hashmap
-            sectors.Clear();
+            Sectors.Clear();
         }
 
         /// <summary>
@@ -132,7 +144,7 @@ namespace Voxelis
         public ulong GetHostMemoryUsageKB()
         {
             ulong result = 0;
-            foreach (var kvp in sectors)
+            foreach (var kvp in Sectors)
             {
                 result += (ulong)(kvp.Value.Get().MemoryUsage / 1024);
             }
@@ -160,12 +172,12 @@ namespace Voxelis
                 pos.y >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS),
                 pos.z >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS));
 
-            if (!sectors.ContainsKey(sectorPos))
+            if (!Sectors.ContainsKey(sectorPos))
             {
                 return Block.Empty;
             }
 
-            return sectors[sectorPos].GetBlock(
+            return Sectors[sectorPos].GetBlock(
                 pos.x & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
                 pos.y & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
                 pos.z & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS))
@@ -187,13 +199,13 @@ namespace Voxelis
                 pos.y >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS),
                 pos.z >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS));
 
-            if (!sectors.ContainsKey(sectorPos))
+            if (!Sectors.ContainsKey(sectorPos))
             {
                 AddEmptySectorAt(sectorPos);
             }
 
             // Modify sector directly in dictionary
-            sectors[sectorPos].SetBlock(
+            Sectors[sectorPos].SetBlock(
                 pos.x & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
                 pos.y & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
                 pos.z & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),

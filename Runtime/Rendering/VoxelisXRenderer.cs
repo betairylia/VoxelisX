@@ -132,7 +132,7 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
 
         foreach (var e in world.entities)
         {
-            foreach (var kvp in e.sectors)
+            foreach (var kvp in e.Sectors)
             {
                 Vector3Int sectorPos = kvp.Key;
                 ref Sector sector = ref kvp.Value.Get();
@@ -297,7 +297,7 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
             }
 
             // Emit render jobs for all sectors
-            foreach (var kvp in e.sectors)
+            foreach (var kvp in e.Sectors)
             {
                 Vector3Int sectorPos = kvp.Key;
                 ref Sector sector = ref kvp.Value.Get();
@@ -321,7 +321,7 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
                 throw new InvalidOperationException();
             }
 
-            foreach (var kvp in e.sectors)
+            foreach (var kvp in e.Sectors)
             {
                 Vector3Int sectorPos = kvp.Key;
                 ref Sector sector = ref kvp.Value.Get();

@@ -91,7 +91,7 @@ namespace Voxelis
             var resultBuf = nativeContactBuf;
             int totalContacts = 0;
 
-            foreach(var kvp in entity.sectors)
+            foreach(var kvp in entity.Sectors)
             {
                 Vector3Int sectorPos = kvp.Key;
                 Sector sector = kvp.Value.Get();
@@ -99,7 +99,7 @@ namespace Voxelis
                 float4x4 mySectorToWorld =
                     math.mul(entity.ObjectToWorld(), float4x4.Translate(f3thisSectorPos));
 
-                foreach (var otherKvp in other.entity.sectors)
+                foreach (var otherKvp in other.entity.Sectors)
                 {
                     Vector3Int otherSectorPos = otherKvp.Key;
                     Sector otherSector = otherKvp.Value.Get();
@@ -163,7 +163,7 @@ namespace Voxelis
             {
                 CoM[0] = new float4(0, 0, 0, 0);
 
-                foreach (var kvp in entity.sectors)
+                foreach (var kvp in entity.Sectors)
                 {
                     Vector3Int sectorPos = kvp.Key;
                     var sectorBPos = VoxelEntity.GetSectorBlockPos(sectorPos);
@@ -200,7 +200,7 @@ namespace Voxelis
             {
                 Inertia[0] = new float3(0, 0, 0);
 
-                foreach (var kvp in entity.sectors)
+                foreach (var kvp in entity.Sectors)
                 {
                     Vector3Int sectorPos = kvp.Key;
                     var sectorBPos = VoxelEntity.GetSectorBlockPos(sectorPos);
@@ -232,7 +232,7 @@ namespace Voxelis
 
         public unsafe void BeforePhysicsTick()
         {
-            foreach (var kvp in entity.sectors)
+            foreach (var kvp in entity.Sectors)
             {
                 kvp.Value.Ptr->UpdateNonEmptyBricks();
             }

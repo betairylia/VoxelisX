@@ -108,7 +108,7 @@ namespace Voxelis
                     for (int k = 0; k < numSectors.y; k++)
                     {
                         var secPos = new Vector3Int(i, k, j);
-                        if (!sectors.ContainsKey(secPos))
+                        if (!Sectors.ContainsKey(secPos))
                         {
                             AddEmptySectorAt(secPos);
                         }
@@ -116,7 +116,7 @@ namespace Voxelis
                         var job = new FillWorldSectorJob()
                         {
                             sectorPos = secPos,
-                            sector = sectors[secPos]
+                            sector = Sectors[secPos]
                         };
 
                         fillWorldJobs.Add(job.Schedule());
@@ -129,7 +129,7 @@ namespace Voxelis
             Debug.Log("Done!");
 
             int totalBricks = 0;
-            foreach (var kvp in sectors)
+            foreach (var kvp in Sectors)
             {
                 totalBricks += kvp.Value.NonEmptyBrickCount;
             }
@@ -193,7 +193,7 @@ namespace Voxelis
             {
                 NativeList<JobHandle> jobs = new NativeList<JobHandle>(Allocator.Temp);
 
-                foreach (var kvp in sectors)
+                foreach (var kvp in Sectors)
                 {
                     int p = Time.frameCount;
 
