@@ -1,4 +1,5 @@
 ﻿using System.Collections.Generic;
+using Unity.Collections;
 using UnityEngine;
 
 namespace Voxelis
@@ -6,6 +7,7 @@ namespace Voxelis
     public class VoxelisXWorld : MonoSingleton<VoxelisXWorld>
     {
         public List<VoxelEntity> entities = new();
+        private NativeList<VoxelEntityData> tickBuf;
 
         /// <summary>
         /// Registers a voxel entity with this renderer.
@@ -43,6 +45,40 @@ namespace Voxelis
             foreach (var e in entities)
             {
                 e.Dispose();
+            }
+        }
+        
+        /// <summary>
+        /// Main entry point for a game tick.
+        /// Typically, this is called in FixedUpdate.
+        /// </summary>
+        public void Tick()
+        {
+            if (!tickBuf.IsCreated)
+            {
+                tickBuf = new NativeList<VoxelEntityData>(entities.Count, Allocator.Persistent);
+            }
+            
+            // Fill native list by copying
+            // TODO: Keep the unique instance in world and let VoxelEntity ref it?
+            tickBuf.Clear();
+            for (int i = 0; i < entities.Count; i++)
+            {
+                VoxelEntity e = entities[i];
+                
+                e.SyncTransformToData();
+                tickBuf.Add(e.GetDataCopy());
+            }
+            
+            // Tick
+            
+            // Copy data back to VoxelEntities
+            for (int i = 0; i < entities.Count; i++)
+            {
+                VoxelEntity e = entities[i];
+                
+                e.CopyDataFrom(tickBuf[i]);
+                e.SyncTransformFromData();
             }
         }
 

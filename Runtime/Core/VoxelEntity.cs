@@ -192,6 +192,13 @@ namespace Voxelis
     public unsafe partial class VoxelEntity : MonoBehaviour, IDisposable
     {
         private VoxelEntityData data;
+        public VoxelEntityData GetDataCopy() => data;
+
+        public void CopyDataFrom(VoxelEntityData srcData)
+        {
+            data = srcData;
+        }
+        
         public NativeHashMap<int3, SectorHandle> Sectors => data.sectors;
 
         /// <summary>
