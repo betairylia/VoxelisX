@@ -196,9 +196,10 @@ namespace Voxelis
             Vector3Int lsp = loadCenterSectorPos;
 
             // Unload sectors
-            var list = entity.Sectors.Keys.ToList();
-            foreach (var sectorPos in list)
+            var list = entity.Sectors.GetKeyArray(Allocator.Temp);
+            foreach (var _sectorPos in list)
             {
+                Vector3Int sectorPos = new Vector3Int(_sectorPos.x, _sectorPos.y, _sectorPos.z);
                 if (ShouldUnload(sectorPos, lsp))
                 {
                     entity.RemoveSectorAt(sectorPos);
