@@ -9,6 +9,7 @@ using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Profiling;
 using UnityEngine.Rendering;
+using Voxelis.Utils;
 using Random = UnityEngine.Random;
 
 namespace Voxelis.Rendering
@@ -181,7 +182,7 @@ namespace Voxelis.Rendering
                     // Only do for new bricks
                     if (record.Value.type == BrickUpdateInfo.Type.Added)
                     {
-                        Vector3 brickPos = Sector.ToBrickPos(record.Value.brickIdxAbsolute);
+                        Vector3 brickPos = Sector.ToBrickPos(record.Value.brickIdxAbsolute).ToVector3Int();
                         aabbBuffer[bid] = new AABB()
                         {
                             min = brickPos * Sector.SIZE_IN_BLOCKS,
@@ -434,7 +435,7 @@ namespace Voxelis.Rendering
         /// If just the transform changed, updates the instance transform only.
         /// This method should be called after Render() to synchronize the RTAS with current voxel data.
         /// </remarks>
-        public void RenderModifyAS(ref RayTracingAccelerationStructure AS, VoxelEntity entity, Vector3Int sectorPos, Sector sector)
+        public void RenderModifyAS(ref RayTracingAccelerationStructure AS, VoxelEntity entity, int3 sectorPos, Sector sector)
         {
             if (isDirty)
             {
@@ -449,14 +450,16 @@ namespace Voxelis.Rendering
 
                 AS.RemoveInstance(sectorASHandle);
                 sectorASHandle = AS.AddInstance(AABBconfig,
-                   entity.transform.localToWorldMatrix * Matrix4x4.Translate(sectorPos * Sector.SECTOR_SIZE_IN_BLOCKS));
+                    entity.transform.localToWorldMatrix *
+                    Matrix4x4.Translate((sectorPos * Sector.SECTOR_SIZE_IN_BLOCKS).ToVector3Int()));
                 hasRenderable = true;
                 AS.UpdateInstancePropertyBlock(sectorASHandle, matProps);
             }
             else if(hasRenderable)
             {
                 AS.UpdateInstanceTransform(sectorASHandle,
-                    entity.transform.localToWorldMatrix * Matrix4x4.Translate(sectorPos * Sector.SECTOR_SIZE_IN_BLOCKS));
+                    entity.transform.localToWorldMatrix *
+                    Matrix4x4.Translate((sectorPos * Sector.SECTOR_SIZE_IN_BLOCKS).ToVector3Int()));
             }
 
             isDirty = false;

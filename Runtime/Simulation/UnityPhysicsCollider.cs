@@ -1,8 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.PlayerLoop;
+using Voxelis.Utils;
 
 namespace Voxelis.Simulation
 {
@@ -26,15 +28,15 @@ namespace Voxelis.Simulation
             }
         }
 
-        public Dictionary<Vector3Int, Box> boxes = new();
+        public Dictionary<int3, Box> boxes = new();
         public float lifeMax = 1.0f;
-        
+
         public void UpdateSelfRegister()
         {
             // TODO
         }
 
-        public void AddAt(Vector3Int position)
+        public void AddAt(int3 position)
         {
             if (boxes.ContainsKey(position))
             {
@@ -50,9 +52,9 @@ namespace Voxelis.Simulation
                 // var box = gameObject.AddComponent<BoxCollider>();
                 // box.center = position + Vector3.one * 0.5f;
                 // box.size = Vector3.one * 0.8f;
-                
+
                 var box = gameObject.AddComponent<SphereCollider>();
-                box.center = position + Vector3.one * 0.5f;
+                box.center = position.ToVector3Int() + Vector3.one * 0.5f;
                 box.radius = 0.45f;
                 
                 boxes[position] = new Box
@@ -65,7 +67,7 @@ namespace Voxelis.Simulation
 
         private void Update()
         {
-            List<Vector3Int> toDelete = new();
+            List<int3> toDelete = new();
             foreach (var box in boxes.ToList())
             {
                 if (box.Value.lifespan < Time.deltaTime)

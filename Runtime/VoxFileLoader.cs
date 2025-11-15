@@ -1,4 +1,5 @@
 ﻿using Unity.Collections;
+using Unity.Mathematics;
 using UnityEngine;
 using VoxReader.Interfaces;
 
@@ -41,7 +42,7 @@ namespace Voxelis
                 foreach (var voxel in model.Voxels)
                 {
                     entity.SetBlock(
-                        new Vector3Int(
+                        new int3(
                             voxel.GlobalPosition.X,
                             voxel.GlobalPosition.Z,
                             voxel.GlobalPosition.Y),

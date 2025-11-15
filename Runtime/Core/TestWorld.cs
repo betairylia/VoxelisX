@@ -24,7 +24,7 @@ namespace Voxelis
             /// <summary>
             /// Position of the sector being generated in sector coordinates.
             /// </summary>
-            public Vector3Int sectorPos;
+            public int3 sectorPos;
 
             /// <summary>
             /// The sector to fill with generated voxel data.
@@ -84,7 +84,7 @@ namespace Voxelis
         /// <summary>
         /// Number of sectors to generate in each dimension.
         /// </summary>
-        public Vector3Int numSectors;
+        public int3 numSectors;
 
         /// <summary>
         /// Initializes the test world by generating all sectors with procedural terrain.
@@ -107,7 +107,7 @@ namespace Voxelis
                 {
                     for (int k = 0; k < numSectors.y; k++)
                     {
-                        var secPos = new Vector3Int(i, k, j);
+                        var secPos = new int3(i, k, j);
                         if (!Sectors.ContainsKey(secPos))
                         {
                             AddEmptySectorAt(secPos);

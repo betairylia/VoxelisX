@@ -1,8 +1,10 @@
 ﻿#define PROFILE
 
 using System;
+using Unity.Mathematics;
 using UnityEngine;
 using Voxelis;
+using Voxelis.Utils;
 
 namespace Voxelis
 {
@@ -31,7 +33,7 @@ namespace Voxelis
         /// The voxel world renderer containing all voxel entities to raycast against.
         /// </summary>
         [Tooltip("Reference to the VoxelisX world renderer")]
-        public VoxelisXWorld targetWorld;
+        public VoxelisXCoreWorld targetWorld;
 
         /// <summary>
         /// The block type ID currently held by the player for placement.
@@ -69,12 +71,12 @@ namespace Voxelis
         /// <summary>
         /// The voxel position that was hit by the raycast (in entity local space).
         /// </summary>
-        private Vector3Int hit = Vector3Int.zero;
+        private int3 hit = int3.zero;
 
         /// <summary>
         /// The normal direction of the hit face (in entity local space).
         /// </summary>
-        private Vector3Int hitNormal = Vector3Int.zero;
+        private int3 hitNormal = int3.zero;
 
         /// <summary>
         /// The voxel entity that was hit.
@@ -156,7 +158,7 @@ namespace Voxelis
                 );
 
                 // Perform DDA traversal
-                if (RaycastVoxelEntity(target, localRay, closestDistance, out Vector3Int hitPos, out Vector3Int normal, out float distance))
+                if (RaycastVoxelEntity(target, localRay, closestDistance, out int3 hitPos, out int3 normal, out float distance))
                 {
                     // Found a closer hit
                     if (distance < closestDistance)
@@ -189,12 +191,12 @@ namespace Voxelis
             VoxelEntity entity,
             Ray ray,
             float maxDist,
-            out Vector3Int hitPosition,
-            out Vector3Int hitNormal,
+            out int3 hitPosition,
+            out int3 hitNormal,
             out float distance)
         {
-            hitPosition = Vector3Int.zero;
-            hitNormal = Vector3Int.zero;
+            hitPosition = int3.zero;
+            hitNormal = int3.zero;
             distance = 0f;
 
             // DDA initialization
@@ -202,14 +204,14 @@ namespace Voxelis
             Vector3 direction = ray.direction.normalized;
 
             // Current voxel position
-            Vector3Int voxelPos = new Vector3Int(
-                Mathf.FloorToInt(origin.x),
-                Mathf.FloorToInt(origin.y),
-                Mathf.FloorToInt(origin.z)
+            int3 voxelPos = new int3(
+                (int)math.floor(origin.x),
+                (int)math.floor(origin.y),
+                (int)math.floor(origin.z)
             );
 
             // Step direction for each axis (-1, 0, or 1)
-            Vector3Int step = new Vector3Int(
+            int3 step = new int3(
                 direction.x > 0 ? 1 : (direction.x < 0 ? -1 : 0),
                 direction.y > 0 ? 1 : (direction.y < 0 ? -1 : 0),
                 direction.z > 0 ? 1 : (direction.z < 0 ? -1 : 0)
@@ -230,7 +232,7 @@ namespace Voxelis
             );
 
             // Track which face we entered through (for normal calculation)
-            Vector3Int lastStep = Vector3Int.zero;
+            int3 lastStep = int3.zero;
 
             // Maximum number of steps to prevent infinite loops
             int maxSteps = Mathf.CeilToInt(maxDist) + 1;
@@ -262,7 +264,7 @@ namespace Voxelis
                         if (tMax.x > maxDist) break;
                         voxelPos.x += step.x;
                         tMax.x += tDelta.x;
-                        lastStep = new Vector3Int(step.x, 0, 0);
+                        lastStep = new int3(step.x, 0, 0);
                     }
                     else
                     {
@@ -270,7 +272,7 @@ namespace Voxelis
                         if (tMax.z > maxDist) break;
                         voxelPos.z += step.z;
                         tMax.z += tDelta.z;
-                        lastStep = new Vector3Int(0, 0, step.z);
+                        lastStep = new int3(0, 0, step.z);
                     }
                 }
                 else
@@ -281,7 +283,7 @@ namespace Voxelis
                         if (tMax.y > maxDist) break;
                         voxelPos.y += step.y;
                         tMax.y += tDelta.y;
-                        lastStep = new Vector3Int(0, step.y, 0);
+                        lastStep = new int3(0, step.y, 0);
                     }
                     else
                     {
@@ -289,7 +291,7 @@ namespace Voxelis
                         if (tMax.z > maxDist) break;
                         voxelPos.z += step.z;
                         tMax.z += tDelta.z;
-                        lastStep = new Vector3Int(0, 0, step.z);
+                        lastStep = new int3(0, 0, step.z);
                     }
                 }
             }
@@ -335,10 +337,10 @@ namespace Voxelis
         /// <param name="voxelPos">The voxel that was hit</param>
         /// <param name="faceNormal">The normal of the face that was hit</param>
         /// <returns>Distance along the ray to the hit point</returns>
-        private float CalculateHitDistance(Vector3 origin, Vector3 direction, Vector3Int voxelPos, Vector3Int faceNormal)
+        private float CalculateHitDistance(Vector3 origin, Vector3 direction, int3 voxelPos, int3 faceNormal)
         {
             // Calculate which face of the voxel was hit
-            Vector3 hitFaceCenter = (Vector3)voxelPos + Vector3.one * 0.5f + (Vector3)faceNormal * 0.5f;
+            Vector3 hitFaceCenter = voxelPos.ToVector3Int() + Vector3.one * 0.5f + (Vector3)faceNormal.ToVector3Int() * 0.5f;
 
             // Find the distance to the plane of that face
             // Using the face normal and a point on the plane
@@ -371,7 +373,7 @@ namespace Voxelis
             if (hitted && pointed != null)
             {
                 pointed.gameObject.SetActive(true);
-                pointed.position = hitTarget.transform.TransformPoint(hit);
+                pointed.position = hitTarget.transform.TransformPoint(hit.ToVector3Int());
                 pointed.rotation = hitTarget.transform.rotation;
             }
             else if (pointed != null)
@@ -402,7 +404,7 @@ namespace Voxelis
 
             if (shouldPlace)
             {
-                Vector3Int placePosition = hit + hitNormal;
+                int3 placePosition = hit + hitNormal;
                 hitTarget.SetBlock(placePosition, new Block { data = handblock });
             }
 
@@ -429,20 +431,20 @@ namespace Voxelis
         /// Only valid if IsHitting is true.
         /// </summary>
         public Vector3 HitPositionWorld => hitTarget != null
-            ? hitTarget.transform.TransformPoint(hit)
+            ? hitTarget.transform.TransformPoint(hit.ToVector3Int())
             : Vector3.zero;
 
         /// <summary>
         /// Gets the position of the voxel that was hit (in entity local space).
         /// Only valid if IsHitting is true.
         /// </summary>
-        public Vector3Int HitPositionLocal => hit;
+        public int3 HitPositionLocal => hit;
 
         /// <summary>
         /// Gets the normal of the face that was hit (in entity local space).
         /// Only valid if IsHitting is true.
         /// </summary>
-        public Vector3Int HitNormal => hitNormal;
+        public int3 HitNormal => hitNormal;
 
         /// <summary>
         /// Gets the voxel entity that was hit.

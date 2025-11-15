@@ -93,17 +93,17 @@ namespace Voxelis
 
             foreach(var kvp in entity.Sectors)
             {
-                Vector3Int sectorPos = kvp.Key;
+                int3 sectorPos = kvp.Key;
                 Sector sector = kvp.Value.Get();
-                Vector3 f3thisSectorPos = VoxelEntity.GetSectorBlockPos(sectorPos);
+                float3 f3thisSectorPos = VoxelEntity.GetSectorBlockPos(sectorPos);
                 float4x4 mySectorToWorld =
                     math.mul(entity.ObjectToWorld(), float4x4.Translate(f3thisSectorPos));
 
                 foreach (var otherKvp in other.entity.Sectors)
                 {
-                    Vector3Int otherSectorPos = otherKvp.Key;
+                    int3 otherSectorPos = otherKvp.Key;
                     Sector otherSector = otherKvp.Value.Get();
-                    Vector3 f3otherSectorPos = VoxelEntity.GetSectorBlockPos(otherSectorPos);
+                    float3 f3otherSectorPos = VoxelEntity.GetSectorBlockPos(otherSectorPos);
                     float4x4 otherSectorToWorld =
                         math.mul(other.entity.ObjectToWorld(), float4x4.Translate(f3otherSectorPos));
 
@@ -165,14 +165,14 @@ namespace Voxelis
 
                 foreach (var kvp in entity.Sectors)
                 {
-                    Vector3Int sectorPos = kvp.Key;
+                    int3 sectorPos = kvp.Key;
                     var sectorBPos = VoxelEntity.GetSectorBlockPos(sectorPos);
 
                     var sectorJob = new VoxelEntityPhysics.AccumulateSectorCenterOfMass
                     {
                         settings = PhysicsSettings.Settings,
                         sector = kvp.Value.Get(),
-                        sectorPosition = new int3(sectorBPos.x, sectorBPos.y, sectorBPos.z),
+                        sectorPosition = sectorBPos,
                         accumulatedCenter = CoM
                     };
 
@@ -202,14 +202,14 @@ namespace Voxelis
 
                 foreach (var kvp in entity.Sectors)
                 {
-                    Vector3Int sectorPos = kvp.Key;
+                    int3 sectorPos = kvp.Key;
                     var sectorBPos = VoxelEntity.GetSectorBlockPos(sectorPos);
 
                     var sectorJob = new VoxelEntityPhysics.AccumulateSectorInertia
                     {
                         settings = PhysicsSettings.Settings,
                         sector = kvp.Value.Get(),
-                        sectorPosition = new int3(sectorBPos.x, sectorBPos.y, sectorBPos.z),
+                        sectorPosition = sectorBPos,
                         centerOfMass = result.centerOfMass,
                         accumulatedInertia = Inertia,
                     };

@@ -30,10 +30,6 @@ namespace Voxelis.Simulation
                 };
             }
 
-            public ContactPoint ApplySectorPos(Vector3Int srcSector, Vector3Int dstSector)
-                => ApplySectorPos(new int3(srcSector.x, srcSector.y, srcSector.z),
-                    new int3(dstSector.x, dstSector.y, dstSector.z));
-
             public ContactPoint ApplySectorPos(int3 srcSector, int3 dstSector)
             {
                 return new ContactPoint

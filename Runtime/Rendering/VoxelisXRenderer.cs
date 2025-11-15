@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using NUnit.Framework.Internal;
+using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
@@ -8,6 +9,7 @@ using Random = UnityEngine.Random;
 
 using Voxelis;
 using Voxelis.Rendering;
+using Voxelis.Utils;
 
 /// <summary>
 /// Main rendering system for VoxelisX. Manages ray tracing acceleration structures
@@ -22,12 +24,12 @@ using Voxelis.Rendering;
 // [ExecuteInEditMode]
 public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
 {
-    public VoxelisXWorld world;
+    public VoxelisXCoreWorld world;
     
     /// <summary>
     /// Maps (entity, sectorPos) → SectorRenderer for tracking rendering state independently from entity data.
     /// </summary>
-    private Dictionary<(VoxelEntity entity, Vector3Int sectorPos), SectorRenderer> sectorRenderers = new();
+    private Dictionary<(VoxelEntity entity, int3 sectorPos), SectorRenderer> sectorRenderers = new();
 
     /// <summary>
     /// Test world reference (for testing purposes).
@@ -98,7 +100,7 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
     public override void Init() 
     {
         SectorRenderer.sectorMaterial = brickMat;
-        world = VoxelisXWorld.instance;
+        world = VoxelisXCoreWorld.instance;
         ReloadAS();
     }
 
@@ -134,7 +136,7 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
         {
             foreach (var kvp in e.Sectors)
             {
-                Vector3Int sectorPos = kvp.Key;
+                int3 sectorPos = kvp.Key;
                 ref Sector sector = ref kvp.Value.Get();
 
                 var key = (e, sectorPos);
@@ -286,7 +288,7 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
             }
 
             // Handle sector removal
-            while (e.sectorsToRemove.TryDequeue(out Vector3Int sectorPos))
+            while (e.sectorsToRemove.TryDequeue(out int3 sectorPos))
             {
                 var key = (e, sectorPos);
                 if (sectorRenderers.ContainsKey(key))
@@ -299,7 +301,7 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
             // Emit render jobs for all sectors
             foreach (var kvp in e.Sectors)
             {
-                Vector3Int sectorPos = kvp.Key;
+                int3 sectorPos = kvp.Key;
                 ref Sector sector = ref kvp.Value.Get();
 
                 var key = (e, sectorPos);
@@ -323,7 +325,7 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
 
             foreach (var kvp in e.Sectors)
             {
-                Vector3Int sectorPos = kvp.Key;
+                int3 sectorPos = kvp.Key;
                 ref Sector sector = ref kvp.Value.Get();
 
                 var key = (e, sectorPos);

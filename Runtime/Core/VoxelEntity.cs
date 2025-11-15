@@ -31,6 +31,20 @@ namespace Voxelis
         /// </summary>
         public RigidTransform transform;
 
+        public VoxelEntityData(Allocator allocator)
+        {
+            sectors = new(1, allocator);
+            sectorsToRemove = new(allocator);
+            transform = RigidTransform.identity;
+        }
+        
+        public VoxelEntityData(Allocator allocator, Transform transform)
+        {
+            sectors = new(1, allocator);
+            sectorsToRemove = new(allocator);
+            this.transform = new RigidTransform(transform.rotation, transform.position);
+        }
+
         /// <summary>
         /// Adds an empty sector at the specified position.
         /// </summary>
@@ -194,6 +208,11 @@ namespace Voxelis
         private VoxelEntityData data;
         public VoxelEntityData GetDataCopy() => data;
 
+        private void Awake()
+        {
+            data = new VoxelEntityData(Allocator.Persistent, transform);
+        }
+
         public void CopyDataFrom(VoxelEntityData srcData)
         {
             data = srcData;
@@ -204,25 +223,25 @@ namespace Voxelis
         /// <summary>
         /// Adds an empty sector at the specified position.
         /// </summary>
-        public void AddEmptySectorAt(Vector3Int pos)
+        public void AddEmptySectorAt(int3 pos)
         {
-            data.AddEmptySectorAt(new int3(pos.x, pos.y, pos.z));
+            data.AddEmptySectorAt(pos);
         }
 
         /// <summary>
         /// Copies a sector and adds it at the specified position.
         /// </summary>
-        public void CopyAndAddSectorAt(Vector3Int pos, Sector sector)
+        public void CopyAndAddSectorAt(int3 pos, Sector sector)
         {
-            data.CopyAndAddSectorAt(new int3(pos.x, pos.y, pos.z), sector);
+            data.CopyAndAddSectorAt(pos, sector);
         }
 
         /// <summary>
         /// Adds a sector handle at the specified position.
         /// </summary>
-        public void AddSectorAt(Vector3Int pos, SectorHandle sector)
+        public void AddSectorAt(int3 pos, SectorHandle sector)
         {
-            data.AddSectorAt(new int3(pos.x, pos.y, pos.z), sector);
+            data.AddSectorAt(pos, sector);
         }
 
         /// <summary>
@@ -230,9 +249,9 @@ namespace Voxelis
         /// </summary>
         /// <param name="pos">The sector position to remove.</param>
         /// <returns>True if the sector was found and removed, false otherwise.</returns>
-        public bool RemoveSectorAt(Vector3Int pos)
+        public bool RemoveSectorAt(int3 pos)
         {
-            return data.RemoveSectorAt(new int3(pos.x, pos.y, pos.z));
+            return data.RemoveSectorAt(pos);
         }
 
         /// <summary>
@@ -257,14 +276,14 @@ namespace Voxelis
         /// Queue of sector positions that are scheduled for removal and cleanup.
         /// Used to defer disposal of sectors until after rendering is complete.
         /// </summary>
-        public Queue<Vector3Int> sectorsToRemove = new Queue<Vector3Int>();
+        public Queue<int3> sectorsToRemove = new Queue<int3>();
 
         /// <summary>
         /// Called when the component is enabled. Registers this entity with the renderer and initializes physics body.
         /// </summary>
         private void OnEnable()
         {
-            VoxelisXWorld.instance.AddEntity(this);
+            VoxelisXCoreWorld.instance.AddEntity(this);
         }
 
         /// <summary>
@@ -272,14 +291,7 @@ namespace Voxelis
         /// </summary>
         private void OnDisable()
         {
-            VoxelisXWorld.instance.RemoveEntity(this);
-        }
-
-        /// <summary>
-        /// Called when the component is destroyed. Disposes all voxel data.
-        /// </summary>
-        private void OnDestroy()
-        {
+            VoxelisXCoreWorld.instance.RemoveEntity(this);
             Dispose();
         }
 
@@ -288,6 +300,7 @@ namespace Voxelis
         /// </summary>
         public void Dispose()
         {
+            Debug.Log("Disposing");
             data.Dispose();
         }
 
@@ -303,7 +316,7 @@ namespace Voxelis
         /// <summary>
         /// Helper to get sector block position from sector position.
         /// </summary>
-        public static Vector3Int GetSectorBlockPos(Vector3Int sectorPos)
+        public static int3 GetSectorBlockPos(int3 sectorPos)
         {
             return sectorPos * Sector.SECTOR_SIZE_IN_BLOCKS;
         }
@@ -313,9 +326,9 @@ namespace Voxelis
         /// </summary>
         /// <param name="pos">World position of the block in block coordinates.</param>
         /// <returns>The block at the specified position, or Block.Empty if no sector exists at that location.</returns>
-        public Block GetBlock(Vector3Int pos)
+        public Block GetBlock(int3 pos)
         {
-            return data.GetBlock(new int3(pos.x, pos.y, pos.z));
+            return data.GetBlock(pos);
         }
 
         /// <summary>
@@ -326,9 +339,9 @@ namespace Voxelis
         /// <remarks>
         /// If the sector doesn't exist at the calculated sector position, a new sector will be automatically created.
         /// </remarks>
-        public void SetBlock(Vector3Int pos, Block b)
+        public void SetBlock(int3 pos, Block b)
         {
-            data.SetBlock(new int3(pos.x, pos.y, pos.z), b);
+            data.SetBlock(pos, b);
         }
 
         /// <summary>

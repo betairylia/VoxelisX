@@ -1,4 +1,6 @@
 ﻿using System;
+using Unity.Mathematics;
+using UnityEngine;
 
 namespace Voxelis.Utils
 {
@@ -30,6 +32,32 @@ namespace Voxelis.Utils
                 throw new Exception("Assertion failed");
             }
 #endif
+        }
+    }
+
+    /// <summary>
+    /// Extension methods for converting between Vector3Int and int3 types.
+    /// </summary>
+    public static class VectorConversionExtensions
+    {
+        /// <summary>
+        /// Converts an int3 to a Vector3Int.
+        /// </summary>
+        /// <param name="value">The int3 value to convert.</param>
+        /// <returns>A Vector3Int with the same x, y, z components.</returns>
+        public static Vector3Int ToVector3Int(this int3 value)
+        {
+            return new Vector3Int(value.x, value.y, value.z);
+        }
+
+        /// <summary>
+        /// Converts a Vector3Int to an int3.
+        /// </summary>
+        /// <param name="value">The Vector3Int value to convert.</param>
+        /// <returns>An int3 with the same x, y, z components.</returns>
+        public static int3 ToInt3(this Vector3Int value)
+        {
+            return new int3(value.x, value.y, value.z);
         }
     }
 }

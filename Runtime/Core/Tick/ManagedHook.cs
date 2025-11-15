@@ -45,6 +45,18 @@ namespace Voxelis.Tick
     /// </remarks>
     public class ManagedHook<TInputs> : ITickHook<TInputs>
     {
+        /// <summary>
+        /// gets whether this hook should chain with previous hooks (sequential) or run in parallel.
+        /// </summary>
+        /// <remarks>
+        /// Override this property to control execution order:
+        /// - true: Sequential execution - wait for previous chained hooks
+        /// - false: Parallel execution - only wait for the previous stage
+        ///
+        /// Default: true (sequential)
+        /// </remarks>
+        protected virtual bool UseChaining => true;
+        
         private readonly Action<TInputs> action;
 
         /// <summary>
@@ -78,7 +90,8 @@ namespace Voxelis.Tick
         public bool Execute(TInputs inputs, JobHandle stageStart, JobHandle chained, out JobHandle handle)
         {
             // Complete the dependency to ensure safe access to data
-            stageStart.Complete();
+            JobHandle dependency = UseChaining ? chained : stageStart;
+            dependency.Complete();
 
             // Execute managed code
             ExecuteManaged(inputs);
@@ -87,7 +100,7 @@ namespace Voxelis.Tick
             handle = default;
 
             // Managed hooks don't chain (they complete synchronously)
-            return false;
+            return UseChaining;
         }
 
         /// <summary>

@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using Unity.Collections;
+using Unity.Mathematics;
 using UnityEngine;
 
 namespace Voxelis
@@ -34,7 +35,7 @@ namespace Voxelis
         /// Must be implemented by derived classes to define loading behavior.
         /// </summary>
         /// <param name="sectorPos">The sector position to load in sector coordinates.</param>
-        public abstract void LoadSector(Vector3Int sectorPos);
+        public abstract void LoadSector(int3 sectorPos);
 
         /// <summary>
         /// Called at the end of each load tick after all sectors have been processed.
@@ -47,13 +48,13 @@ namespace Voxelis
         /// </summary>
         protected VoxelEntity entity;
 
-        private List<Vector3Int> sectorLoadOrder = new();
+        private List<int3> sectorLoadOrder = new();
         private int currentIndex;
 
         /// <summary>
         /// Maximum bounds for sector loading in each axis, in sector units.
         /// </summary>
-        public Vector3Int sectorLoadBounds;
+        public int3 sectorLoadBounds;
 
         /// <summary>
         /// Radius in blocks for loading sectors (converted to sector units internally).
@@ -68,7 +69,7 @@ namespace Voxelis
         /// <summary>
         /// Set of sector positions currently being loaded to prevent duplicate load requests.
         /// </summary>
-        protected HashSet<Vector3Int> loadingSectors = new();
+        protected HashSet<int3> loadingSectors = new();
         
         /// <summary>
         /// Generates all integer points that are within both a bounding box and a cylindrical volume (ignoring Y),
@@ -82,7 +83,7 @@ namespace Voxelis
         /// points closer to the origin are added first. The Y component is ignored for distance checks,
         /// creating a cylindrical loading volume which is typical for voxel games.
         /// </remarks>
-        public static void GeneratePointsInIntersection(Vector3Int bounds, float radius, ref List<Vector3Int> result)
+        public static void GeneratePointsInIntersection(int3 bounds, float radius, ref List<int3> result)
         {
             result.Clear();
             float radiusSqr = radius * radius;
@@ -108,23 +109,23 @@ namespace Voxelis
                         if (zValue >= 0 && zValue <= bounds.z)
                         {
                             // Create point with positive z
-                            Vector3Int point = new Vector3Int(x, y, zValue);
+                            int3 point = new int3(x, y, zValue);
                             var point_noY = point;
                             point_noY.y = 0;
-                            
+
                             // Check if within sphere (Euclidean distance < radius)
-                            if (point_noY.sqrMagnitude < radiusSqr)
+                            if (math.lengthsq(point_noY) < radiusSqr)
                             {
                                 result.Add(point);
                             }
-                            
+
                             // Create point with negative z (if z != 0 to avoid duplicates)
                             if (zValue > 0)
                             {
-                                Vector3Int negZPoint = new Vector3Int(x, y, -zValue);
-                                
+                                int3 negZPoint = new int3(x, y, -zValue);
+
                                 // Check if within sphere
-                                if (negZPoint.sqrMagnitude < radiusSqr)
+                                if (math.lengthsq(negZPoint) < radiusSqr)
                                 {
                                     result.Add(negZPoint);
                                 }
@@ -152,7 +153,7 @@ namespace Voxelis
         /// Note: This divides by SIZE_IN_BRICKS (16), not SECTOR_SIZE_IN_BLOCKS (128).
         /// This may be a bug or intentional design choice.
         /// </remarks>
-        public Vector3Int loadCenterSectorPos => Vector3Int.FloorToInt(loadCenter.position / Sector.SIZE_IN_BRICKS);
+        public int3 loadCenterSectorPos => (int3)math.floor(loadCenter.position / Sector.SIZE_IN_BRICKS);
 
         /// <summary>
         /// Determines whether a sector should be unloaded based on its distance from the center.
@@ -160,14 +161,14 @@ namespace Voxelis
         /// <param name="sectorPos">The sector position to check.</param>
         /// <param name="centerSectorPos">The current center sector position.</param>
         /// <returns>True if the sector is outside the unload radius or bounds.</returns>
-        public bool ShouldUnload(Vector3Int sectorPos, Vector3Int centerSectorPos)
+        public bool ShouldUnload(int3 sectorPos, int3 centerSectorPos)
         {
-            Vector3Int relativePos = sectorPos - loadCenterSectorPos;
+            int3 relativePos = sectorPos - loadCenterSectorPos;
             relativePos.y = 0;
-            return !((relativePos.magnitude * Sector.SECTOR_SIZE_IN_BLOCKS) <= sectorUnloadRadiusInBlocks
-                && Mathf.Abs(relativePos.x) <= sectorLoadBounds.x
-                && Mathf.Abs(relativePos.y) <= sectorLoadBounds.y
-                && Mathf.Abs(relativePos.z) <= sectorLoadBounds.z);
+            return !((math.length(relativePos) * Sector.SECTOR_SIZE_IN_BLOCKS) <= sectorUnloadRadiusInBlocks
+                && math.abs(relativePos.x) <= sectorLoadBounds.x
+                && math.abs(relativePos.y) <= sectorLoadBounds.y
+                && math.abs(relativePos.z) <= sectorLoadBounds.z);
         }
         
         /// <summary>
@@ -193,13 +194,13 @@ namespace Voxelis
         /// </remarks>
         public virtual void Tick()
         {
-            Vector3Int lsp = loadCenterSectorPos;
+            int3 lsp = loadCenterSectorPos;
 
             // Unload sectors
             var list = entity.Sectors.GetKeyArray(Allocator.Temp);
             foreach (var _sectorPos in list)
             {
-                Vector3Int sectorPos = new Vector3Int(_sectorPos.x, _sectorPos.y, _sectorPos.z);
+                int3 sectorPos = new int3(_sectorPos.x, _sectorPos.y, _sectorPos.z);
                 if (ShouldUnload(sectorPos, lsp))
                 {
                     entity.RemoveSectorAt(sectorPos);
@@ -211,7 +212,7 @@ namespace Voxelis
             // TODO: Split to frames
             for (currentIndex = 0; currentIndex < sectorLoadOrder.Count; currentIndex++)
             {
-                Vector3Int targetSectorPos = lsp + sectorLoadOrder[currentIndex];
+                int3 targetSectorPos = lsp + sectorLoadOrder[currentIndex];
                 // Debug.Log($"Loaded sector @ {targetSectorPos}");
                 if (loadingSectors.Contains(targetSectorPos) || entity.Sectors.ContainsKey(targetSectorPos))
                 {
@@ -231,7 +232,7 @@ namespace Voxelis
         /// </summary>
         /// <param name="sectorPos">The position of the sector that has finished loading.</param>
         /// <param name="sector">The sector data that has finished loading.</param>
-        public unsafe void MarkSectorLoaded(Vector3Int sectorPos, SectorHandle sector)
+        public unsafe void MarkSectorLoaded(int3 sectorPos, SectorHandle sector)
         {
             Debug.Log($"Sector Added at {sectorPos}");
             loadingSectors.Remove(sectorPos);

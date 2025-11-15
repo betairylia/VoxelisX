@@ -46,7 +46,7 @@ namespace Voxelis.Tick
         where TJob : struct, IJob
     {
         /// <summary>
-        /// Gets whether this hook should chain with previous hooks (sequential) or run in parallel.
+        /// gets whether this hook should chain with previous hooks (sequential) or run in parallel.
         /// </summary>
         /// <remarks>
         /// Override this property to control execution order:

@@ -277,9 +277,9 @@ namespace Voxelis
         /// <param name="bidAbsolute">The absolute brick index.</param>
         /// <returns>The 3D brick position within the sector.</returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static Vector3Int ToBrickPos(short bidAbsolute)
+        public static int3 ToBrickPos(short bidAbsolute)
         {
-            return new Vector3Int(
+            return new int3(
                 bidAbsolute & SECTOR_MASK,
                 (bidAbsolute >> SHIFT_IN_BRICKS) & SECTOR_MASK,
                 (bidAbsolute >> (SHIFT_IN_BRICKS << 1)));  // >> (SHIFT_IN_BRICKS * 2)

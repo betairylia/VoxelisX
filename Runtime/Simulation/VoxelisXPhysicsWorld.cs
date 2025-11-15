@@ -4,6 +4,7 @@ using Unity.Collections;
 using Unity.Jobs;
 using Unity.Physics;
 using UnityEngine;
+using Voxelis.Tick;
 
 namespace Voxelis.Simulation
 {
@@ -15,8 +16,6 @@ namespace Voxelis.Simulation
         protected Unity.Physics.Simulation simulation;
 
         private int debugFrameCount = 0;
-
-        [Header("Performance")] public float targetTPS = 100.0f;
 
         [Header("Gravity")]
         public Vector3 gravity = new Vector3(0, -9.81f, 0);

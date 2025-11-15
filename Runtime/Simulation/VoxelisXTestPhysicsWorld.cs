@@ -5,6 +5,7 @@ using Unity.Mathematics;
 using Unity.Physics;
 using UnityEngine;
 using UnityEngine.Rendering;
+using Voxelis.Tick;
 using Collider = Unity.Physics.Collider;
 using Joint = Unity.Physics.Joint;
 using Math = Unity.Physics.Math;
@@ -31,7 +32,7 @@ namespace Voxelis.Simulation
         private struct VoxelContactInfo
         {
             public int bodyIndex;
-            public Vector3Int voxelCoords;
+            public int3 voxelCoords;
             public Block originalBlock;
         }
 
@@ -319,6 +320,8 @@ namespace Voxelis.Simulation
         public override void BeforeSimulationStart()
         {
             base.BeforeSimulationStart();
+
+            if (!prepared) return;
             
             int bodyIndex = 0;
 
@@ -341,6 +344,8 @@ namespace Voxelis.Simulation
 
         public override void OnSimulationFinished()
         {
+            if (!prepared) return;
+            
             // First, reset all previously marked voxels to their original state
             foreach (var contactInfo in previousFrameContacts)
             {
@@ -367,11 +372,7 @@ namespace Voxelis.Simulation
                 VoxelBody bodyA = GetBodyByIndex(contactEvent.BodyIndexA);
                 if (bodyA != null)
                 {
-                    Vector3Int voxelCoordsA = new Vector3Int(
-                        contactEvent.VoxelCoordsInA.x,
-                        contactEvent.VoxelCoordsInA.y,
-                        contactEvent.VoxelCoordsInA.z
-                    );
+                    int3 voxelCoordsA = contactEvent.VoxelCoordsInA;
 
                     // Store original block state
                     Block originalBlockA = bodyA.entity.GetBlock(voxelCoordsA);
@@ -398,11 +399,7 @@ namespace Voxelis.Simulation
                 VoxelBody bodyB = GetBodyByIndex(contactEvent.BodyIndexB);
                 if (bodyB != null)
                 {
-                    Vector3Int voxelCoordsB = new Vector3Int(
-                        contactEvent.VoxelCoordsInB.x,
-                        contactEvent.VoxelCoordsInB.y,
-                        contactEvent.VoxelCoordsInB.z
-                    );
+                    int3 voxelCoordsB = contactEvent.VoxelCoordsInB;
 
                     // Store original block state
                     Block originalBlockB = bodyB.entity.GetBlock(voxelCoordsB);
@@ -455,7 +452,7 @@ namespace Voxelis.Simulation
             {
                 Debug.Log($"[Frame {frameCount}] dt={Time.deltaTime}, Simulating...");
             }
-            SimulateStep(1.0f / targetTPS);
+            // SimulateStep(1.0f / targetTPS);
         }
 
         private void OnDestroy()
