@@ -209,7 +209,11 @@ void MainRayGenShader()
     // RenderTarget[launchIndex] = float4(payload.bounceIndexOpaque / 100.0 * float3(1, 1, 1), 1);
     // RenderTarget[launchIndex] = float4(payload.albedo, 1);
     
-    DepthTarget[launchIndex] = LinearEyeDepth(length(wpos - _WorldSpaceCameraPos), _ZBufferParams);
+    // Calculate depth as distance along view direction (point-to-plane) from the near plane
+    float3 viewForward = normalize(unity_CameraToWorld._m02_m12_m22);
+    float distanceFromCamera = dot(wpos - _WorldSpaceCameraPos, viewForward);
+    // float depthFromNearPlane = distanceFromCamera - _ProjectionParams.y; // _ProjectionParams.y is the near plane distance
+    DepthTarget[launchIndex] = LinearEyeDepth(distanceFromCamera, _ZBufferParams);
     NormalTarget[launchIndex] = float4(normal, 0);
     AlbedoTarget[launchIndex] = float4(albedo, 1);
 }
