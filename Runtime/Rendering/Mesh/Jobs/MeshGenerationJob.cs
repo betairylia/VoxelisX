@@ -339,14 +339,14 @@ namespace Voxelis.Rendering.Meshing
                 vertices.Add(new VoxelVertex(quadVerts[windingIdx], normal, color, uv));
             }
 
-            // Add indices (2 triangles)
+            // Add indices (2 triangles) - clockwise winding for Unity
             indices.Add(baseIdx + 0);
-            indices.Add(baseIdx + 1);
             indices.Add(baseIdx + 2);
+            indices.Add(baseIdx + 1);
 
             indices.Add(baseIdx + 0);
-            indices.Add(baseIdx + 2);
             indices.Add(baseIdx + 3);
+            indices.Add(baseIdx + 2);
         }
     }
 }

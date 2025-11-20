@@ -3,6 +3,7 @@ Shader "Voxelis/VoxelMeshUnlit"
     Properties
     {
         _EmissionStrength ("Emission Strength", Range(0, 10)) = 1.0
+        _AmbientStrength ("Ambient Strength", Range(0, 1)) = 0.3
     }
 
     SubShader
@@ -16,8 +17,12 @@ Shader "Voxelis/VoxelMeshUnlit"
 
         Pass
         {
-            Name "VoxelMeshUnlit"
+            Name "ForwardLit"
             Tags { "LightMode" = "UniversalForward" }
+
+            Cull Back
+            ZWrite On
+            ZTest LEqual
 
             HLSLPROGRAM
             #pragma vertex vert
@@ -45,18 +50,21 @@ Shader "Voxelis/VoxelMeshUnlit"
                 float2 uv : TEXCOORD0;
                 float fogFactor : TEXCOORD1;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
+                UNITY_VERTEX_OUTPUT_STEREO
             };
 
             CBUFFER_START(UnityPerMaterial)
                 float _EmissionStrength;
+                float _AmbientStrength;
             CBUFFER_END
 
             Varyings vert(Attributes input)
             {
-                Varyings output;
+                Varyings output = (Varyings)0;
 
                 UNITY_SETUP_INSTANCE_ID(input);
                 UNITY_TRANSFER_INSTANCE_ID(input, output);
+                UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
 
                 VertexPositionInputs vertexInput = GetVertexPositionInputs(input.positionOS.xyz);
                 VertexNormalInputs normalInput = GetVertexNormalInputs(input.normalOS);
@@ -73,6 +81,7 @@ Shader "Voxelis/VoxelMeshUnlit"
             half4 frag(Varyings input) : SV_Target
             {
                 UNITY_SETUP_INSTANCE_ID(input);
+                UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
 
                 // Base color from vertex color (RGB555 decoded)
                 half3 albedo = input.color.rgb;
@@ -80,15 +89,18 @@ Shader "Voxelis/VoxelMeshUnlit"
                 // Emission from vertex color alpha channel
                 half emission = input.color.a;
 
-                // Simple directional lighting (dot with world normal)
+                // Get main light
                 Light mainLight = GetMainLight();
+
+                // Simple lambert lighting
                 half NdotL = saturate(dot(input.normalWS, mainLight.direction));
 
-                // Ambient + directional lighting
-                half3 lighting = UNITY_LIGHTMODEL_AMBIENT.rgb + mainLight.color.rgb * NdotL * 0.5;
+                // Combine ambient and diffuse
+                half3 ambient = albedo * _AmbientStrength;
+                half3 diffuse = albedo * mainLight.color.rgb * NdotL;
 
                 // Final color
-                half3 finalColor = albedo * lighting;
+                half3 finalColor = ambient + diffuse;
 
                 // Add emission
                 finalColor += albedo * emission * _EmissionStrength;
@@ -110,6 +122,7 @@ Shader "Voxelis/VoxelMeshUnlit"
             ZWrite On
             ZTest LEqual
             ColorMask 0
+            Cull Back
 
             HLSLPROGRAM
             #pragma vertex ShadowPassVertex
@@ -117,7 +130,8 @@ Shader "Voxelis/VoxelMeshUnlit"
             #pragma multi_compile_instancing
 
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
-            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
+            #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/CommonMaterial.hlsl"
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Shadows.hlsl"
 
             struct Attributes
             {
@@ -133,17 +147,24 @@ Shader "Voxelis/VoxelMeshUnlit"
             };
 
             float3 _LightDirection;
+            float3 _LightPosition;
 
             Varyings ShadowPassVertex(Attributes input)
             {
-                Varyings output;
+                Varyings output = (Varyings)0;
                 UNITY_SETUP_INSTANCE_ID(input);
                 UNITY_TRANSFER_INSTANCE_ID(input, output);
 
                 float3 positionWS = TransformObjectToWorld(input.positionOS.xyz);
                 float3 normalWS = TransformObjectToWorldNormal(input.normalOS);
 
-                output.positionCS = TransformWorldToHClip(ApplyShadowBias(positionWS, normalWS, _LightDirection));
+                #if _CASTING_PUNCTUAL_LIGHT_SHADOW
+                    float3 lightDirectionWS = normalize(_LightPosition - positionWS);
+                #else
+                    float3 lightDirectionWS = _LightDirection;
+                #endif
+
+                output.positionCS = TransformWorldToHClip(ApplyShadowBias(positionWS, normalWS, lightDirectionWS));
 
                 #if UNITY_REVERSED_Z
                     output.positionCS.z = min(output.positionCS.z, output.positionCS.w * UNITY_NEAR_CLIP_VALUE);
@@ -170,6 +191,7 @@ Shader "Voxelis/VoxelMeshUnlit"
 
             ZWrite On
             ColorMask 0
+            Cull Back
 
             HLSLPROGRAM
             #pragma vertex DepthOnlyVertex
@@ -192,7 +214,7 @@ Shader "Voxelis/VoxelMeshUnlit"
 
             Varyings DepthOnlyVertex(Attributes input)
             {
-                Varyings output;
+                Varyings output = (Varyings)0;
                 UNITY_SETUP_INSTANCE_ID(input);
                 UNITY_TRANSFER_INSTANCE_ID(input, output);
 
