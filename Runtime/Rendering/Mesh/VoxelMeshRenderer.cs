@@ -233,11 +233,14 @@ namespace Voxelis.Rendering.Meshing
         {
             foreach (var kvp in sectorRenderers)
             {
-                ref Sector sector = ref kvp.Value.SectorObject.GetComponent<SectorMeshRenderer>() != null
-                    ? ref kvp.Key.Item1.Sectors[kvp.Key.Item2].Get()
-                    : ref kvp.Key.Item1.Sectors[kvp.Key.Item2].Get();
+                var entity = kvp.Key.Item1;
+                var sectorPos = kvp.Key.Item2;
 
-                sector.EndTick();
+                if (entity != null && entity.Sectors.ContainsKey(sectorPos))
+                {
+                    ref Sector sector = ref entity.Sectors[sectorPos].Get();
+                    sector.EndTick();
+                }
             }
         }
 
