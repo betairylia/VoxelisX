@@ -1,3 +1,4 @@
+using System;
 using UnityEngine;
 
 namespace Voxelis.Rendering.Meshing
@@ -28,6 +29,8 @@ namespace Voxelis.Rendering.Meshing
         [Header("Debug")]
         [Tooltip("Regenerate all meshes on the next frame")]
         [SerializeField] private bool regenerateAll = false;
+        
+        [SerializeField] private bool autoTick = false;
 
         private VoxelMeshRenderer meshRenderer;
 
@@ -95,6 +98,11 @@ namespace Voxelis.Rendering.Meshing
         }
 
         private void Update()
+        {
+            if(autoTick) Tick();
+        }
+
+        public void Tick()
         {
             if (meshRenderer == null)
             {

@@ -60,8 +60,9 @@ namespace Voxelis.Rendering.Meshing
                 kvp.Value.CompleteJobs();
             }
 
-            // End tick for all tracked sectors
-            EndTick();
+            // Note: We don't call EndTick() here. The sector's EndTick() is called by
+            // other rendering systems (e.g., VoxelisXRenderer for ray-tracing).
+            // We just consume the updateRecord without clearing it.
 
             // Cleanup removed sectors
             RemoveMissingSectors();
@@ -223,24 +224,6 @@ namespace Voxelis.Rendering.Meshing
                 }
 
                 sectorPositions.Dispose();
-            }
-        }
-
-        /// <summary>
-        /// Calls EndTick on all tracked sectors to clear update records.
-        /// </summary>
-        private void EndTick()
-        {
-            foreach (var kvp in sectorRenderers)
-            {
-                var entity = kvp.Key.Item1;
-                var sectorPos = kvp.Key.Item2;
-
-                if (entity != null && entity.Sectors.ContainsKey(sectorPos))
-                {
-                    ref Sector sector = ref entity.Sectors[sectorPos].Get();
-                    sector.EndTick();
-                }
             }
         }
 
