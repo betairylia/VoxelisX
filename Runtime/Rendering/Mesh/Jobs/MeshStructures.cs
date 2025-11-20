@@ -100,6 +100,7 @@ namespace Voxelis.Rendering.Meshing
 
     /// <summary>
     /// Lookup tables for face processing.
+    /// Burst-compatible: uses only 1D arrays (no multi-dimensional arrays).
     /// </summary>
     internal static class FaceLookup
     {
@@ -126,15 +127,24 @@ namespace Voxelis.Rendering.Meshing
             new float3(0, 0, -1)   // Z-
         };
 
-        // Vertex winding order for CCW triangles (indices into 4-vertex quad)
-        public static readonly int[,] WindingOrder = new int[6, 4]
+        // Vertex winding order flattened to 1D array (6 faces * 4 vertices = 24 elements)
+        // Access as: WindingOrder[faceDir * 4 + vertexIndex]
+        public static readonly int[] WindingOrder =
         {
-            { 3, 2, 1, 0 },  // X+
-            { 0, 1, 2, 3 },  // X-
-            { 3, 2, 1, 0 },  // Y+
-            { 0, 1, 2, 3 },  // Y-
-            { 3, 2, 1, 0 },  // Z+
-            { 0, 1, 2, 3 }   // Z-
+            3, 2, 1, 0,  // X+ (face 0)
+            0, 1, 2, 3,  // X- (face 1)
+            3, 2, 1, 0,  // Y+ (face 2)
+            0, 1, 2, 3,  // Y- (face 3)
+            3, 2, 1, 0,  // Z+ (face 4)
+            0, 1, 2, 3   // Z- (face 5)
         };
+
+        /// <summary>
+        /// Helper to get winding order for a specific face and vertex.
+        /// </summary>
+        public static int GetWindingOrder(int faceDir, int vertexIndex)
+        {
+            return WindingOrder[faceDir * 4 + vertexIndex];
+        }
     }
 }

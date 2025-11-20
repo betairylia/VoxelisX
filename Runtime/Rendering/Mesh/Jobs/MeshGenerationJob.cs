@@ -308,24 +308,31 @@ namespace Voxelis.Rendering.Meshing
             int tertiaryIdx = FaceLookup.TertiaryIndex[faceDir];
             int direction = FaceLookup.Direction[faceDir];
 
-            // Calculate vertex positions
-            float3[] quadVerts = new float3[4];
+            // Calculate vertex positions (no managed arrays for Burst compatibility)
+            float3 v0 = new float3(0, 0, 0);
+            float3 v1 = new float3(0, 0, 0);
+            float3 v2 = new float3(0, 0, 0);
+            float3 v3 = new float3(0, 0, 0);
 
-            for (int i = 0; i < 4; i++)
-            {
-                float3 vert = new float3(0, 0, 0);
+            // Vertex 0
+            v0[primaryIdx] = primary + (direction > 0 ? 1 : 0);
+            v0[secondaryIdx] = mq.min.x;
+            v0[tertiaryIdx] = mq.min.y;
 
-                // Primary axis
-                vert[primaryIdx] = primary + (direction > 0 ? 1 : 0);
+            // Vertex 1
+            v1[primaryIdx] = primary + (direction > 0 ? 1 : 0);
+            v1[secondaryIdx] = mq.max.x + 1;
+            v1[tertiaryIdx] = mq.min.y;
 
-                // Secondary axis
-                vert[secondaryIdx] = (i == 0 || i == 3) ? mq.min.x : mq.max.x + 1;
+            // Vertex 2
+            v2[primaryIdx] = primary + (direction > 0 ? 1 : 0);
+            v2[secondaryIdx] = mq.max.x + 1;
+            v2[tertiaryIdx] = mq.max.y + 1;
 
-                // Tertiary axis
-                vert[tertiaryIdx] = (i == 0 || i == 1) ? mq.min.y : mq.max.y + 1;
-
-                quadVerts[i] = vert;
-            }
+            // Vertex 3
+            v3[primaryIdx] = primary + (direction > 0 ? 1 : 0);
+            v3[secondaryIdx] = mq.min.x;
+            v3[tertiaryIdx] = mq.max.y + 1;
 
             // Add vertices with proper winding order
             int baseIdx = vertices.Length;
@@ -333,11 +340,16 @@ namespace Voxelis.Rendering.Meshing
             half4 color = BlockColorDecoder.DecodeColorHalf(mq.blockID);
             float2 uv = new float2(mq.blockID / 65535.0f, 0); // Pack block ID in UV for future use
 
-            for (int i = 0; i < 4; i++)
-            {
-                int windingIdx = FaceLookup.WindingOrder[faceDir, i];
-                vertices.Add(new VoxelVertex(quadVerts[windingIdx], normal, color, uv));
-            }
+            // Add vertices in winding order (avoid array indexing)
+            int w0 = FaceLookup.GetWindingOrder(faceDir, 0);
+            int w1 = FaceLookup.GetWindingOrder(faceDir, 1);
+            int w2 = FaceLookup.GetWindingOrder(faceDir, 2);
+            int w3 = FaceLookup.GetWindingOrder(faceDir, 3);
+
+            vertices.Add(new VoxelVertex(w0 == 0 ? v0 : w0 == 1 ? v1 : w0 == 2 ? v2 : v3, normal, color, uv));
+            vertices.Add(new VoxelVertex(w1 == 0 ? v0 : w1 == 1 ? v1 : w1 == 2 ? v2 : v3, normal, color, uv));
+            vertices.Add(new VoxelVertex(w2 == 0 ? v0 : w2 == 1 ? v1 : w2 == 2 ? v2 : v3, normal, color, uv));
+            vertices.Add(new VoxelVertex(w3 == 0 ? v0 : w3 == 1 ? v1 : w3 == 2 ? v2 : v3, normal, color, uv));
 
             // Add indices (2 triangles) - clockwise winding for Unity
             indices.Add(baseIdx + 0);
