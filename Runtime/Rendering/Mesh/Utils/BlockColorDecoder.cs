@@ -1,7 +1,7 @@
 using Unity.Mathematics;
 using UnityEngine;
 
-namespace Voxelis.Rendering.Mesh
+namespace Voxelis.Rendering.Meshing
 {
     /// <summary>
     /// Utility for decoding RGB555 block IDs to colors.

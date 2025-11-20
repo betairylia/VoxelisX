@@ -5,8 +5,9 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Rendering;
+using Voxelis.Utils;
 
-namespace Voxelis.Rendering.Mesh
+namespace Voxelis.Rendering.Meshing
 {
     /// <summary>
     /// Manages mesh rendering for a single sector.
@@ -193,7 +194,10 @@ namespace Voxelis.Rendering.Mesh
                 return;
 
             // Complete all jobs
-            JobHandle.CompleteAll(jobHandles);
+            foreach (var handle in jobHandles)
+            {
+                handle.Complete();
+            }
 
             // Apply meshes
             for (int i = 0; i < jobHandles.Count; i++)
@@ -311,7 +315,10 @@ namespace Voxelis.Rendering.Mesh
             // Complete any pending jobs
             if (jobHandles.Count > 0)
             {
-                JobHandle.CompleteAll(jobHandles);
+                foreach (var handle in jobHandles)
+                {
+                    handle.Complete();
+                }
                 foreach (var meshData in meshDataList)
                 {
                     meshData.Dispose();

@@ -4,7 +4,7 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
 
-namespace Voxelis.Rendering.Mesh
+namespace Voxelis.Rendering.Meshing
 {
     /// <summary>
     /// Burst-compiled job for generating voxel meshes using greedy face merging.

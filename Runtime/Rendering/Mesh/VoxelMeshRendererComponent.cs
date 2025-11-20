@@ -1,6 +1,6 @@
 using UnityEngine;
 
-namespace Voxelis.Rendering.Mesh
+namespace Voxelis.Rendering.Meshing
 {
     /// <summary>
     /// MonoBehaviour component for managing mesh-based voxel rendering.
