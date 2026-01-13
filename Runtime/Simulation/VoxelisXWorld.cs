@@ -1,6 +1,7 @@
 ﻿using Unity.Collections;
 using UnityEngine;
 using Voxelis;
+using Voxelis.Rendering.Meshing;
 using Voxelis.Simulation;
 using Voxelis.Tick;
 
@@ -12,6 +13,10 @@ namespace Voxelis
 
         [Header("Components")]
         [SerializeField] protected VoxelisXPhysicsWorld physicsWorld;
+
+        [SerializeField] protected VoxelRayCast rayCaster;
+        [SerializeField] protected VoxelisXRenderer rayTracedRenderer;
+        [SerializeField] protected VoxelMeshRendererComponent meshingRenderer;
         
         [Header("Performance")] public float targetTPS = 100.0f;
         
@@ -33,7 +38,14 @@ namespace Voxelis
 
         public override void Tick()
         {
+            // TEMP CODE -- Tick logic
+            rayCaster?.Tick();
+            
             physicsWorld.SimulateStep(1.0f / targetTPS);
+            
+            // Tick renderer
+            if(rayTracedRenderer?.enabled ?? false) rayTracedRenderer?.Tick();
+            if(meshingRenderer?.enabled ?? false) meshingRenderer?.Tick();
             
             // TODO: Implement proper ticking flow as below
             /*
