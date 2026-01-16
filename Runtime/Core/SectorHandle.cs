@@ -122,58 +122,39 @@ namespace Voxelis
     [BurstCompile]
     public struct SectorNeighborHandles
     {
+        public const int VON_NEUMANN_COUNT = 6;
+        public const int MOORE_COUNT = 26;
+
         public NativeArray<SectorHandle> Neighbors;
 
-        public static readonly int3[] Directions = new int3[6]
+        // [0-5]: Face, [6-17]: Edge, [18-25]: Corner
+        public static readonly int3[] Directions = new int3[26]
         {
-            new int3( 1,  0,  0),
-            new int3(-1,  0,  0),
-            new int3( 0,  1,  0),
-            new int3( 0, -1,  0),
-            new int3( 0,  0,  1),
-            new int3( 0,  0, -1),
+            // Face (Von Neumann)
+            new int3( 1,  0,  0), new int3(-1,  0,  0), new int3( 0,  1,  0),
+            new int3( 0, -1,  0), new int3( 0,  0,  1), new int3( 0,  0, -1),
+            // Edge
+            new int3( 1,  1,  0), new int3( 1, -1,  0), new int3(-1,  1,  0), new int3(-1, -1,  0),
+            new int3( 1,  0,  1), new int3( 1,  0, -1), new int3(-1,  0,  1), new int3(-1,  0, -1),
+            new int3( 0,  1,  1), new int3( 0,  1, -1), new int3( 0, -1,  1), new int3( 0, -1, -1),
+            // Corner
+            new int3( 1,  1,  1), new int3( 1,  1, -1), new int3( 1, -1,  1), new int3( 1, -1, -1),
+            new int3(-1,  1,  1), new int3(-1,  1, -1), new int3(-1, -1,  1), new int3(-1, -1, -1),
         };
-
-        public enum Direction
-        {
-            Right = 0,
-            Left = 1,
-            Up = 2,
-            Down = 3,
-            Forward = 4,
-            Back = 5,
-            Length = 6,
-        }
 
         public static SectorNeighborHandles Create(Allocator allocator = Allocator.Persistent)
         {
-            SectorNeighborHandles handles = new SectorNeighborHandles();
-            handles.Neighbors = new NativeArray<SectorHandle>(6, allocator);
-            return handles;
+            return new SectorNeighborHandles
+            {
+                Neighbors = new NativeArray<SectorHandle>(MOORE_COUNT, allocator)
+            };
         }
-        
-        // X+
-        public static int3 dRight => Directions[0]; 
+
         public SectorHandle Right => Neighbors[0];
-        
-        // X-
-        public static int3 dLeft => Directions[1]; 
         public SectorHandle Left => Neighbors[1];
-        
-        // Y+
-        public static int3 dUp => Directions[2]; 
         public SectorHandle Up => Neighbors[2];
-        
-        // Y-
-        public static int3 dDown => Directions[3]; 
         public SectorHandle Down => Neighbors[3];
-        
-        // Z+
-        public static int3 dForward => Directions[4]; 
         public SectorHandle Forward => Neighbors[4];
-        
-        // Z-
-        public static int3 dBack => Directions[5]; 
         public SectorHandle Back => Neighbors[5];
     }
 }

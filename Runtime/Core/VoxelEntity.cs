@@ -32,20 +32,28 @@ namespace Voxelis
         /// </summary>
         public RigidTransform transform;
 
+        // Dirty propagation
+        public ushort entityDirtyFlags;
+        public ushort entityRequireUpdateFlags;
+
         public VoxelEntityData(Allocator allocator)
         {
             sectors = new(1, allocator);
             sectorNeighbors = new(1, allocator);
             sectorsToRemove = new(allocator);
             transform = RigidTransform.identity;
+            entityDirtyFlags = 0;
+            entityRequireUpdateFlags = 0;
         }
-        
+
         public VoxelEntityData(Allocator allocator, Transform transform)
         {
             sectors = new(1, allocator);
             sectorNeighbors = new(1, allocator);
             sectorsToRemove = new(allocator);
             this.transform = new RigidTransform(transform.rotation, transform.position);
+            entityDirtyFlags = 0;
+            entityRequireUpdateFlags = 0;
         }
 
         /// <summary>
@@ -79,16 +87,32 @@ namespace Voxelis
         public void AddSectorAt(int3 pos, SectorHandle sector)
         {
             sectors.Add(pos, sector);
-            
-            sectorNeighbors.Add(pos, SectorNeighborHandles.Create());
-            
-            // Update neighbors
+            SectorNeighborHandles newHandles = SectorNeighborHandles.Create();
+            sectorNeighbors.Add(pos, newHandles);
+
+            // Bidirectional linking for all 26 neighbors
             for (int d = 0; d < SectorNeighborHandles.Directions.Length; d++)
             {
                 int3 dir = SectorNeighborHandles.Directions[d];
-                if (sectorNeighbors.TryGetValue(pos - dir, out SectorNeighborHandles handles))
+                int3 neighborPos = pos + dir;
+
+                if (sectors.TryGetValue(neighborPos, out SectorHandle neighborSector))
                 {
-                    handles.Neighbors[d] = sector;
+                    // Link new sector to existing neighbor
+                    newHandles.Neighbors[d] = neighborSector;
+
+                    // Link neighbor back to new sector (find opposite direction)
+                    if (sectorNeighbors.TryGetValue(neighborPos, out SectorNeighborHandles neighborHandles))
+                    {
+                        for (int oppD = 0; oppD < SectorNeighborHandles.Directions.Length; oppD++)
+                        {
+                            if (SectorNeighborHandles.Directions[oppD].Equals(-dir))
+                            {
+                                neighborHandles.Neighbors[oppD] = sector;
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -190,6 +214,55 @@ namespace Voxelis
         }
 
         /// <summary>
+        /// Propagates dirty flags to neighbors. Iterates ALL sectors, pulls dirty flags from neighbors.
+        /// </summary>
+        public JobHandle PropagateDirtyFlags(DirtyFlags flagsToPropagate = DirtyFlags.All, bool async = false)
+        {
+            if (sectors.Count == 0) return default;
+
+            // Get all sector positions
+            NativeArray<int3> allPositions = sectors.GetKeyArray(Allocator.TempJob);
+
+            var job = new DirtyPropagationJob
+            {
+                allSectorPositions = allPositions,
+                sectors = sectors,
+                sectorNeighbors = sectorNeighbors,
+                neighborhoodType = DirtyPropagationSettings.Settings.neighborhoodType,
+                flagsToPropagate = flagsToPropagate
+            };
+
+            JobHandle handle;
+            if (async)
+            {
+                handle = job.Schedule(allPositions.Length, 64);
+                allPositions.Dispose(handle);
+            }
+            else
+            {
+                job.Run(allPositions.Length);
+                allPositions.Dispose();
+                ClearDirtyFlags();
+                handle = default;
+            }
+
+            return handle;
+        }
+
+        /// <summary>
+        /// Clears dirty flags for all sectors (call after propagation completes).
+        /// </summary>
+        public void ClearDirtyFlags()
+        {
+            entityDirtyFlags = 0;
+            foreach (var kvp in sectors)
+            {
+                ref Sector sector = ref kvp.Value.Get();
+                sector.ClearDirtyFlags();
+            }
+        }
+
+        /// <summary>
         /// Disposes all resources used by this voxel entity data, including all sectors and the native collections.
         /// </summary>
         public void Dispose()
@@ -212,6 +285,15 @@ namespace Voxelis
             if (sectors.IsCreated)
             {
                 sectors.Dispose();
+            }
+            if (sectorNeighbors.IsCreated)
+            {
+                foreach (var kvp in sectorNeighbors)
+                {
+                    if (kvp.Value.Neighbors.IsCreated)
+                        kvp.Value.Neighbors.Dispose();
+                }
+                sectorNeighbors.Dispose();
             }
             if (sectorsToRemove.IsCreated)
             {
@@ -368,6 +450,14 @@ namespace Voxelis
         public void SetBlock(int3 pos, Block b)
         {
             data.SetBlock(pos, b);
+        }
+
+        /// <summary>
+        /// Propagates dirty flags to neighbor bricks. Call this once per tick after modifications.
+        /// </summary>
+        public JobHandle PropagateDirtyFlags(DirtyFlags flags = DirtyFlags.All, bool async = false)
+        {
+            return data.PropagateDirtyFlags(flags, async);
         }
 
         /// <summary>

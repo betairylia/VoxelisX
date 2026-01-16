@@ -111,6 +111,14 @@ namespace Voxelis
         /// </summary>
         public UnsafeList<short> updateRecord;
 
+        // Dirty propagation buffers
+        [NativeDisableUnsafePtrRestriction]
+        public ushort* brickDirtyFlags;           // Write buffer: what changed THIS tick
+        [NativeDisableUnsafePtrRestriction]
+        public ushort* brickRequireUpdateFlags;   // Read buffer: what needs processing (from propagation)
+        public ushort sectorDirtyFlags;
+        public ushort sectorRequireUpdateFlags;
+
         /// <summary>
         /// Returns true if there are pending brick updates for the renderer.
         /// </summary>
@@ -165,41 +173,34 @@ namespace Voxelis
             int initialBricks = 1,
             NativeArrayOptions options = NativeArrayOptions.ClearMemory)
         {
+            int totalBricks = SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS;
+
             Sector s = new Sector()
             {
-                voxels = new UnsafeList<Block>(
-                    initialBricks * BLOCKS_IN_BRICK, allocator),
-                brickIdx = (short*)UnsafeUtility.Malloc(
-                    SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS * sizeof(short),
-                    UnsafeUtility.AlignOf<short>(),
-                    allocator),
-                brickFlags = (BrickUpdateInfo.Type*)UnsafeUtility.Malloc(
-                    SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS * sizeof(BrickUpdateInfo.Type),
-                    UnsafeUtility.AlignOf<BrickUpdateInfo.Type>(),
-                    allocator),
+                voxels = new UnsafeList<Block>(initialBricks * BLOCKS_IN_BRICK, allocator),
+                brickIdx = (short*)UnsafeUtility.Malloc(totalBricks * sizeof(short), UnsafeUtility.AlignOf<short>(), allocator),
+                brickFlags = (BrickUpdateInfo.Type*)UnsafeUtility.Malloc(totalBricks * sizeof(BrickUpdateInfo.Type), UnsafeUtility.AlignOf<BrickUpdateInfo.Type>(), allocator),
                 updateRecord = new UnsafeList<short>(10, allocator),
-                currentBrickId = (int*)UnsafeUtility.Malloc(
-                    sizeof(int),
-                    UnsafeUtility.AlignOf<int>(),
-                    allocator), 
-
+                currentBrickId = (int*)UnsafeUtility.Malloc(sizeof(int), UnsafeUtility.AlignOf<int>(), allocator),
+                brickDirtyFlags = (ushort*)UnsafeUtility.Malloc(totalBricks * sizeof(ushort), UnsafeUtility.AlignOf<ushort>(), allocator),
+                brickRequireUpdateFlags = (ushort*)UnsafeUtility.Malloc(totalBricks * sizeof(ushort), UnsafeUtility.AlignOf<ushort>(), allocator),
                 NonEmptyBricks = new UnsafeList<short>(initialBricks, allocator),
+                sectorDirtyFlags = 0,
+                sectorRequireUpdateFlags = 0,
             };
 
-            // Initialize fixed arrays
             if (options == NativeArrayOptions.ClearMemory)
             {
-                UnsafeUtility.MemClear(s.brickIdx, SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS * sizeof(short));
-                UnsafeUtility.MemClear(s.brickFlags, SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS * sizeof(BrickUpdateInfo.Type));
+                UnsafeUtility.MemClear(s.brickIdx, totalBricks * sizeof(short));
+                UnsafeUtility.MemClear(s.brickFlags, totalBricks * sizeof(BrickUpdateInfo.Type));
+                UnsafeUtility.MemClear(s.brickDirtyFlags, totalBricks * sizeof(ushort));
+                UnsafeUtility.MemClear(s.brickRequireUpdateFlags, totalBricks * sizeof(ushort));
             }
 
-            for (int i = 0; i < SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS; i++)
-            {
+            for (int i = 0; i < totalBricks; i++)
                 s.brickIdx[i] = BRICKID_EMPTY;
-            }
 
             *(s.currentBrickId) = 0;
-            
             return s;
         }
 
@@ -252,6 +253,8 @@ namespace Voxelis
             if (updateRecord.IsCreated) updateRecord.Dispose();
             if (currentBrickId != null) UnsafeUtility.Free(currentBrickId, allocator);
             if (NonEmptyBricks.IsCreated) NonEmptyBricks.Dispose();
+            if (brickDirtyFlags != null) UnsafeUtility.Free(brickDirtyFlags, allocator);
+            if (brickRequireUpdateFlags != null) UnsafeUtility.Free(brickRequireUpdateFlags, allocator);
         }
 
         /// <summary>
@@ -432,6 +435,43 @@ namespace Voxelis
             }
 
             updateRecord.Clear();
+        }
+
+        // Dirty propagation API
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void MarkBrickDirty(int brickIdx, DirtyFlags flags)
+        {
+            brickDirtyFlags[brickIdx] |= (ushort)flags;
+            sectorDirtyFlags |= (ushort)flags;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void MarkBrickRequireUpdate(int brickIdx, DirtyFlags flags)
+        {
+            brickRequireUpdateFlags[brickIdx] |= (ushort)flags;
+            sectorRequireUpdateFlags |= (ushort)flags;
+        }
+
+        public void ClearDirtyFlags()
+        {
+            int totalBricks = SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS;
+            UnsafeUtility.MemClear(brickDirtyFlags, totalBricks * sizeof(ushort));
+            sectorDirtyFlags = 0;
+        }
+
+        public void ClearRequireUpdateFlags(DirtyFlags flags)
+        {
+            ushort clearMask = (ushort)~flags;
+            int totalBricks = SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS;
+            ushort aggregated = 0;
+
+            for (int i = 0; i < totalBricks; i++)
+            {
+                brickRequireUpdateFlags[i] &= clearMask;
+                aggregated |= brickRequireUpdateFlags[i];
+            }
+
+            sectorRequireUpdateFlags = aggregated;
         }
 
         #region PHYSICS
