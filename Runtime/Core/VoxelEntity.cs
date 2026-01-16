@@ -23,6 +23,7 @@ namespace Voxelis
         /// </summary>
         // public Dictionary<Vector3Int, Sector> sectors = new Dictionary<Vector3Int, Sector>();
         public NativeHashMap<int3, SectorHandle> sectors;
+        public NativeHashMap<int3, SectorNeighborHandles> sectorNeighbors;
         public NativeQueue<int3> sectorsToRemove;
 
         /// <summary>
@@ -34,6 +35,7 @@ namespace Voxelis
         public VoxelEntityData(Allocator allocator)
         {
             sectors = new(1, allocator);
+            sectorNeighbors = new(1, allocator);
             sectorsToRemove = new(allocator);
             transform = RigidTransform.identity;
         }
@@ -41,6 +43,7 @@ namespace Voxelis
         public VoxelEntityData(Allocator allocator, Transform transform)
         {
             sectors = new(1, allocator);
+            sectorNeighbors = new(1, allocator);
             sectorsToRemove = new(allocator);
             this.transform = new RigidTransform(transform.rotation, transform.position);
         }
@@ -50,7 +53,7 @@ namespace Voxelis
         /// </summary>
         public void AddEmptySectorAt(int3 pos)
         {
-            sectors.Add(pos, SectorHandle.AllocEmpty());
+            AddSectorAt(pos, SectorHandle.AllocEmpty());
         }
 
         /// <summary>
@@ -67,7 +70,7 @@ namespace Voxelis
             // Initialize the sector in-place
             *sectorPtr = sector;
 
-            sectors.Add(pos, new SectorHandle(sectorPtr));
+            AddSectorAt(pos, new SectorHandle(sectorPtr));
         }
 
         /// <summary>
@@ -76,6 +79,18 @@ namespace Voxelis
         public void AddSectorAt(int3 pos, SectorHandle sector)
         {
             sectors.Add(pos, sector);
+            
+            sectorNeighbors.Add(pos, SectorNeighborHandles.Create());
+            
+            // Update neighbors
+            for (int d = 0; d < SectorNeighborHandles.Directions.Length; d++)
+            {
+                int3 dir = SectorNeighborHandles.Directions[d];
+                if (sectorNeighbors.TryGetValue(pos - dir, out SectorNeighborHandles handles))
+                {
+                    handles.Neighbors[d] = sector;
+                }
+            }
         }
 
         /// <summary>
@@ -90,8 +105,19 @@ namespace Voxelis
                 return false;
             }
 
+            // Update neighbors
+            for (int d = 0; d < SectorNeighborHandles.Directions.Length; d++)
+            {
+                int3 dir = SectorNeighborHandles.Directions[d];
+                if (sectorNeighbors.TryGetValue(pos - dir, out SectorNeighborHandles handles))
+                {
+                    handles.Neighbors[d] = new SectorHandle(null);
+                }
+            }
+            
             sectors[pos].Dispose(Allocator.Persistent);
             sectors.Remove(pos);
+            sectorNeighbors.Remove(pos);
             return true;
         }
 

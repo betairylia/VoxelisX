@@ -1,7 +1,10 @@
 using System;
+using System.Numerics;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
+using Unity.Mathematics;
+using UnityEditor.TerrainTools;
 
 namespace Voxelis
 {
@@ -14,6 +17,8 @@ namespace Voxelis
     {
         [NativeDisableUnsafePtrRestriction]
         private Sector* _ptr;
+        
+        public bool IsNull => _ptr == null;
 
         public static SectorHandle AllocEmpty(int initialBricks = 1, Allocator allocator = Allocator.Persistent)
         {
@@ -112,5 +117,63 @@ namespace Voxelis
         /// Returns true if the sector contains no allocated bricks.
         /// </summary>
         public bool IsRendererEmpty => _ptr->IsRendererEmpty;
+    }
+
+    [BurstCompile]
+    public struct SectorNeighborHandles
+    {
+        public NativeArray<SectorHandle> Neighbors;
+
+        public static readonly int3[] Directions = new int3[6]
+        {
+            new int3( 1,  0,  0),
+            new int3(-1,  0,  0),
+            new int3( 0,  1,  0),
+            new int3( 0, -1,  0),
+            new int3( 0,  0,  1),
+            new int3( 0,  0, -1),
+        };
+
+        public enum Direction
+        {
+            Right = 0,
+            Left = 1,
+            Up = 2,
+            Down = 3,
+            Forward = 4,
+            Back = 5,
+            Length = 6,
+        }
+
+        public static SectorNeighborHandles Create(Allocator allocator = Allocator.Persistent)
+        {
+            SectorNeighborHandles handles = new SectorNeighborHandles();
+            handles.Neighbors = new NativeArray<SectorHandle>(6, allocator);
+            return handles;
+        }
+        
+        // X+
+        public static int3 dRight => Directions[0]; 
+        public SectorHandle Right => Neighbors[0];
+        
+        // X-
+        public static int3 dLeft => Directions[1]; 
+        public SectorHandle Left => Neighbors[1];
+        
+        // Y+
+        public static int3 dUp => Directions[2]; 
+        public SectorHandle Up => Neighbors[2];
+        
+        // Y-
+        public static int3 dDown => Directions[3]; 
+        public SectorHandle Down => Neighbors[3];
+        
+        // Z+
+        public static int3 dForward => Directions[4]; 
+        public SectorHandle Forward => Neighbors[4];
+        
+        // Z-
+        public static int3 dBack => Directions[5]; 
+        public SectorHandle Back => Neighbors[5];
     }
 }
