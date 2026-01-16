@@ -31,26 +31,18 @@ namespace Voxelis
 
             // Early exit: Skip if current sector has no dirty flags AND no neighbors have dirty flags
             bool currentSectorDirty = (sector.sectorDirtyFlags & (ushort)flagsToPropagate) != 0;
-            bool anyNeighborDirty = false;
 
             if (!currentSectorDirty)
             {
                 // Check if any neighbor sector has dirty flags
-                for (int dir = 0; dir < neighborCount; dir++)
+                bool anyNeighborDirty = false;
+                for (int i = 0; i < neighborCount; i++)
                 {
-                    int3 neighborOffset = SectorNeighborHandles.Directions[dir];
-                    if (helper.HasNeighbor(neighborOffset))
+                    SectorHandle neighborHandle = neighbors.Neighbors[i];
+                    if (!neighborHandle.IsNull && (neighborHandle.Get().sectorDirtyFlags & (ushort)flagsToPropagate) != 0)
                     {
-                        SectorHandle neighborHandle = helper.GetNeighbor(neighborOffset);
-                        if (!neighborHandle.IsNull)
-                        {
-                            ushort neighborSectorDirty = neighborHandle.Get().sectorDirtyFlags;
-                            if ((neighborSectorDirty & (ushort)flagsToPropagate) != 0)
-                            {
-                                anyNeighborDirty = true;
-                                break;
-                            }
-                        }
+                        anyNeighborDirty = true;
+                        break;
                     }
                 }
 
