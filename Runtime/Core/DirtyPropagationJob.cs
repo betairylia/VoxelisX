@@ -29,6 +29,38 @@ namespace Voxelis
             // Create helper for convenient neighbor access
             var helper = new SectorNeighborhoodHelper(handle, neighbors);
 
+            // Early exit: Skip if current sector has no dirty flags AND no neighbors have dirty flags
+            bool currentSectorDirty = (sector.sectorDirtyFlags & (ushort)flagsToPropagate) != 0;
+            bool anyNeighborDirty = false;
+
+            if (!currentSectorDirty)
+            {
+                // Check if any neighbor sector has dirty flags
+                for (int dir = 0; dir < neighborCount; dir++)
+                {
+                    int3 neighborOffset = SectorNeighborHandles.Directions[dir];
+                    if (helper.HasNeighbor(neighborOffset))
+                    {
+                        SectorHandle neighborHandle = helper.GetNeighbor(neighborOffset);
+                        if (!neighborHandle.IsNull)
+                        {
+                            ushort neighborSectorDirty = neighborHandle.Get().sectorDirtyFlags;
+                            if ((neighborSectorDirty & (ushort)flagsToPropagate) != 0)
+                            {
+                                anyNeighborDirty = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Skip processing if neither current sector nor any neighbor is dirty
+                if (!anyNeighborDirty)
+                {
+                    return;
+                }
+            }
+
             // For each brick, check neighbors' dirty flags
             for (int brickIdx = 0; brickIdx < Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS; brickIdx++)
             {
