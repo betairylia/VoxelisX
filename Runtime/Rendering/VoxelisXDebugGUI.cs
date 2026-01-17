@@ -31,6 +31,9 @@ public class VoxelisXDebugGUI : MonoBehaviour
     private GUIStyle labelStyle;
     private bool stylesInitialized = false;
 
+    // Runtime line rendering
+    private Material lineMaterial;
+
     // Rendering mode detection
     private enum RenderingMode
     {
@@ -49,6 +52,24 @@ public class VoxelisXDebugGUI : MonoBehaviour
         {
             rayTracingRenderer = VoxelisXRenderer.instance;
         }
+
+        // Create material for runtime line rendering
+        CreateLineMaterial();
+    }
+
+    private void CreateLineMaterial()
+    {
+        if (lineMaterial == null)
+        {
+            // Create a simple unlit shader material for line rendering
+            Shader shader = Shader.Find("Hidden/Internal-Colored");
+            lineMaterial = new Material(shader);
+            lineMaterial.hideFlags = HideFlags.HideAndDontSave;
+            lineMaterial.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+            lineMaterial.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+            lineMaterial.SetInt("_Cull", (int)UnityEngine.Rendering.CullMode.Off);
+            lineMaterial.SetInt("_ZWrite", 0);
+        }
     }
 
     private void Update()
@@ -57,6 +78,14 @@ public class VoxelisXDebugGUI : MonoBehaviour
         if (Input.GetKeyDown(toggleKey))
         {
             isVisible = !isVisible;
+        }
+    }
+
+    private void OnDestroy()
+    {
+        if (lineMaterial != null)
+        {
+            DestroyImmediate(lineMaterial);
         }
     }
 
@@ -208,10 +237,9 @@ public class VoxelisXDebugGUI : MonoBehaviour
 
     private RenderingMode DetectRenderingMode()
     {
-        bool hasRayTracing = rayTracingRenderer != null && rayTracingRenderer.instanceCount > 0;
-        bool hasMesh = meshRendererComponent != null &&
-                       meshRendererComponent.MeshRenderer != null &&
-                       meshRendererComponent.MeshRenderer.SectorRendererCount > 0;
+        // Match the logic in VoxelisXWorld.Tick (lines 123-124)
+        bool hasRayTracing = rayTracingRenderer != null && rayTracingRenderer.enabled;
+        bool hasMesh = meshRendererComponent != null && meshRendererComponent.enabled;
 
         if (hasRayTracing && hasMesh)
             return RenderingMode.Hybrid;
@@ -223,30 +251,40 @@ public class VoxelisXDebugGUI : MonoBehaviour
             return RenderingMode.Unknown;
     }
 
-    private unsafe void OnDrawGizmos()
+    private unsafe void OnPostRender()
     {
         if (!isVisible) return;
+        if (!showSectorBorders && !showBrickBorders) return;
 
         var world = VoxelisXCoreWorld.instance;
         if (world == null) return;
+
+        CreateLineMaterial();
+        lineMaterial.SetPass(0);
+
+        GL.PushMatrix();
+        GL.Begin(GL.LINES);
 
         // Draw sector and brick borders
         foreach (var entity in world.entities)
         {
             if (entity == null) continue;
 
+            // Get entity's transform matrix (includes position, rotation, and scale)
+            Matrix4x4 entityMatrix = entity.transform.localToWorldMatrix;
+
             foreach (var kvp in entity.Sectors)
             {
                 int3 sectorPos = kvp.Key;
                 ref Sector sector = ref kvp.Value.Get();
 
-                // Calculate sector world position
-                float3 sectorWorldPos = (float3)entity.transform.position + (float3)sectorPos * Sector.SECTOR_SIZE_IN_BLOCKS;
+                // Calculate sector local position (in entity's local space)
+                float3 sectorLocalPos = (float3)sectorPos * Sector.SECTOR_SIZE_IN_BLOCKS;
 
                 // Draw sector borders
                 if (showSectorBorders)
                 {
-                    DrawWireBox(sectorWorldPos, new float3(Sector.SECTOR_SIZE_IN_BLOCKS), sectorBorderColor);
+                    DrawWireBox(sectorLocalPos, new float3(Sector.SECTOR_SIZE_IN_BLOCKS), sectorBorderColor, entityMatrix);
                 }
 
                 // Draw brick borders
@@ -263,48 +301,61 @@ public class VoxelisXDebugGUI : MonoBehaviour
                             int brickZ = (brickIdxAbs / Sector.SIZE_IN_BRICKS) % Sector.SIZE_IN_BRICKS;
 
                             float3 brickLocalPos = new float3(brickX, brickY, brickZ) * Sector.SIZE_IN_BLOCKS;
-                            float3 brickWorldPos = sectorWorldPos + brickLocalPos;
+                            float3 brickInSectorPos = sectorLocalPos + brickLocalPos;
 
-                            DrawWireBox(brickWorldPos, new float3(Sector.SIZE_IN_BLOCKS), brickBorderColor);
+                            DrawWireBox(brickInSectorPos, new float3(Sector.SIZE_IN_BLOCKS), brickBorderColor, entityMatrix);
                         }
                     }
                 }
             }
         }
+
+        GL.End();
+        GL.PopMatrix();
     }
 
-    private void DrawWireBox(float3 center, float3 size, Color color)
+    private void DrawWireBox(float3 center, float3 size, Color color, Matrix4x4 transform)
     {
-        Gizmos.color = color;
+        GL.Color(color);
 
         float3 halfSize = size * 0.5f;
 
-        // Bottom face
+        // Define 8 corners in local space
         float3 bottomFrontLeft = center + new float3(-halfSize.x, -halfSize.y, -halfSize.z);
         float3 bottomFrontRight = center + new float3(halfSize.x, -halfSize.y, -halfSize.z);
         float3 bottomBackLeft = center + new float3(-halfSize.x, -halfSize.y, halfSize.z);
         float3 bottomBackRight = center + new float3(halfSize.x, -halfSize.y, halfSize.z);
-
-        Gizmos.DrawLine(bottomFrontLeft, bottomFrontRight);
-        Gizmos.DrawLine(bottomFrontRight, bottomBackRight);
-        Gizmos.DrawLine(bottomBackRight, bottomBackLeft);
-        Gizmos.DrawLine(bottomBackLeft, bottomFrontLeft);
-
-        // Top face
         float3 topFrontLeft = center + new float3(-halfSize.x, halfSize.y, -halfSize.z);
         float3 topFrontRight = center + new float3(halfSize.x, halfSize.y, -halfSize.z);
         float3 topBackLeft = center + new float3(-halfSize.x, halfSize.y, halfSize.z);
         float3 topBackRight = center + new float3(halfSize.x, halfSize.y, halfSize.z);
 
-        Gizmos.DrawLine(topFrontLeft, topFrontRight);
-        Gizmos.DrawLine(topFrontRight, topBackRight);
-        Gizmos.DrawLine(topBackRight, topBackLeft);
-        Gizmos.DrawLine(topBackLeft, topFrontLeft);
+        // Transform all corners to world space
+        Vector3 bfl = transform.MultiplyPoint3x4(bottomFrontLeft);
+        Vector3 bfr = transform.MultiplyPoint3x4(bottomFrontRight);
+        Vector3 bbl = transform.MultiplyPoint3x4(bottomBackLeft);
+        Vector3 bbr = transform.MultiplyPoint3x4(bottomBackRight);
+        Vector3 tfl = transform.MultiplyPoint3x4(topFrontLeft);
+        Vector3 tfr = transform.MultiplyPoint3x4(topFrontRight);
+        Vector3 tbl = transform.MultiplyPoint3x4(topBackLeft);
+        Vector3 tbr = transform.MultiplyPoint3x4(topBackRight);
+
+        // Bottom face
+        GL.Vertex(bfl); GL.Vertex(bfr);
+        GL.Vertex(bfr); GL.Vertex(bbr);
+        GL.Vertex(bbr); GL.Vertex(bbl);
+        GL.Vertex(bbl); GL.Vertex(bfl);
+
+        // Top face
+        GL.Vertex(tfl); GL.Vertex(tfr);
+        GL.Vertex(tfr); GL.Vertex(tbr);
+        GL.Vertex(tbr); GL.Vertex(tbl);
+        GL.Vertex(tbl); GL.Vertex(tfl);
 
         // Vertical edges
-        Gizmos.DrawLine(bottomFrontLeft, topFrontLeft);
-        Gizmos.DrawLine(bottomFrontRight, topFrontRight);
-        Gizmos.DrawLine(bottomBackLeft, topBackLeft);
-        Gizmos.DrawLine(bottomBackRight, topBackRight);
+        GL.Vertex(bfl); GL.Vertex(tfl);
+        GL.Vertex(bfr); GL.Vertex(tfr);
+        GL.Vertex(bbl); GL.Vertex(tbl);
+        GL.Vertex(bbr); GL.Vertex(tbr);
     }
 }
