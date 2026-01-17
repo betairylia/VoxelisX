@@ -149,7 +149,7 @@ public class VoxelisXDebugGUI : MonoBehaviour
                         foreach (var kvp in entity.Sectors)
                         {
                             ref Sector sector = ref kvp.Value.Get();
-                            totalBricks += sector.brickCount;
+                            totalBricks += Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS;
                         }
                     }
                 }
@@ -223,7 +223,7 @@ public class VoxelisXDebugGUI : MonoBehaviour
             return RenderingMode.Unknown;
     }
 
-    private void OnDrawGizmos()
+    private unsafe void OnDrawGizmos()
     {
         if (!isVisible) return;
 
@@ -241,7 +241,7 @@ public class VoxelisXDebugGUI : MonoBehaviour
                 ref Sector sector = ref kvp.Value.Get();
 
                 // Calculate sector world position
-                float3 sectorWorldPos = entity.transform.position + (float3)sectorPos * Sector.SECTOR_SIZE_IN_BLOCKS;
+                float3 sectorWorldPos = (float3)entity.transform.position + (float3)sectorPos * Sector.SECTOR_SIZE_IN_BLOCKS;
 
                 // Draw sector borders
                 if (showSectorBorders)
