@@ -58,7 +58,7 @@ namespace Voxelis
             JobHandle handle = new JobHandle();
             for (int i = 0; i < entities.Count; i++)
             {
-                handle = JobHandle.CombineDependencies(handle, entities[i].PropagateDirtyFlags());
+                handle = JobHandle.CombineDependencies(handle, entities[i].PropagateDirtyFlags(DirtyFlags.All, true));
             }
             handle.Complete();
             

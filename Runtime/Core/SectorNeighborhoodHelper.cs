@@ -288,9 +288,9 @@ namespace Voxelis
         /// <returns>The neighbor index, or -1 if not found</returns>
         private int FindNeighborIndex(int3 offset)
         {
-            for (int i = 0; i < SectorNeighborHandles.Directions.Length; i++)
+            for (int i = 0; i < DirtyPropagationSettings.neighborhoodCount; i++)
             {
-                if (SectorNeighborHandles.Directions[i].Equals(offset))
+                if (DirtyPropagationSettings.Directions[i].Equals(offset))
                 {
                     return i;
                 }

@@ -379,14 +379,19 @@ namespace Voxelis
             }
 
             // Set the block in target brick
-            voxels[
-                bid * BLOCKS_IN_BRICK
-                + ToBlockIdx(
-                    x & BRICK_MASK,
-                    y & BRICK_MASK,
-                    z & BRICK_MASK)
-            ] = b;
+            int vid = bid * BLOCKS_IN_BRICK
+                  + ToBlockIdx(
+                      x & BRICK_MASK,
+                      y & BRICK_MASK,
+                      z & BRICK_MASK);
 
+            if (voxels[vid] != b)
+            {
+                // TODO: Specify DirtyFlag
+                MarkBrickDirty(bid, DirtyFlags.Reserved0);
+                voxels[vid] = b;
+            }
+            
             if (brickFlags[brick_sector_index_id] == BrickUpdateInfo.Type.Idle)
             {
                 brickFlags[brick_sector_index_id] = BrickUpdateInfo.Type.Modified;

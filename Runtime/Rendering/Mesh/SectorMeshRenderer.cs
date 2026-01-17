@@ -215,6 +215,11 @@ namespace Voxelis.Rendering.Meshing
             jobHandles.Clear();
             meshDataList.Clear();
             chunkIndices.Clear();
+            
+            // Clear sector dirty flags etc.
+            ref Sector sector = ref sectorHandle.Get();
+            sector.ReorderBricks();
+            sector.EndTick();
         }
 
         /// <summary>

@@ -93,7 +93,7 @@ namespace Voxelis
             // Bidirectional linking for all 26 neighbors
             for (int d = 0; d < DirtyPropagationSettings.neighborhoodCount; d++)
             {
-                int3 dir = SectorNeighborHandles.Directions[d];
+                int3 dir = DirtyPropagationSettings.Directions[d];
                 int3 neighborPos = pos + dir;
 
                 if (sectors.TryGetValue(neighborPos, out SectorHandle neighborSector))
@@ -104,14 +104,8 @@ namespace Voxelis
                     // Link neighbor back to new sector (find opposite direction)
                     if (sectorNeighbors.TryGetValue(neighborPos, out SectorNeighborHandles neighborHandles))
                     {
-                        for (int oppD = 0; oppD < DirtyPropagationSettings.neighborhoodCount; oppD++)
-                        {
-                            if (SectorNeighborHandles.Directions[oppD].Equals(-dir))
-                            {
-                                neighborHandles.Neighbors[oppD] = sector;
-                                break;
-                            }
-                        }
+                        int oppD = DirtyPropagationSettings.OppositeDirectionIndices[d];
+                        neighborHandles.Neighbors[oppD] = sector;
                     }
                 }
             }
@@ -130,9 +124,9 @@ namespace Voxelis
             }
 
             // Update neighbors
-            for (int d = 0; d < SectorNeighborHandles.Directions.Length; d++)
+            for (int d = 0; d < DirtyPropagationSettings.Directions.Length; d++)
             {
-                int3 dir = SectorNeighborHandles.Directions[d];
+                int3 dir = DirtyPropagationSettings.Directions[d];
                 if (sectorNeighbors.TryGetValue(pos - dir, out SectorNeighborHandles handles))
                 {
                     handles.Neighbors[d] = new SectorHandle(null);

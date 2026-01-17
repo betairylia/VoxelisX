@@ -122,26 +122,8 @@ namespace Voxelis
     [BurstCompile]
     public unsafe struct SectorNeighborHandles
     {
-        public const int VON_NEUMANN_COUNT = 6;
-        public const int MOORE_COUNT = 26;
-
         [NativeDisableUnsafePtrRestriction]
         public SectorHandle* Neighbors;
-
-        // [0-5]: Face, [6-17]: Edge, [18-25]: Corner
-        public static readonly int3[] Directions = new int3[26]
-        {
-            // Face (Von Neumann)
-            new int3( 1,  0,  0), new int3(-1,  0,  0), new int3( 0,  1,  0),
-            new int3( 0, -1,  0), new int3( 0,  0,  1), new int3( 0,  0, -1),
-            // Edge
-            new int3( 1,  1,  0), new int3( 1, -1,  0), new int3(-1,  1,  0), new int3(-1, -1,  0),
-            new int3( 1,  0,  1), new int3( 1,  0, -1), new int3(-1,  0,  1), new int3(-1,  0, -1),
-            new int3( 0,  1,  1), new int3( 0,  1, -1), new int3( 0, -1,  1), new int3( 0, -1, -1),
-            // Corner
-            new int3( 1,  1,  1), new int3( 1,  1, -1), new int3( 1, -1,  1), new int3( 1, -1, -1),
-            new int3(-1,  1,  1), new int3(-1,  1, -1), new int3(-1, -1,  1), new int3(-1, -1, -1),
-        };
 
         public static SectorNeighborHandles Create(Allocator allocator = Allocator.Persistent)
         {

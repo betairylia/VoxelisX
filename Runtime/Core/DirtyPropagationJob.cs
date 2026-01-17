@@ -21,9 +21,7 @@ namespace Voxelis
             if (!sectorNeighbors.TryGetValue(sectorPos, out SectorNeighborHandles neighbors)) return;
 
             ref Sector sector = ref handle.Get();
-            int neighborCount = neighborhoodType == NeighborhoodType.VonNeumann
-                ? SectorNeighborHandles.VON_NEUMANN_COUNT
-                : SectorNeighborHandles.MOORE_COUNT;
+            int neighborCount = DirtyPropagationSettings.neighborhoodCount;
 
             // Create helper for convenient neighbor access
             var helper = new SectorNeighborhoodHelper(handle, neighbors);
@@ -60,7 +58,7 @@ namespace Voxelis
 
                 for (int dir = 0; dir < neighborCount; dir++)
                 {
-                    int3 neighborBrickPos = brickPos + SectorNeighborHandles.Directions[dir];
+                    int3 neighborBrickPos = brickPos + DirtyPropagationSettings.Directions[dir];
                     ushort neighborDirty = helper.GetBrickDirtyFlags(neighborBrickPos);
                     propagatedFlags |= (ushort)(neighborDirty & (ushort)flagsToPropagate);
                 }
