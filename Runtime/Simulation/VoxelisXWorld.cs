@@ -1,4 +1,5 @@
 ﻿using Unity.Collections;
+using Unity.Entities;
 using Unity.Jobs;
 using UnityEngine;
 using Voxelis;
@@ -50,7 +51,20 @@ namespace Voxelis
         {
             // TEMP CODE -- Tick logic
             rayCaster?.Tick();
+
+            // Dirty propagation
+            entities.ForEach(e => e.ClearRequireUpdates());
+
+            JobHandle handle = new JobHandle();
+            for (int i = 0; i < entities.Count; i++)
+            {
+                handle = JobHandle.CombineDependencies(handle, entities[i].PropagateDirtyFlags());
+            }
+            handle.Complete();
             
+            entities.ForEach(e => e.ClearDirtyFlags());
+            
+            // Ticking
             // TODO: Implement proper ticking flow as below
             if (!tickBuf.IsCreated)
             {

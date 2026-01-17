@@ -120,12 +120,13 @@ namespace Voxelis
     }
 
     [BurstCompile]
-    public struct SectorNeighborHandles
+    public unsafe struct SectorNeighborHandles
     {
         public const int VON_NEUMANN_COUNT = 6;
         public const int MOORE_COUNT = 26;
 
-        public NativeArray<SectorHandle> Neighbors;
+        [NativeDisableUnsafePtrRestriction]
+        public SectorHandle* Neighbors;
 
         // [0-5]: Face, [6-17]: Edge, [18-25]: Corner
         public static readonly int3[] Directions = new int3[26]
@@ -144,10 +145,22 @@ namespace Voxelis
 
         public static SectorNeighborHandles Create(Allocator allocator = Allocator.Persistent)
         {
-            return new SectorNeighborHandles
+            var snh = new SectorNeighborHandles
             {
-                Neighbors = new NativeArray<SectorHandle>(MOORE_COUNT, allocator)
+                Neighbors = (SectorHandle*)UnsafeUtility.Malloc(
+                    sizeof(SectorHandle) * DirtyPropagationSettings.neighborhoodCount, 
+                    UnsafeUtility.AlignOf<SectorHandle>(), 
+                    allocator),
             };
+            
+            UnsafeUtility.MemClear(snh.Neighbors, sizeof(SectorHandle) * DirtyPropagationSettings.neighborhoodCount);
+            
+            return snh;
+        }
+
+        public void Dispose(Allocator allocator = Allocator.Persistent)
+        {
+            if(Neighbors != null) UnsafeUtility.Free(Neighbors, allocator);
         }
 
         public SectorHandle Right => Neighbors[0];

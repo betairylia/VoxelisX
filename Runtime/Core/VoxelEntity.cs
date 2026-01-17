@@ -91,7 +91,7 @@ namespace Voxelis
             sectorNeighbors.Add(pos, newHandles);
 
             // Bidirectional linking for all 26 neighbors
-            for (int d = 0; d < SectorNeighborHandles.Directions.Length; d++)
+            for (int d = 0; d < DirtyPropagationSettings.neighborhoodCount; d++)
             {
                 int3 dir = SectorNeighborHandles.Directions[d];
                 int3 neighborPos = pos + dir;
@@ -100,11 +100,11 @@ namespace Voxelis
                 {
                     // Link new sector to existing neighbor
                     newHandles.Neighbors[d] = neighborSector;
-
+                    
                     // Link neighbor back to new sector (find opposite direction)
                     if (sectorNeighbors.TryGetValue(neighborPos, out SectorNeighborHandles neighborHandles))
                     {
-                        for (int oppD = 0; oppD < SectorNeighborHandles.Directions.Length; oppD++)
+                        for (int oppD = 0; oppD < DirtyPropagationSettings.neighborhoodCount; oppD++)
                         {
                             if (SectorNeighborHandles.Directions[oppD].Equals(-dir))
                             {
@@ -140,6 +140,7 @@ namespace Voxelis
             }
             
             sectors[pos].Dispose(Allocator.Persistent);
+            sectorNeighbors[pos].Dispose(Allocator.Persistent);
             sectors.Remove(pos);
             sectorNeighbors.Remove(pos);
             return true;
@@ -228,7 +229,7 @@ namespace Voxelis
                 allSectorPositions = allPositions,
                 sectors = sectors,
                 sectorNeighbors = sectorNeighbors,
-                neighborhoodType = DirtyPropagationSettings.Settings.neighborhoodType,
+                neighborhoodType = DirtyPropagationSettings.neighborhoodType,
                 flagsToPropagate = flagsToPropagate
             };
 
@@ -242,7 +243,6 @@ namespace Voxelis
             {
                 job.Run(allPositions.Length);
                 allPositions.Dispose();
-                ClearDirtyFlags();
                 handle = default;
             }
 
@@ -258,7 +258,20 @@ namespace Voxelis
             foreach (var kvp in sectors)
             {
                 ref Sector sector = ref kvp.Value.Get();
-                sector.ClearDirtyFlags();
+                sector.ClearAllDirtyFlags();
+            }
+        }
+        
+        /// <summary>
+        /// Clears dirty flags for all sectors (call before propagation completes).
+        /// </summary>
+        public void ClearRequireUpdates()
+        {
+            entityDirtyFlags = 0;
+            foreach (var kvp in sectors)
+            {
+                ref Sector sector = ref kvp.Value.Get();
+                sector.ClearAllRequireUpdateFlags();
             }
         }
 
@@ -290,8 +303,7 @@ namespace Voxelis
             {
                 foreach (var kvp in sectorNeighbors)
                 {
-                    if (kvp.Value.Neighbors.IsCreated)
-                        kvp.Value.Neighbors.Dispose();
+                    kvp.Value.Dispose();
                 }
                 sectorNeighbors.Dispose();
             }
@@ -459,6 +471,16 @@ namespace Voxelis
         {
             return data.PropagateDirtyFlags(flags, async);
         }
+
+        /// <summary>
+        /// Clears dirty flags for all sectors (call after propagation completes).
+        /// </summary>
+        public void ClearDirtyFlags() => data.ClearDirtyFlags();
+        
+        /// <summary>
+        /// Clears dirty flags for all sectors (call before propagation completes).
+        /// </summary>
+        public void ClearRequireUpdates() => data.ClearRequireUpdates();
 
         /// <summary>
         /// Gets the object-to-world transformation matrix for this entity.

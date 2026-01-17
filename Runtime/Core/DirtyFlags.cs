@@ -33,11 +33,9 @@ namespace Voxelis
 
     public struct DirtyPropagationSettings
     {
-        public static DirtyPropagationSettings Settings = new DirtyPropagationSettings
-        {
-            neighborhoodType = NeighborhoodType.Moore
-        };
+        public const NeighborhoodType neighborhoodType = NeighborhoodType.Moore;
 
-        public NeighborhoodType neighborhoodType;
+        public static readonly int neighborhoodCount = (
+            DirtyPropagationSettings.neighborhoodType == NeighborhoodType.Moore ? 26 : 6);
     }
 }

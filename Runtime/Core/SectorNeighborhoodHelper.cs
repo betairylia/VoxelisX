@@ -1,7 +1,7 @@
 using Unity.Mathematics;
 using UnityEngine;
 
-namespace VoxelisX
+namespace Voxelis
 {
     /// <summary>
     /// Helper class that wraps a sector and its neighbors, providing convenient access
@@ -242,12 +242,14 @@ namespace VoxelisX
         /// <returns>The brick's dirty flags, or 0 if the brick or neighbor doesn't exist</returns>
         public ushort GetBrickDirtyFlags(int brickX, int brickY, int brickZ)
         {
+            int brickIdx = -1;
+            
             // Fast path: brick coordinates within center sector bounds
             if (brickX >= 0 && brickX < Sector.SIZE_IN_BRICKS &&
                 brickY >= 0 && brickY < Sector.SIZE_IN_BRICKS &&
                 brickZ >= 0 && brickZ < Sector.SIZE_IN_BRICKS)
             {
-                int brickIdx = Sector.ToBrickIdx(brickX, brickY, brickZ);
+                brickIdx = Sector.ToBrickIdx(brickX, brickY, brickZ);
                 return centerSector.Get().brickDirtyFlags[brickIdx];
             }
 
@@ -270,7 +272,7 @@ namespace VoxelisX
             int localBrickY = ModuloWrap(brickY, Sector.SIZE_IN_BRICKS);
             int localBrickZ = ModuloWrap(brickZ, Sector.SIZE_IN_BRICKS);
 
-            int brickIdx = Sector.ToBrickIdx(localBrickX, localBrickY, localBrickZ);
+            brickIdx = Sector.ToBrickIdx(localBrickX, localBrickY, localBrickZ);
             return neighbors.Neighbors[neighborIdx].Get().brickDirtyFlags[brickIdx];
         }
 
