@@ -52,6 +52,8 @@ public class VoxelisXDebugGUI : MonoBehaviour
         {
             rayTracingRenderer = VoxelisXRenderer.instance;
         }
+        
+        meshRendererComponent = FindObjectOfType<VoxelMeshRendererComponent>();
 
         // Create material for runtime line rendering
         CreateLineMaterial();
