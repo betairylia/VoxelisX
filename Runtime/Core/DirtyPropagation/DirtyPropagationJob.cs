@@ -1,3 +1,4 @@
+using System;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Jobs;
@@ -5,6 +6,29 @@ using Unity.Mathematics;
 
 namespace Voxelis
 {
+    [Flags]
+    public enum DirtyFlags : ushort
+    {
+        None       = 0,
+        Reserved0  = 1 << 0,
+        Reserved1  = 1 << 1,
+        Reserved2  = 1 << 2,
+        Reserved3  = 1 << 3,
+        Reserved4  = 1 << 4,
+        Reserved5  = 1 << 5,
+        Reserved6  = 1 << 6,
+        Reserved7  = 1 << 7,
+        Reserved8  = 1 << 8,
+        Reserved9  = 1 << 9,
+        Reserved10 = 1 << 10,
+        Reserved11 = 1 << 11,
+        Reserved12 = 1 << 12,
+        Reserved13 = 1 << 13,
+        Reserved14 = 1 << 14,
+        Reserved15 = 1 << 15,
+        All        = 0xFFFF,
+    }
+    
     [BurstCompile]
     public unsafe struct DirtyPropagationJob : IJobParallelFor
     {
@@ -21,10 +45,10 @@ namespace Voxelis
             if (!sectorNeighbors.TryGetValue(sectorPos, out SectorNeighborHandles neighbors)) return;
 
             ref Sector sector = ref handle.Get();
-            int neighborCount = DirtyPropagationSettings.neighborhoodCount;
+            int neighborCount = NeighborhoodSettings.neighborhoodCount;
 
             // Create helper for convenient neighbor access
-            var helper = new SectorNeighborhoodHelper(handle, neighbors);
+            var helper = new SectorNeighborhoodReaderHelper(handle, neighbors);
 
             // Early exit: Skip if current sector has no dirty flags AND no neighbors have dirty flags
             bool currentSectorDirty = (sector.sectorDirtyFlags & (ushort)flagsToPropagate) != 0;
@@ -54,11 +78,11 @@ namespace Voxelis
             for (int brickIdx = 0; brickIdx < Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS; brickIdx++)
             {
                 int3 brickPos = Sector.ToBrickPos((short)brickIdx);
-                ushort propagatedFlags = 0;
+                ushort propagatedFlags = sector.brickDirtyFlags[brickIdx];
 
                 for (int dir = 0; dir < neighborCount; dir++)
                 {
-                    int3 neighborBrickPos = brickPos + DirtyPropagationSettings.Directions[dir];
+                    int3 neighborBrickPos = brickPos + NeighborhoodSettings.Directions[dir];
                     ushort neighborDirty = helper.GetBrickDirtyFlags(neighborBrickPos);
                     propagatedFlags |= (ushort)(neighborDirty & (ushort)flagsToPropagate);
                 }

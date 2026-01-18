@@ -491,4 +491,20 @@ namespace Voxelis
 
         #endregion
     }
+    
+    /// <summary>
+    /// Iterator structure for enumerating blocks within a sector along with their positions.
+    /// </summary>
+    public struct BrickIterator
+    {
+        /// <summary>
+        /// The brick at the current iterator position.
+        /// </summary>
+        public short brickIdx;
+
+        /// <summary>
+        /// The 3D position of the brick (in blocks) within the sector.
+        /// </summary>
+        public int3 position;
+    }
 }

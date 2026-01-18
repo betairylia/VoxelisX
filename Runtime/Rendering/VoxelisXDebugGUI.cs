@@ -22,8 +22,9 @@ public class VoxelisXDebugGUI : MonoBehaviour
     [Header("Debug Visualization")]
     [SerializeField] private bool showSectorBorders = false;
     [SerializeField] private bool showBrickBorders = false;
-    [SerializeField] private Color sectorBorderColor = new Color(1f, 0f, 0f, 0.5f);
-    [SerializeField] private Color brickBorderColor = new Color(0f, 1f, 0f, 0.3f);
+    [SerializeField] private Color sectorBorderColor = new Color(1f, 0f, 0f, 1.0f);
+    [SerializeField] private Color brickBorderColor = new Color(0f, 1f, 0f, 1.0f);
+    [SerializeField] private Color brickBorderColorDirty = new Color(0f, 1f, 1f, 1.0f);
 
     private bool isVisible;
     private GUIStyle boxStyle;
@@ -253,9 +254,9 @@ public class VoxelisXDebugGUI : MonoBehaviour
             return RenderingMode.Unknown;
     }
 
-    private unsafe void OnPostRender()
+    private unsafe void OnRenderObject()
     {
-        if (!isVisible) return;
+        // if (!isVisible) return;
         if (!showSectorBorders && !showBrickBorders) return;
 
         var world = VoxelisXCoreWorld.instance;
@@ -292,20 +293,21 @@ public class VoxelisXDebugGUI : MonoBehaviour
                 // Draw brick borders
                 if (showBrickBorders)
                 {
-                    for (int brickIdxAbs = 0; brickIdxAbs < Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS; brickIdxAbs++)
+                    for (short brickIdxAbs = 0; brickIdxAbs < Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS; brickIdxAbs++)
                     {
                         short brickIdx = sector.brickIdx[brickIdxAbs];
                         if (brickIdx != Sector.BRICKID_EMPTY)
                         {
                             // Calculate brick position within sector
-                            int brickX = brickIdxAbs % Sector.SIZE_IN_BRICKS;
-                            int brickY = brickIdxAbs / (Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS);
-                            int brickZ = (brickIdxAbs / Sector.SIZE_IN_BRICKS) % Sector.SIZE_IN_BRICKS;
-
-                            float3 brickLocalPos = new float3(brickX, brickY, brickZ) * Sector.SIZE_IN_BLOCKS;
+                            int3 brickPos = Sector.ToBrickPos(brickIdxAbs);
+                            float3 brickLocalPos = new float3(brickPos) * Sector.SIZE_IN_BLOCKS;
                             float3 brickInSectorPos = sectorLocalPos + brickLocalPos;
 
-                            DrawWireBox(brickInSectorPos, new float3(Sector.SIZE_IN_BLOCKS), brickBorderColor, entityMatrix);
+                            DirtyFlags dirtyFlags = (DirtyFlags)sector.brickRequireUpdateFlags[brickIdxAbs];
+                            Color colorToUse = (dirtyFlags & DirtyFlags.Reserved0) > 0 ? brickBorderColorDirty : brickBorderColor;
+                            
+                            DrawWireBox(
+                                brickInSectorPos, new float3(Sector.SIZE_IN_BLOCKS), colorToUse, entityMatrix);
                         }
                     }
                 }
@@ -316,21 +318,19 @@ public class VoxelisXDebugGUI : MonoBehaviour
         GL.PopMatrix();
     }
 
-    private void DrawWireBox(float3 center, float3 size, Color color, Matrix4x4 transform)
+    private void DrawWireBox(float3 origin, float3 size, Color color, Matrix4x4 transform)
     {
         GL.Color(color);
 
-        float3 halfSize = size * 0.5f;
-
         // Define 8 corners in local space
-        float3 bottomFrontLeft = center + new float3(-halfSize.x, -halfSize.y, -halfSize.z);
-        float3 bottomFrontRight = center + new float3(halfSize.x, -halfSize.y, -halfSize.z);
-        float3 bottomBackLeft = center + new float3(-halfSize.x, -halfSize.y, halfSize.z);
-        float3 bottomBackRight = center + new float3(halfSize.x, -halfSize.y, halfSize.z);
-        float3 topFrontLeft = center + new float3(-halfSize.x, halfSize.y, -halfSize.z);
-        float3 topFrontRight = center + new float3(halfSize.x, halfSize.y, -halfSize.z);
-        float3 topBackLeft = center + new float3(-halfSize.x, halfSize.y, halfSize.z);
-        float3 topBackRight = center + new float3(halfSize.x, halfSize.y, halfSize.z);
+        float3 bottomFrontLeft = origin;
+        float3 bottomFrontRight = origin + new float3(size.x, 0, 0);
+        float3 bottomBackLeft = origin + new float3(0, 0, size.z);
+        float3 bottomBackRight = origin + new float3(size.x, 0, size.z);
+        float3 topFrontLeft = origin + new float3(0, size.y, 0);
+        float3 topFrontRight = origin + new float3(size.x, size.y, 0);
+        float3 topBackLeft = origin + new float3(0, size.y, size.z);
+        float3 topBackRight = origin + size;
 
         // Transform all corners to world space
         Vector3 bfl = transform.MultiplyPoint3x4(bottomFrontLeft);

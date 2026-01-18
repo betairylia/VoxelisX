@@ -130,12 +130,12 @@ namespace Voxelis
             var snh = new SectorNeighborHandles
             {
                 Neighbors = (SectorHandle*)UnsafeUtility.Malloc(
-                    sizeof(SectorHandle) * DirtyPropagationSettings.neighborhoodCount, 
+                    sizeof(SectorHandle) * NeighborhoodSettings.neighborhoodCount, 
                     UnsafeUtility.AlignOf<SectorHandle>(), 
                     allocator),
             };
             
-            UnsafeUtility.MemClear(snh.Neighbors, sizeof(SectorHandle) * DirtyPropagationSettings.neighborhoodCount);
+            UnsafeUtility.MemClear(snh.Neighbors, sizeof(SectorHandle) * NeighborhoodSettings.neighborhoodCount);
             
             return snh;
         }

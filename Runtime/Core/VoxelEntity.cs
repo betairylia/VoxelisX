@@ -91,9 +91,9 @@ namespace Voxelis
             sectorNeighbors.Add(pos, newHandles);
 
             // Bidirectional linking for all 26 neighbors
-            for (int d = 0; d < DirtyPropagationSettings.neighborhoodCount; d++)
+            for (int d = 0; d < NeighborhoodSettings.neighborhoodCount; d++)
             {
-                int3 dir = DirtyPropagationSettings.Directions[d];
+                int3 dir = NeighborhoodSettings.Directions[d];
                 int3 neighborPos = pos + dir;
 
                 if (sectors.TryGetValue(neighborPos, out SectorHandle neighborSector))
@@ -104,7 +104,7 @@ namespace Voxelis
                     // Link neighbor back to new sector (find opposite direction)
                     if (sectorNeighbors.TryGetValue(neighborPos, out SectorNeighborHandles neighborHandles))
                     {
-                        int oppD = DirtyPropagationSettings.OppositeDirectionIndices[d];
+                        int oppD = NeighborhoodSettings.OppositeDirectionIndices[d];
                         neighborHandles.Neighbors[oppD] = sector;
                     }
                 }
@@ -124,9 +124,9 @@ namespace Voxelis
             }
 
             // Update neighbors
-            for (int d = 0; d < DirtyPropagationSettings.Directions.Length; d++)
+            for (int d = 0; d < NeighborhoodSettings.Directions.Length; d++)
             {
-                int3 dir = DirtyPropagationSettings.Directions[d];
+                int3 dir = NeighborhoodSettings.Directions[d];
                 if (sectorNeighbors.TryGetValue(pos - dir, out SectorNeighborHandles handles))
                 {
                     handles.Neighbors[d] = new SectorHandle(null);
@@ -223,7 +223,7 @@ namespace Voxelis
                 allSectorPositions = allPositions,
                 sectors = sectors,
                 sectorNeighbors = sectorNeighbors,
-                neighborhoodType = DirtyPropagationSettings.neighborhoodType,
+                neighborhoodType = NeighborhoodSettings.neighborhoodType,
                 flagsToPropagate = flagsToPropagate
             };
 

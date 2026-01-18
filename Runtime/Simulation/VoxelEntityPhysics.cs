@@ -18,7 +18,7 @@ namespace Voxelis.Simulation
             
             public void Execute()
             {
-                foreach (BlockIterator blockIter in new SectorEnumerator(sector))
+                foreach (BlockIterator blockIter in new SectorNonEmptyBlockEnumerator(sector))
                 {
                     float mass = settings.GetBlockMass(blockIter.block);
                     float3 position = new float3(sectorPosition + blockIter.position) + 0.5f;
@@ -41,7 +41,7 @@ namespace Voxelis.Simulation
             {
                 float3 currentInertia = accumulatedInertia[0];
                 
-                foreach (BlockIterator blockIter in new SectorEnumerator(sector))
+                foreach (BlockIterator blockIter in new SectorNonEmptyBlockEnumerator(sector))
                 {
                     float mass = settings.GetBlockMass(blockIter.block);
                     float3 position = new float3(sectorPosition + blockIter.position) + 0.5f - centerOfMass;

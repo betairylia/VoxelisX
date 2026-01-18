@@ -12,7 +12,7 @@ namespace Voxelis
     /// Example: Accessing block at (-1, -1, -1) will automatically fetch from the
     /// appropriate neighboring sector at position (127, 127, 127).
     /// </remarks>
-    public unsafe struct SectorNeighborhoodHelper
+    public unsafe struct SectorNeighborhoodReaderHelper
     {
         private SectorHandle centerSector;
         private SectorNeighborHandles neighbors;
@@ -22,7 +22,7 @@ namespace Voxelis
         /// </summary>
         /// <param name="center">The central sector</param>
         /// <param name="neighbors">The neighboring sectors</param>
-        public SectorNeighborhoodHelper(SectorHandle center, SectorNeighborHandles neighbors)
+        public SectorNeighborhoodReaderHelper(SectorHandle center, SectorNeighborHandles neighbors, bool requireCopy = false)
         {
             this.centerSector = center;
             this.neighbors = neighbors;
@@ -288,9 +288,9 @@ namespace Voxelis
         /// <returns>The neighbor index, or -1 if not found</returns>
         private int FindNeighborIndex(int3 offset)
         {
-            for (int i = 0; i < DirtyPropagationSettings.neighborhoodCount; i++)
+            for (int i = 0; i < NeighborhoodSettings.neighborhoodCount; i++)
             {
-                if (DirtyPropagationSettings.Directions[i].Equals(offset))
+                if (NeighborhoodSettings.Directions[i].Equals(offset))
                 {
                     return i;
                 }
