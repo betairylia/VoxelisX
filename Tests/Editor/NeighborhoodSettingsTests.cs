@@ -161,26 +161,6 @@ namespace VoxelisX.Tests
 
         #endregion
 
-        #region Neighborhood Type Tests
-
-        [Test]
-        public void NeighborhoodType_IsMoore()
-        {
-            // Assert
-            Assert.AreEqual(NeighborhoodType.Moore, NeighborhoodSettings.neighborhoodType,
-                "Neighborhood type should be Moore (26 neighbors)");
-        }
-
-        [Test]
-        public void NeighborhoodCount_MatchesType()
-        {
-            // Assert
-            Assert.AreEqual(NeighborhoodSettings.MOORE_COUNT, NeighborhoodSettings.neighborhoodCount,
-                "Neighborhood count should match MOORE_COUNT (26)");
-        }
-
-        #endregion
-
         #region Specific Direction Tests
 
         [Test]

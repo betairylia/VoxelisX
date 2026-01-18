@@ -10,7 +10,7 @@ namespace VoxelisX.Tests
     /// Tests allocation, disposal, validity checks, and safe pointer wrapping.
     /// </summary>
     [TestFixture]
-    public class SectorHandleTests
+    public unsafe class SectorHandleTests
     {
         #region Allocation and Disposal Tests
 

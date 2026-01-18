@@ -10,7 +10,7 @@ namespace VoxelisX.Tests
     /// Tests sector creation, block/brick operations, dirty flag system, and memory management.
     /// </summary>
     [TestFixture]
-    public class SectorTests
+    public unsafe class SectorTests
     {
         private SectorHandle testSector;
 
