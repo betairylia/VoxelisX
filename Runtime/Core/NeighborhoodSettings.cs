@@ -3,12 +3,26 @@ using Unity.Mathematics;
 
 namespace Voxelis
 {
+    /// <summary>
+    /// Defines the type of neighborhood used for spatial queries and dirty propagation.
+    /// </summary>
     public enum NeighborhoodType : byte
     {
-        VonNeumann = 0,  // 6 face-adjacent
-        Moore = 1,       // 26 neighbors (face + edge + corner)
+        /// <summary>6 face-adjacent neighbors (Manhattan distance = 1).</summary>
+        VonNeumann = 0,
+        /// <summary>26 neighbors including faces, edges, and corners (Chebyshev distance = 1).</summary>
+        Moore = 1,
     }
 
+    /// <summary>
+    /// Configuration and lookup tables for neighborhood relationships between sectors and bricks.
+    /// </summary>
+    /// <remarks>
+    /// This struct provides direction vectors and precomputed indices for efficiently accessing
+    /// neighbors in a 3D grid. The neighborhood type (Von Neumann or Moore) determines how many
+    /// neighbors are considered. All direction vectors and indices are statically defined for
+    /// performance.
+    /// </remarks>
     public struct NeighborhoodSettings
     {
         public const int VON_NEUMANN_COUNT = 6;

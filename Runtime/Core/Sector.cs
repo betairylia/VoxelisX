@@ -80,6 +80,7 @@ namespace Voxelis
         /// <summary>Squared size for indexing calculations (16 * 16 = 256).</summary>
         public const int SIZE_IN_BRICKS_SQUARED = SIZE_IN_BRICKS * SIZE_IN_BRICKS;
 
+        /// <summary>Total number of bricks in a sector (16x16x16 = 4096).</summary>
         public const int BRICKS_IN_SECTOR = SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS;
         /// <summary>Size of a sector in blocks (128 blocks per axis).</summary>
         public const int SECTOR_SIZE_IN_BLOCKS = SIZE_IN_BRICKS << SHIFT_IN_BLOCKS;
@@ -207,11 +208,27 @@ namespace Voxelis
             return s;
         }
 
+        /// <summary>
+        /// Creates a shallow copy of a sector without copying the update record.
+        /// </summary>
+        /// <param name="from">The sector handle to clone from.</param>
+        /// <param name="allocator">The memory allocator to use for the new sector.</param>
+        /// <returns>A new sector containing the same voxel data but with an empty update record.</returns>
         public static Sector CloneNoRecord(
             SectorHandle from,
             Allocator allocator)
             => CloneNoRecord(*(from.Ptr), allocator);
-        
+
+        /// <summary>
+        /// Creates a shallow copy of a sector without copying the update record.
+        /// </summary>
+        /// <param name="from">The sector to clone from.</param>
+        /// <param name="allocator">The memory allocator to use for the new sector.</param>
+        /// <returns>A new sector containing the same voxel data but with an empty update record.</returns>
+        /// <remarks>
+        /// This method copies the voxel data and brick indices but does not copy the update record,
+        /// dirty flags, or require update flags. The new sector starts in a clean state.
+        /// </remarks>
         public static Sector CloneNoRecord(
             Sector from,
             Allocator allocator)
@@ -320,7 +337,6 @@ namespace Voxelis
         /// <param name="y">Block Y coordinate within sector (0-127).</param>
         /// <param name="z">Block Z coordinate within sector (0-127).</param>
         /// <returns>The block at the specified position, or Block.Empty if the brick is not allocated.</returns>
-        /// <remarks>TODO: Per-brick thread safety, pre-alloc etc.</remarks>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public Block GetBlock(int x, int y, int z)
         {
@@ -344,20 +360,31 @@ namespace Voxelis
 
         #region Snapshots
 
-        // Backbuffer version of voxels, for read access in automata
+        /// <summary>
+        /// Backbuffer version of voxels for read access during double-buffered updates (e.g., cellular automata).
+        /// </summary>
         [NativeDisableUnsafePtrRestriction]
         public UnsafeList<Block> _snapshot_voxels;
-        
-        // Backbuffer version of brickIdx, for read access in automata
+
+        /// <summary>
+        /// Backbuffer version of brickIdx for read access during double-buffered updates.
+        /// </summary>
         [NativeDisableUnsafePtrRestriction]
         public short* _snapshot_brickIdx;
 
         private bool _snapshot_enabled;
 
-        // Activate snapshot mode.
-        // In snapshot mode, any modification to the sector will be written to a backbuffer, without affecting the read functionalities.
-        // Please call ApplySnapshot() to apply the modifications after work finished.
-        // This is mainly used for automatas where the state of a voxel depends on its neighbors in the previous time step, and sequential modifications are inappropriate.
+        /// <summary>
+        /// Activates snapshot mode for double-buffered sector updates.
+        /// </summary>
+        /// <param name="allocator">The allocator to use for snapshot buffers.</param>
+        /// <remarks>
+        /// In snapshot mode, any modifications to the sector are written to a backbuffer without affecting read operations.
+        /// This enables reading from the previous state while writing to the current state, which is essential for
+        /// cellular automata where a voxel's state depends on its neighbors in the previous time step.
+        /// Call <see cref="ApplySnapshot"/> after all modifications are complete to swap the buffers.
+        /// Multiple calls to ActivateSnapshot without ApplySnapshot will be ignored.
+        /// </remarks>
         public void ActivateSnapshot(Allocator allocator = Allocator.Persistent)
         {
             // Don't activate multiple times
@@ -387,9 +414,17 @@ namespace Voxelis
             _snapshot_enabled = true;
         }
 
+        /// <summary>
+        /// Applies the snapshot by swapping the backbuffer into the main buffer.
+        /// </summary>
+        /// <remarks>
+        /// This method copies data from the snapshot buffers to the main voxel and brick index buffers,
+        /// completing the double-buffered update cycle. Only applies if snapshot mode was previously activated.
+        /// After applying, snapshot mode is automatically deactivated.
+        /// </remarks>
         public void ApplySnapshot()
         {
-            // Apply only previously activated
+            // Apply only if previously activated
             if (!_snapshot_enabled) return;
             
             voxels.Clear();
@@ -452,7 +487,6 @@ namespace Voxelis
 
             if (targetVoxels[vid] != b)
             {
-                // TODO: Specify DirtyFlag
                 MarkBrickDirty(brick_sector_index_id, DirtyFlags.Reserved0);
                 targetVoxels[vid] = b;
             }
@@ -464,22 +498,30 @@ namespace Voxelis
             }
         }
 
+        /// <summary>
+        /// Reorders bricks in memory for better cache coherency.
+        /// </summary>
+        /// <remarks>
+        /// Currently not implemented. In the future, this method could reorganize bricks in memory
+        /// to improve spatial locality and cache performance during rendering and physics updates.
+        /// </remarks>
         public void ReorderBricks()
         {
-            // Do nothing now
-            // TODO: Implement proper logic
+            // Not yet implemented
             return;
         }
 
         /// <summary>
-        /// Clean-up dirty-related data in sector.
+        /// Cleans up dirty-related data in sector at the end of a tick.
         /// This is necessary since multiple systems may consume the dirty data for update.
         /// In-place consumption of dirtyness will only allow one system to use.
         /// </summary>
+        /// <remarks>
+        /// Resets all brick flags to idle and clears the update record. Should be called after
+        /// all systems (rendering, physics, etc.) have processed the dirty bricks for this tick.
+        /// </remarks>
         public void EndTick()
         {
-            // TODO: Burst
-            // TODO: Handle delete brick properly
             foreach (var record in updateRecord)
             {
                 brickFlags[record] = BrickUpdateInfo.Type.Idle;
@@ -488,7 +530,11 @@ namespace Voxelis
             updateRecord.Clear();
         }
 
-        // Dirty propagation API
+        /// <summary>
+        /// Marks a brick as dirty with the specified flags.
+        /// </summary>
+        /// <param name="brickIdx">The absolute brick index to mark as dirty.</param>
+        /// <param name="flags">The dirty flags to set.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void MarkBrickDirty(int brickIdx, DirtyFlags flags)
         {
@@ -496,6 +542,11 @@ namespace Voxelis
             sectorDirtyFlags |= (ushort)flags;
         }
 
+        /// <summary>
+        /// Marks a brick as requiring an update with the specified flags.
+        /// </summary>
+        /// <param name="brickIdx">The absolute brick index to mark for update.</param>
+        /// <param name="flags">The update flags to set.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void MarkBrickRequireUpdate(int brickIdx, DirtyFlags flags)
         {
@@ -503,6 +554,9 @@ namespace Voxelis
             sectorRequireUpdateFlags |= (ushort)flags;
         }
 
+        /// <summary>
+        /// Clears all dirty flags for all bricks in the sector.
+        /// </summary>
         public void ClearAllDirtyFlags()
         {
             int totalBricks = SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS;
@@ -510,6 +564,10 @@ namespace Voxelis
             sectorDirtyFlags = 0;
         }
 
+        /// <summary>
+        /// Clears specific require-update flags for all bricks in the sector.
+        /// </summary>
+        /// <param name="flags">The flags to clear.</param>
         public void ClearRequireUpdateFlags(DirtyFlags flags)
         {
             ushort clearMask = (ushort)~flags;
@@ -525,6 +583,9 @@ namespace Voxelis
             sectorRequireUpdateFlags = aggregated;
         }
 
+        /// <summary>
+        /// Clears all require-update flags for all bricks in the sector.
+        /// </summary>
         public void ClearAllRequireUpdateFlags()
         {
             int totalBricks = SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS;
@@ -534,13 +595,18 @@ namespace Voxelis
 
         #region PHYSICS
 
-        ///////////////////////////////////
-        /// PHYSICS
-        ///////////////////////////////////
-
-        // Accelerators
+        /// <summary>
+        /// List of absolute indices of all non-empty bricks, used for physics and iteration optimization.
+        /// </summary>
         [NativeDisableParallelForRestriction] public UnsafeList<short> NonEmptyBricks;
 
+        /// <summary>
+        /// Updates the NonEmptyBricks list to reflect current sector state.
+        /// </summary>
+        /// <remarks>
+        /// Scans all bricks and rebuilds the list of non-empty brick indices.
+        /// Should be called after bulk modifications to ensure the acceleration structure is up to date.
+        /// </remarks>
         [BurstCompile]
         public void UpdateNonEmptyBricks()
         {

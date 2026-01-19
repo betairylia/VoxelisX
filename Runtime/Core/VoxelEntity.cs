@@ -244,7 +244,7 @@ namespace Voxelis
         }
 
         /// <summary>
-        /// Clears dirty flags for all sectors (call after propagation completes).
+        /// Clears dirty flags for all sectors. Should be called after propagation completes.
         /// </summary>
         public void ClearDirtyFlags()
         {
@@ -255,9 +255,9 @@ namespace Voxelis
                 sector.ClearAllDirtyFlags();
             }
         }
-        
+
         /// <summary>
-        /// Clears dirty flags for all sectors (call before propagation completes).
+        /// Clears require-update flags for all sectors. Should be called after systems have processed the updates.
         /// </summary>
         public void ClearRequireUpdates()
         {

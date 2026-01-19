@@ -28,7 +28,16 @@ namespace Voxelis
         Reserved15 = 1 << 15,
         All        = 0xFFFF,
     }
-    
+
+    /// <summary>
+    /// Burst-compiled parallel job that propagates dirty flags from bricks to their neighbors.
+    /// </summary>
+    /// <remarks>
+    /// This job processes sectors in parallel and propagates dirty flags from each brick to its
+    /// neighboring bricks, including those in adjacent sectors. This allows systems to efficiently
+    /// determine which bricks need updating based on changes in neighboring bricks.
+    /// The propagation respects the configured neighborhood type (Von Neumann or Moore).
+    /// </remarks>
     [BurstCompile]
     public unsafe struct DirtyPropagationJob : IJobParallelFor
     {

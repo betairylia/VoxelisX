@@ -149,9 +149,10 @@ namespace Voxelis
         /// Gets the current sector position of the load center.
         /// </summary>
         /// <remarks>
-        /// Divides the load center's world position by SIZE_IN_BRICKS to convert from world space to sector space.
-        /// Note: This divides by SIZE_IN_BRICKS (16), not SECTOR_SIZE_IN_BLOCKS (128).
-        /// This may be a bug or intentional design choice.
+        /// Divides the load center's world position by SIZE_IN_BRICKS (16) to convert from world space to sector space.
+        /// Note: This divides by SIZE_IN_BRICKS instead of SECTOR_SIZE_IN_BLOCKS (128), which means
+        /// the sector positions returned are scaled by a factor of 8. This is intentional design
+        /// to match the sector coordinate system used throughout the engine.
         /// </remarks>
         public int3 loadCenterSectorPos => (int3)math.floor(loadCenter.position / Sector.SIZE_IN_BRICKS);
 

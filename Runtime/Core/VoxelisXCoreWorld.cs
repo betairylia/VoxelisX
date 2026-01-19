@@ -11,7 +11,7 @@ namespace Voxelis
         public List<VoxelEntity> entities = new();
 
         /// <summary>
-        /// Registers a voxel entity with this renderer.
+        /// Registers a voxel entity with this world.
         /// </summary>
         /// <param name="e">The entity to add.</param>
         public void AddEntity(VoxelEntity e)
@@ -25,7 +25,7 @@ namespace Voxelis
         }
 
         /// <summary>
-        /// Unregisters a voxel entity from this renderer.
+        /// Unregisters a voxel entity from this world.
         /// </summary>
         /// <param name="e">The entity to remove.</param>
         public void RemoveEntity(VoxelEntity e)
