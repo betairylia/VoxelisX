@@ -41,7 +41,7 @@ namespace Voxelis
             ReleaseResources();
         }
 
-        void ReleaseResources()
+        protected virtual void ReleaseResources()
         {
             // Entities will dispose themselves
         }

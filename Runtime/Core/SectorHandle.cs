@@ -117,6 +117,9 @@ namespace Voxelis
         /// Returns true if the sector contains no allocated bricks.
         /// </summary>
         public bool IsRendererEmpty => _ptr->IsRendererEmpty;
+
+        public ushort DirtyFlags => _ptr->sectorDirtyFlags;
+        public ushort RequireUpdateFlags => _ptr->sectorRequireUpdateFlags;
         
         public void ActivateSnapshot(Allocator allocator = Allocator.Persistent) 
             => _ptr->ActivateSnapshot(allocator);

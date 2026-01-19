@@ -1,6 +1,8 @@
-﻿using Unity.Collections;
+﻿using Simulation.Utils;
+using Unity.Collections;
 using Unity.Entities;
 using Unity.Jobs;
+using Unity.Mathematics;
 using UnityEngine;
 using Voxelis;
 using Voxelis.Rendering.Meshing;
@@ -12,7 +14,7 @@ namespace Voxelis
     public class VoxelisXWorld : VoxelisXCoreWorld
     {
         public TickStage<WorldStageInputs> physicsStage;
-        public TickStage<WorldStageInputs> automataStage;
+        public TickStage<AutomataStageInputs> automataStage;
 
         [Header("Components")]
         [SerializeField] protected VoxelisXPhysicsWorld physicsWorld;
@@ -26,18 +28,31 @@ namespace Voxelis
         public struct WorldStageInputs
         {
             public NativeList<VoxelEntityData> VoxelEntities;
-            // public float DeltaTime;
-            
-            public bool IsCreated => VoxelEntities.IsCreated;
+        }
 
-            public void Allocate(int entityCount, Allocator allocator)
-            {
-                VoxelEntities = new NativeList<VoxelEntityData>(entityCount, allocator);
-            }
+        public struct BrickInfo
+        {
+            public int EntityId;
+            public int3 SectorPos;
+            public int3 BrickOrigin;
+            public short BrickId;
+
+            public SectorHandle Sector;
+            public SectorNeighborHandles Neighbors;
+            
+            public ushort BrickDirtyFlag;
+            public ushort BrickRequireUpdateFlag;
+        }
+        
+        public struct AutomataStageInputs
+        {
+            public NativeList<VoxelEntityData> VoxelEntities;
+            public NativeList<BrickInfo> BricksRequiredUpdate;
         }
         
         // Ticking
         private WorldStageInputs tickBuf;
+        private AutomataStageInputs automataTickBuf;
         
         public override void Init()
         {
@@ -45,6 +60,16 @@ namespace Voxelis
             
             physicsStage = new();
             automataStage = new();
+            
+            tickBuf.VoxelEntities = new NativeList<VoxelEntityData>(Allocator.Persistent);
+            automataTickBuf.BricksRequiredUpdate = new NativeList<BrickInfo>(Allocator.Persistent);
+        }
+
+        protected override void ReleaseResources()
+        {
+            tickBuf.VoxelEntities.Dispose();
+            automataTickBuf.BricksRequiredUpdate.Dispose();
+            base.ReleaseResources();
         }
 
         public override void Tick()
@@ -65,11 +90,6 @@ namespace Voxelis
             entities.ForEach(e => e.ClearDirtyFlags());
             
             // Ticking
-            // TODO: Implement proper ticking flow as below
-            if (!tickBuf.IsCreated)
-            {
-                tickBuf.Allocate(entities.Count, Allocator.Persistent);
-            }
             
             // Fill native list by copying
             // TODO: Keep the unique instance in world and let VoxelEntity ref it?
@@ -90,7 +110,22 @@ namespace Voxelis
             // Random tick stage
             
             // Automata stage
-            tickHandle = automataStage.Schedule(tickBuf, tickHandle);
+            // TODO: Wrap this up and handle this properly
+            // Activate sector snapshotting for modifications
+            for (int i = 0; i < entities.Count; i++)
+            {
+                foreach (var kvp in entities[i].Sectors)
+                {
+                    if(kvp.Value.Get().sectorRequireUpdateFlags > 0)
+                        kvp.Value.ActivateSnapshot();
+                }
+            }
+            
+            // Collect bricks to update
+            automataTickBuf.BricksRequiredUpdate.Clear();
+            BrickCollector.Collect(ref tickBuf.VoxelEntities, ref automataTickBuf.BricksRequiredUpdate);
+            
+            tickHandle = automataStage.Schedule(automataTickBuf, tickHandle);
             
             // Random access updating stage
             
