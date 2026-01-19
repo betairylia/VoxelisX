@@ -418,19 +418,26 @@ namespace Voxelis
         /// Applies the snapshot by swapping the backbuffer into the main buffer.
         /// </summary>
         /// <remarks>
-        /// This method copies data from the snapshot buffers to the main voxel and brick index buffers,
+        /// This method swaps the snapshot buffers with the main voxel and brick index buffers,
         /// completing the double-buffered update cycle. Only applies if snapshot mode was previously activated.
         /// After applying, snapshot mode is automatically deactivated.
+        /// Swapping instead of copying avoids one copy operation, improving performance.
         /// </remarks>
         public void ApplySnapshot()
         {
             // Apply only if previously activated
             if (!_snapshot_enabled) return;
-            
-            voxels.Clear();
-            voxels.AddRange(_snapshot_voxels);
-            UnsafeUtility.MemCpy(brickIdx, _snapshot_brickIdx, sizeof(short) * BRICKS_IN_SECTOR);
-            
+
+            // Swap voxels buffers
+            var tempVoxels = voxels;
+            voxels = _snapshot_voxels;
+            _snapshot_voxels = tempVoxels;
+
+            // Swap brickIdx pointers
+            var tempBrickIdx = brickIdx;
+            brickIdx = _snapshot_brickIdx;
+            _snapshot_brickIdx = tempBrickIdx;
+
             _snapshot_enabled = false;
         }
 
