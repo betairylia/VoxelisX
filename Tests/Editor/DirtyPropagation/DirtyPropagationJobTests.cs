@@ -12,7 +12,7 @@ namespace VoxelisX.Tests.DirtyPropagation
     /// single sector, cross-sector boundaries (faces, edges, corners), and edge cases.
     /// </summary>
     [TestFixture]
-    public class DirtyPropagationJobTests
+    public unsafe class DirtyPropagationJobTests
     {
         #region Single Sector Propagation Tests
 
@@ -25,8 +25,8 @@ namespace VoxelisX.Tests.DirtyPropagation
 
             try
             {
-                // Mark the center brick (8,8,8) as dirty
-                int centerBrickIdx = Sector.ToBrickIdx(8, 8, 8);
+                // Mark one brick (3, 8, 12) as dirty
+                int centerBrickIdx = Sector.ToBrickIdx(3, 8, 12);
                 sector.Ptr->MarkBrickDirty(centerBrickIdx, DirtyFlags.Reserved0);
 
                 // Set up job data
@@ -55,7 +55,7 @@ namespace VoxelisX.Tests.DirtyPropagation
                 int propagatedCount = 0;
                 for (int dir = 0; dir < NeighborhoodSettings.neighborhoodCount; dir++)
                 {
-                    int3 neighborBrickPos = new int3(8, 8, 8) + NeighborhoodSettings.Directions[dir];
+                    int3 neighborBrickPos = new int3(3, 8, 12) + NeighborhoodSettings.Directions[dir];
                     int neighborBrickIdx = Sector.ToBrickIdx(neighborBrickPos.x, neighborBrickPos.y, neighborBrickPos.z);
 
                     unsafe
@@ -68,6 +68,17 @@ namespace VoxelisX.Tests.DirtyPropagation
                 }
 
                 Assert.AreEqual(26, propagatedCount, "All 26 neighbors should receive dirty flag");
+
+                propagatedCount = 0;
+                for (int bid = 0; bid < Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS; bid++)
+                {
+                    if (sector.Ptr->brickRequireUpdateFlags[bid] > 0)
+                    {
+                        propagatedCount++;
+                    }
+                }
+                
+                Assert.AreEqual(27, propagatedCount, "Only exactly 27 bricks should receive dirty flag");
 
                 // Cleanup
                 positions.Dispose();
@@ -91,8 +102,8 @@ namespace VoxelisX.Tests.DirtyPropagation
             try
             {
                 // Mark bricks at (5,5,5) and (10,10,10) as dirty
-                sector.Ptr->MarkBrickDirty(Sector.ToBrickIdx(5, 5, 5), DirtyFlags.Reserved0);
-                sector.Ptr->MarkBrickDirty(Sector.ToBrickIdx(10, 10, 10), DirtyFlags.Reserved1);
+                sector.Ptr->MarkBrickDirty(Sector.ToBrickIdx(5, 1, 14), DirtyFlags.Reserved0);
+                sector.Ptr->MarkBrickDirty(Sector.ToBrickIdx(10, 3, 6), DirtyFlags.Reserved1);
 
                 var sectorPos = new int3(0, 0, 0);
                 var positions = new NativeArray<int3>(1, Allocator.TempJob);
@@ -119,15 +130,26 @@ namespace VoxelisX.Tests.DirtyPropagation
                 unsafe
                 {
                     // Neighbor of (5,5,5) in +X direction should have Reserved0
-                    int neighbor1Idx = Sector.ToBrickIdx(6, 5, 5);
+                    int neighbor1Idx = Sector.ToBrickIdx(6, 1, 14);
                     Assert.AreNotEqual(0, sector.Ptr->brickRequireUpdateFlags[neighbor1Idx] & (ushort)DirtyFlags.Reserved0,
                         "Neighbor of first brick should have Reserved0");
 
                     // Neighbor of (10,10,10) in +Y direction should have Reserved1
-                    int neighbor2Idx = Sector.ToBrickIdx(10, 11, 10);
+                    int neighbor2Idx = Sector.ToBrickIdx(10, 4, 7);
                     Assert.AreNotEqual(0, sector.Ptr->brickRequireUpdateFlags[neighbor2Idx] & (ushort)DirtyFlags.Reserved1,
                         "Neighbor of second brick should have Reserved1");
                 }
+                
+                int propagatedCount = 0;
+                for (int bid = 0; bid < Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS; bid++)
+                {
+                    if (sector.Ptr->brickRequireUpdateFlags[bid] > 0)
+                    {
+                        propagatedCount++;
+                    }
+                }
+                
+                Assert.AreEqual(27*2, propagatedCount, "Only exactly 54 bricks should receive dirty flag");
 
                 // Cleanup
                 positions.Dispose();

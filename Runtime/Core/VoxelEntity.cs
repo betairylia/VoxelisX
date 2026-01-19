@@ -230,7 +230,7 @@ namespace Voxelis
             JobHandle handle;
             if (async)
             {
-                handle = job.Schedule(allPositions.Length, 64);
+                handle = job.Schedule(allPositions.Length, 1);
                 allPositions.Dispose(handle);
             }
             else

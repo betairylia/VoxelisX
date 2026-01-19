@@ -108,6 +108,16 @@ namespace Voxelis
             
             tickHandle.Complete();
             
+            // TODO: Wrap this up and handle this properly
+            // Apply sector modifications
+            for (int i = 0; i < entities.Count; i++)
+            {
+                foreach (var kvp in entities[i].Sectors)
+                {
+                    kvp.Value.ApplySnapshot();
+                }
+            }
+            
             // Copy data back to VoxelEntities
             for (int i = 0; i < entities.Count; i++)
             {

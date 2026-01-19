@@ -22,7 +22,7 @@ namespace Voxelis
         /// </summary>
         /// <param name="center">The central sector</param>
         /// <param name="neighbors">The neighboring sectors</param>
-        public SectorNeighborhoodReaderHelper(SectorHandle center, SectorNeighborHandles neighbors, bool requireCopy = false)
+        public SectorNeighborhoodReaderHelper(SectorHandle center, SectorNeighborHandles neighbors)
         {
             this.centerSector = center;
             this.neighbors = neighbors;
@@ -145,54 +145,6 @@ namespace Voxelis
         /// Gets a pointer to the brick containing the specified block coordinates.
         /// </summary>
         public Block* GetBrick(int3 pos) => GetBrick(pos.x, pos.y, pos.z);
-
-        /// <summary>
-        /// Sets a block at the specified sector-local coordinates.
-        /// Automatically accesses neighboring sectors if coordinates fall outside bounds.
-        /// </summary>
-        /// <param name="x">X coordinate (can be negative or >= 128)</param>
-        /// <param name="y">Y coordinate (can be negative or >= 128)</param>
-        /// <param name="z">Z coordinate (can be negative or >= 128)</param>
-        /// <param name="block">The block to set</param>
-        /// <returns>True if the block was set successfully, false if neighbor doesn't exist</returns>
-        public bool SetBlock(int x, int y, int z, Block block)
-        {
-            // Fast path: coordinates within center sector bounds
-            if (x >= 0 && x < Sector.SECTOR_SIZE_IN_BLOCKS &&
-                y >= 0 && y < Sector.SECTOR_SIZE_IN_BLOCKS &&
-                z >= 0 && z < Sector.SECTOR_SIZE_IN_BLOCKS)
-            {
-                centerSector.SetBlock(x, y, z, block);
-                return true;
-            }
-
-            // Calculate which neighbor sector to access
-            int3 sectorOffset = new int3(
-                x < 0 ? -1 : (x >= Sector.SECTOR_SIZE_IN_BLOCKS ? 1 : 0),
-                y < 0 ? -1 : (y >= Sector.SECTOR_SIZE_IN_BLOCKS ? 1 : 0),
-                z < 0 ? -1 : (z >= Sector.SECTOR_SIZE_IN_BLOCKS ? 1 : 0)
-            );
-
-            // Find the neighbor index for this offset
-            int neighborIdx = FindNeighborIndex(sectorOffset);
-            if (neighborIdx < 0 || !neighbors.Neighbors[neighborIdx].IsValid)
-            {
-                return false;
-            }
-
-            // Transform coordinates to neighbor's local space
-            int localX = ModuloWrap(x, Sector.SECTOR_SIZE_IN_BLOCKS);
-            int localY = ModuloWrap(y, Sector.SECTOR_SIZE_IN_BLOCKS);
-            int localZ = ModuloWrap(z, Sector.SECTOR_SIZE_IN_BLOCKS);
-
-            neighbors.Neighbors[neighborIdx].SetBlock(localX, localY, localZ, block);
-            return true;
-        }
-
-        /// <summary>
-        /// Sets a block at the specified sector-local coordinates.
-        /// </summary>
-        public bool SetBlock(int3 pos, Block block) => SetBlock(pos.x, pos.y, pos.z, block);
 
         /// <summary>
         /// Checks if a specific neighbor exists and is valid.

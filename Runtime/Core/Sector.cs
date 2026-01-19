@@ -79,6 +79,8 @@ namespace Voxelis
         public const int SECTOR_MASK = SIZE_IN_BRICKS - 1;
         /// <summary>Squared size for indexing calculations (16 * 16 = 256).</summary>
         public const int SIZE_IN_BRICKS_SQUARED = SIZE_IN_BRICKS * SIZE_IN_BRICKS;
+
+        public const int BRICKS_IN_SECTOR = SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS;
         /// <summary>Size of a sector in blocks (128 blocks per axis).</summary>
         public const int SECTOR_SIZE_IN_BLOCKS = SIZE_IN_BRICKS << SHIFT_IN_BLOCKS;
 
@@ -90,14 +92,14 @@ namespace Voxelis
         /// Bricks are stored contiguously, with each brick containing BLOCKS_IN_BRICK elements.
         /// </summary>
         public UnsafeList<Block> voxels;
-
+        
         /// <summary>
         /// Maps absolute brick indices (position in 3D grid) to relative brick indices (position in voxels array).
         /// Contains BRICKID_EMPTY for bricks that have not been allocated.
         /// </summary>
         [NativeDisableUnsafePtrRestriction]
         public short* brickIdx;
-
+        
         /// <summary>
         /// Tracks the update state of each brick for renderer synchronization.
         /// Indexed by absolute brick ID.
@@ -173,7 +175,7 @@ namespace Voxelis
             int initialBricks = 1,
             NativeArrayOptions options = NativeArrayOptions.ClearMemory)
         {
-            int totalBricks = SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS;
+            int totalBricks = BRICKS_IN_SECTOR;
 
             Sector s = new Sector()
             {
@@ -187,6 +189,7 @@ namespace Voxelis
                 NonEmptyBricks = new UnsafeList<short>(initialBricks, allocator),
                 sectorDirtyFlags = 0,
                 sectorRequireUpdateFlags = 0,
+                _snapshot_enabled = false,
             };
 
             if (options == NativeArrayOptions.ClearMemory)
@@ -222,7 +225,7 @@ namespace Voxelis
 
             return s;
         }
-
+        
         /// <summary>
         /// Disposes all native collections used by this sector, releasing unmanaged memory.
         /// </summary>
@@ -339,6 +342,65 @@ namespace Voxelis
             ];
         }
 
+        #region Snapshots
+
+        // Backbuffer version of voxels, for read access in automata
+        [NativeDisableUnsafePtrRestriction]
+        public UnsafeList<Block> _snapshot_voxels;
+        
+        // Backbuffer version of brickIdx, for read access in automata
+        [NativeDisableUnsafePtrRestriction]
+        public short* _snapshot_brickIdx;
+
+        private bool _snapshot_enabled;
+
+        // Activate snapshot mode.
+        // In snapshot mode, any modification to the sector will be written to a backbuffer, without affecting the read functionalities.
+        // Please call ApplySnapshot() to apply the modifications after work finished.
+        // This is mainly used for automatas where the state of a voxel depends on its neighbors in the previous time step, and sequential modifications are inappropriate.
+        public void ActivateSnapshot(Allocator allocator = Allocator.Persistent)
+        {
+            // Don't activate multiple times
+            if (_snapshot_enabled)
+            {
+                return;
+            }
+
+            if (!_snapshot_voxels.IsCreated)
+            {
+                _snapshot_voxels = new UnsafeList<Block>(voxels.Capacity, allocator);
+            }
+
+            if (_snapshot_brickIdx == null)
+            {
+                _snapshot_brickIdx = (short*)UnsafeUtility.Malloc(
+                    sizeof(short) * BRICKS_IN_SECTOR,
+                    UnsafeUtility.AlignOf<short>(),
+                    allocator
+                );
+            }
+            
+            _snapshot_voxels.Clear();
+            _snapshot_voxels.AddRange(voxels);
+            UnsafeUtility.MemCpy(_snapshot_brickIdx, brickIdx, sizeof(short) * BRICKS_IN_SECTOR);
+
+            _snapshot_enabled = true;
+        }
+
+        public void ApplySnapshot()
+        {
+            // Apply only previously activated
+            if (!_snapshot_enabled) return;
+            
+            voxels.Clear();
+            voxels.AddRange(_snapshot_voxels);
+            UnsafeUtility.MemCpy(brickIdx, _snapshot_brickIdx, sizeof(short) * BRICKS_IN_SECTOR);
+            
+            _snapshot_enabled = false;
+        }
+
+        #endregion
+
         /// <summary>
         /// Sets the block at the specified position within this sector.
         /// Automatically allocates a new brick if needed.
@@ -354,9 +416,12 @@ namespace Voxelis
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void SetBlock(int x, int y, int z, Block b)
         {
+            short* targetBrickIdx = _snapshot_enabled ? _snapshot_brickIdx : brickIdx;
+            ref UnsafeList<Block> targetVoxels = ref(_snapshot_enabled ? ref _snapshot_voxels : ref voxels);
+            
             int brick_sector_index_id =
                 ToBrickIdx(x >> SHIFT_IN_BLOCKS, y >> SHIFT_IN_BLOCKS, z >> SHIFT_IN_BLOCKS);
-            short bid = this.brickIdx[brick_sector_index_id];
+            short bid = targetBrickIdx[brick_sector_index_id];
 
             // Skip setting empty to empty bricks
             if (bid == BRICKID_EMPTY && b.isEmpty)
@@ -368,9 +433,9 @@ namespace Voxelis
             // Create the brick first
             if (bid == BRICKID_EMPTY)
             {
-                this.brickIdx[brick_sector_index_id] = (short)currentBrickId[0];
+                targetBrickIdx[brick_sector_index_id] = (short)currentBrickId[0];
                 bid = (short)currentBrickId[0];
-                voxels.AddReplicate(Block.Empty, BLOCKS_IN_BRICK);
+                targetVoxels.AddReplicate(Block.Empty, BLOCKS_IN_BRICK);
 
                 brickFlags[brick_sector_index_id] = BrickUpdateInfo.Type.Added;
                 updateRecord.Add((short)brick_sector_index_id);
@@ -385,11 +450,11 @@ namespace Voxelis
                       y & BRICK_MASK,
                       z & BRICK_MASK);
 
-            if (voxels[vid] != b)
+            if (targetVoxels[vid] != b)
             {
                 // TODO: Specify DirtyFlag
-                MarkBrickDirty(bid, DirtyFlags.Reserved0);
-                voxels[vid] = b;
+                MarkBrickDirty(brick_sector_index_id, DirtyFlags.Reserved0);
+                targetVoxels[vid] = b;
             }
             
             if (brickFlags[brick_sector_index_id] == BrickUpdateInfo.Type.Idle)

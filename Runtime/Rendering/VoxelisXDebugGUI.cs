@@ -296,14 +296,14 @@ public class VoxelisXDebugGUI : MonoBehaviour
                     for (short brickIdxAbs = 0; brickIdxAbs < Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS; brickIdxAbs++)
                     {
                         short brickIdx = sector.brickIdx[brickIdxAbs];
-                        if (brickIdx != Sector.BRICKID_EMPTY)
+                        DirtyFlags dirtyFlags = (DirtyFlags)sector.brickRequireUpdateFlags[brickIdxAbs];
+                        if (brickIdx != Sector.BRICKID_EMPTY || dirtyFlags > 0)
                         {
                             // Calculate brick position within sector
                             int3 brickPos = Sector.ToBrickPos(brickIdxAbs);
                             float3 brickLocalPos = new float3(brickPos) * Sector.SIZE_IN_BLOCKS;
                             float3 brickInSectorPos = sectorLocalPos + brickLocalPos;
 
-                            DirtyFlags dirtyFlags = (DirtyFlags)sector.brickRequireUpdateFlags[brickIdxAbs];
                             Color colorToUse = (dirtyFlags & DirtyFlags.Reserved0) > 0 ? brickBorderColorDirty : brickBorderColor;
                             
                             DrawWireBox(
