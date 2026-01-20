@@ -76,18 +76,6 @@ namespace Voxelis
         {
             // TEMP CODE -- Tick logic
             rayCaster?.Tick();
-
-            // Dirty propagation
-            entities.ForEach(e => e.ClearRequireUpdates());
-
-            JobHandle handle = new JobHandle();
-            for (int i = 0; i < entities.Count; i++)
-            {
-                handle = JobHandle.CombineDependencies(handle, entities[i].PropagateDirtyFlags(DirtyFlags.All, true));
-            }
-            handle.Complete();
-            
-            entities.ForEach(e => e.ClearDirtyFlags());
             
             // Ticking
             
@@ -167,6 +155,18 @@ namespace Voxelis
             // Tick renderer
             if(rayTracedRenderer?.enabled ?? false) rayTracedRenderer?.Tick();
             if(meshingRenderer?.enabled ?? false) meshingRenderer?.Tick();
+            
+            // Dirty propagation
+            entities.ForEach(e => e.ClearRequireUpdates());
+
+            JobHandle handle = new JobHandle();
+            for (int i = 0; i < entities.Count; i++)
+            {
+                handle = JobHandle.CombineDependencies(handle, entities[i].PropagateDirtyFlags(DirtyFlags.All, true));
+            }
+            handle.Complete();
+            
+            entities.ForEach(e => e.ClearDirtyFlags());
         }
         
         public virtual void DoTick(

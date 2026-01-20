@@ -144,7 +144,7 @@ namespace Voxelis.Rendering.Meshing
 
                     if (isAdded || isModified)
                     {
-                        int3 brickPos = Sector.ToBrickPos(brickIdx);
+                        int3 brickPos = Sector.ToBrickPos((short)brickIdx);
                         int3 chunkIdx = (brickPos * Sector.SIZE_IN_BLOCKS) / chunkSize;
 
                         if (IsValidChunkIndex(chunkIdx))
