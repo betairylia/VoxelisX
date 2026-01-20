@@ -133,18 +133,25 @@ namespace Voxelis.Rendering.Meshing
         {
             ref Sector sector = ref sectorHandle.Get();
 
-            // Check sector update records to mark dirty chunks
-            for (int i = 0; i < sector.updateRecord.Length; i++)
+            // Sweep all bricks to find dirty ones (Added or content changed)
+            unsafe
             {
-                short brickIdxAbs = sector.updateRecord[i];
-                int3 brickPos = Sector.ToBrickPos(brickIdxAbs);
-
-                // Determine which chunk(s) this brick affects
-                int3 chunkIdx = (brickPos * Sector.SIZE_IN_BLOCKS) / chunkSize;
-
-                if (IsValidChunkIndex(chunkIdx))
+                for (int brickIdx = 0; brickIdx < Sector.BRICKS_IN_SECTOR; brickIdx++)
                 {
-                    dirtyChunks.Add(GetChunkIndex(chunkIdx.x, chunkIdx.y, chunkIdx.z));
+                    // Check if brick is Added or has Reserved0 flag (content changed)
+                    bool isAdded = sector.brickFlags[brickIdx] == BrickUpdateInfo.Type.Added;
+                    bool isModified = (sector.brickDirtyFlags[brickIdx] & (ushort)DirtyFlags.Reserved0) != 0;
+
+                    if (isAdded || isModified)
+                    {
+                        int3 brickPos = Sector.ToBrickPos((short)brickIdx);
+                        int3 chunkIdx = (brickPos * Sector.SIZE_IN_BLOCKS) / chunkSize;
+
+                        if (IsValidChunkIndex(chunkIdx))
+                        {
+                            dirtyChunks.Add(GetChunkIndex(chunkIdx.x, chunkIdx.y, chunkIdx.z));
+                        }
+                    }
                 }
             }
 
@@ -215,8 +222,8 @@ namespace Voxelis.Rendering.Meshing
             jobHandles.Clear();
             meshDataList.Clear();
             chunkIndices.Clear();
-            
-            // Clear sector dirty flags etc.
+
+            // Clear sector state
             ref Sector sector = ref sectorHandle.Get();
             sector.ReorderBricks();
             sector.EndTick();
