@@ -234,6 +234,55 @@ namespace Voxelis
         public ushort GetBrickDirtyFlags(int3 brickPos) => GetBrickDirtyFlags(brickPos.x, brickPos.y, brickPos.z);
 
         /// <summary>
+        /// Gets the dirty direction mask for a brick at the specified brick-level coordinates.
+        /// Automatically accesses neighboring sectors if brick coordinates fall outside [0, 15].
+        /// </summary>
+        /// <param name="brickX">Brick X coordinate (can be negative or >= 16)</param>
+        /// <param name="brickY">Brick Y coordinate (can be negative or >= 16)</param>
+        /// <param name="brickZ">Brick Z coordinate (can be negative or >= 16)</param>
+        /// <returns>The brick's dirty direction mask, or 0 if the brick or neighbor doesn't exist</returns>
+        public uint GetBrickDirtyDirectionMask(int brickX, int brickY, int brickZ)
+        {
+            int brickIdx = -1;
+
+            // Fast path: brick coordinates within center sector bounds
+            if (brickX >= 0 && brickX < Sector.SIZE_IN_BRICKS &&
+                brickY >= 0 && brickY < Sector.SIZE_IN_BRICKS &&
+                brickZ >= 0 && brickZ < Sector.SIZE_IN_BRICKS)
+            {
+                brickIdx = Sector.ToBrickIdx(brickX, brickY, brickZ);
+                return centerSector.Get().brickDirtyDirectionMask[brickIdx];
+            }
+
+            // Calculate which neighbor sector to access
+            int3 sectorOffset = new int3(
+                brickX < 0 ? -1 : (brickX >= Sector.SIZE_IN_BRICKS ? 1 : 0),
+                brickY < 0 ? -1 : (brickY >= Sector.SIZE_IN_BRICKS ? 1 : 0),
+                brickZ < 0 ? -1 : (brickZ >= Sector.SIZE_IN_BRICKS ? 1 : 0)
+            );
+
+            // Find the neighbor index for this offset
+            int neighborIdx = FindNeighborIndex(sectorOffset);
+            if (neighborIdx < 0 || !neighbors.Neighbors[neighborIdx].IsValid)
+            {
+                return 0;
+            }
+
+            // Transform brick coordinates to neighbor's local space
+            int localBrickX = ModuloWrap(brickX, Sector.SIZE_IN_BRICKS);
+            int localBrickY = ModuloWrap(brickY, Sector.SIZE_IN_BRICKS);
+            int localBrickZ = ModuloWrap(brickZ, Sector.SIZE_IN_BRICKS);
+
+            brickIdx = Sector.ToBrickIdx(localBrickX, localBrickY, localBrickZ);
+            return neighbors.Neighbors[neighborIdx].Get().brickDirtyDirectionMask[brickIdx];
+        }
+
+        /// <summary>
+        /// Gets the dirty direction mask for a brick at the specified brick-level coordinates.
+        /// </summary>
+        public uint GetBrickDirtyDirectionMask(int3 brickPos) => GetBrickDirtyDirectionMask(brickPos.x, brickPos.y, brickPos.z);
+
+        /// <summary>
         /// Finds the neighbor array index for a given sector offset.
         /// </summary>
         /// <param name="offset">The sector offset (-1, 0, or 1 for each axis)</param>

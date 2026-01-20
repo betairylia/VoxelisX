@@ -121,6 +121,8 @@ namespace Voxelis
         public ushort* brickDirtyFlags;           // Write buffer: what changed THIS tick
         [NativeDisableUnsafePtrRestriction]
         public ushort* brickRequireUpdateFlags;   // Read buffer: what needs processing (from propagation)
+        [NativeDisableUnsafePtrRestriction]
+        public uint* brickDirtyDirectionMask;     // Bitmask indicating which of 26 neighbor directions need propagation
         public ushort sectorDirtyFlags;
         public ushort sectorRequireUpdateFlags;
 
@@ -192,6 +194,7 @@ namespace Voxelis
                 currentBrickId = (int*)UnsafeUtility.Malloc(sizeof(int), UnsafeUtility.AlignOf<int>(), allocator),
                 brickDirtyFlags = (ushort*)UnsafeUtility.Malloc(totalBricks * sizeof(ushort), UnsafeUtility.AlignOf<ushort>(), allocator),
                 brickRequireUpdateFlags = (ushort*)UnsafeUtility.Malloc(totalBricks * sizeof(ushort), UnsafeUtility.AlignOf<ushort>(), allocator),
+                brickDirtyDirectionMask = (uint*)UnsafeUtility.Malloc(totalBricks * sizeof(uint), UnsafeUtility.AlignOf<uint>(), allocator),
                 NonEmptyBricks = new UnsafeList<short>(initialBricks, allocator),
                 sectorDirtyFlags = 0,
                 sectorRequireUpdateFlags = 0,
@@ -204,7 +207,8 @@ namespace Voxelis
                 UnsafeUtility.MemClear(s.brickFlags, totalBricks * sizeof(BrickUpdateInfo.Type));
                 UnsafeUtility.MemClear(s.brickDirtyFlags, totalBricks * sizeof(ushort));
                 UnsafeUtility.MemClear(s.brickRequireUpdateFlags, totalBricks * sizeof(ushort));
-                
+                UnsafeUtility.MemClear(s.brickDirtyDirectionMask, totalBricks * sizeof(uint));
+
                 for (int i = 0; i < totalBricks; i++)
                     s.brickIdx[i] = BRICKID_EMPTY;
             }
@@ -261,6 +265,7 @@ namespace Voxelis
             if (NonEmptyBricks.IsCreated) NonEmptyBricks.Dispose();
             if (brickDirtyFlags != null) UnsafeUtility.Free(brickDirtyFlags, allocator);
             if (brickRequireUpdateFlags != null) UnsafeUtility.Free(brickRequireUpdateFlags, allocator);
+            if (brickDirtyDirectionMask != null) UnsafeUtility.Free(brickDirtyDirectionMask, allocator);
         }
 
         /// <summary>
@@ -309,6 +314,51 @@ namespace Voxelis
             Utils.BurstAssertSimpleExperssionsOnly.IsTrue(z < SIZE_IN_BLOCKS);
 
             return (x + y * SIZE_IN_BLOCKS + z * SIZE_IN_BLOCKS_SQUARED);
+        }
+
+        /// <summary>
+        /// Computes which neighbor directions need dirty flag propagation based on voxel position within brick.
+        /// Only neighbors where the voxel is at a brick boundary need to be notified.
+        /// </summary>
+        /// <param name="x_in_brick">X coordinate within brick (0-7)</param>
+        /// <param name="y_in_brick">Y coordinate within brick (0-7)</param>
+        /// <param name="z_in_brick">Z coordinate within brick (0-7)</param>
+        /// <returns>Bitmask where bit i indicates if direction i needs propagation (26 directions from NeighborhoodSettings)</returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static uint ComputePropagationDirectionMask(int x_in_brick, int y_in_brick, int z_in_brick)
+        {
+            // Determine which boundaries this voxel is at
+            bool atMinX = (x_in_brick == 0);
+            bool atMaxX = (x_in_brick == SIZE_IN_BLOCKS - 1);
+            bool atMinY = (y_in_brick == 0);
+            bool atMaxY = (y_in_brick == SIZE_IN_BLOCKS - 1);
+            bool atMinZ = (z_in_brick == 0);
+            bool atMaxZ = (z_in_brick == SIZE_IN_BLOCKS - 1);
+
+            uint mask = 0;
+
+            // For each of the 26 neighbor directions, check if we're at the corresponding boundary
+            // NeighborhoodSettings.Directions contains all 26 directions
+            for (int dir = 0; dir < 26; dir++)
+            {
+                int3 direction = NeighborhoodSettings.Directions[dir];
+                bool shouldPropagate = true;
+
+                // Check if we're at the required boundary for this direction
+                if (direction.x < 0 && !atMinX) shouldPropagate = false;
+                if (direction.x > 0 && !atMaxX) shouldPropagate = false;
+                if (direction.y < 0 && !atMinY) shouldPropagate = false;
+                if (direction.y > 0 && !atMaxY) shouldPropagate = false;
+                if (direction.z < 0 && !atMinZ) shouldPropagate = false;
+                if (direction.z > 0 && !atMaxZ) shouldPropagate = false;
+
+                if (shouldPropagate)
+                {
+                    mask |= (1u << dir);
+                }
+            }
+
+            return mask;
         }
 
         /// <summary>
@@ -497,15 +547,16 @@ namespace Voxelis
             }
 
             // Set the block in target brick
-            int vid = bid * BLOCKS_IN_BRICK
-                  + ToBlockIdx(
-                      x & BRICK_MASK,
-                      y & BRICK_MASK,
-                      z & BRICK_MASK);
-            
+            int x_in_brick = x & BRICK_MASK;
+            int y_in_brick = y & BRICK_MASK;
+            int z_in_brick = z & BRICK_MASK;
+            int vid = bid * BLOCKS_IN_BRICK + ToBlockIdx(x_in_brick, y_in_brick, z_in_brick);
+
             if (targetVoxels[vid] != b)
             {
-                MarkBrickDirty(brick_sector_index_id, DirtyFlags.Reserved0);
+                // Compute which neighbor directions need propagation based on voxel position
+                uint directionMask = ComputePropagationDirectionMask(x_in_brick, y_in_brick, z_in_brick);
+                MarkBrickDirty(brick_sector_index_id, DirtyFlags.Reserved0, directionMask);
                 targetVoxels[vid] = b;
             }
         }
@@ -547,18 +598,21 @@ namespace Voxelis
         /// </summary>
         /// <param name="brickIdx">The absolute brick index to mark as dirty.</param>
         /// <param name="flags">The dirty flags to set.</param>
+        /// <param name="directionMask">Bitmask indicating which of 26 neighbor directions need propagation (0xFFFFFFFF = all directions)</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void MarkBrickDirty(int brickIdx, DirtyFlags flags)
+        public void MarkBrickDirty(int brickIdx, DirtyFlags flags, uint directionMask = 0xFFFFFFFF)
         {
             brickDirtyFlags[brickIdx] |= (ushort)flags;
+            brickDirtyDirectionMask[brickIdx] |= directionMask;
+
             if ((sectorDirtyFlags & (ushort)flags) == (ushort)flags) return;
-            
+
             // Wait until lock release
             while(Interlocked.Read(ref _sectorSetDirtyLock) != 0) {}
             Interlocked.Increment(ref _sectorSetDirtyLock);
-            
+
             sectorDirtyFlags |= (ushort)flags;
-            
+
             Interlocked.Decrement(ref _sectorSetDirtyLock);
         }
 
@@ -581,6 +635,7 @@ namespace Voxelis
         {
             int totalBricks = SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS;
             UnsafeUtility.MemClear(brickDirtyFlags, totalBricks * sizeof(ushort));
+            UnsafeUtility.MemClear(brickDirtyDirectionMask, totalBricks * sizeof(uint));
             sectorDirtyFlags = 0;
         }
 
@@ -617,6 +672,12 @@ namespace Voxelis
             {
                 brickDirtyFlags[i] &= clearMask;
                 aggregated |= brickDirtyFlags[i];
+
+                // Clear direction mask if no dirty flags remain for this brick
+                if (brickDirtyFlags[i] == 0)
+                {
+                    brickDirtyDirectionMask[i] = 0;
+                }
             }
 
             sectorDirtyFlags = aggregated;

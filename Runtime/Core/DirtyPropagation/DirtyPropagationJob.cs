@@ -84,14 +84,31 @@ namespace Voxelis
             }
 
             // For each brick, check neighbors' dirty flags
+            // Optimization: Only check neighbors that are actually relevant based on dirty direction masks
             for (int brickIdx = 0; brickIdx < Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS; brickIdx++)
             {
                 int3 brickPos = Sector.ToBrickPos((short)brickIdx);
                 ushort propagatedFlags = sector.brickDirtyFlags[brickIdx];
 
+                // Check neighbors for dirty flags
+                // Optimization: Only check neighbors that want to propagate in our direction
                 for (int dir = 0; dir < neighborCount; dir++)
                 {
                     int3 neighborBrickPos = brickPos + NeighborhoodSettings.Directions[dir];
+
+                    // Get neighbor's direction mask to see if it wants to propagate to us
+                    uint neighborDirMask = helper.GetBrickDirtyDirectionMask(neighborBrickPos);
+
+                    // If neighbor has no direction mask, skip it (optimization)
+                    if (neighborDirMask == 0) continue;
+
+                    // Calculate the direction from neighbor back to us
+                    int oppositeDir = NeighborhoodSettings.OppositeDirectionIndices[dir];
+
+                    // Skip if neighbor doesn't want to propagate in our direction
+                    if ((neighborDirMask & (1u << oppositeDir)) == 0) continue;
+
+                    // Neighbor wants to propagate to us, so check its dirty flags
                     ushort neighborDirty = helper.GetBrickDirtyFlags(neighborBrickPos);
                     propagatedFlags |= (ushort)(neighborDirty & (ushort)flagsToPropagate);
                 }

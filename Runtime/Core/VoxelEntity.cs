@@ -215,6 +215,10 @@ namespace Voxelis
         {
             if (sectors.Count == 0) return default;
 
+            // First pass: Ensure neighbor sectors exist for all dirty sectors at boundaries
+            // This allows dirty flags to propagate even to sectors that don't exist yet
+            EnsureNeighborSectorsForDirtyBoundaries();
+
             // Get all sector positions
             NativeArray<int3> allPositions = sectors.GetKeyArray(Allocator.TempJob);
 
@@ -241,6 +245,74 @@ namespace Voxelis
             }
 
             return handle;
+        }
+
+        /// <summary>
+        /// Ensures that neighbor sectors exist for all dirty bricks at sector boundaries.
+        /// This allows dirty flags to propagate to sectors that don't exist yet.
+        /// Must be called from main thread (not thread-safe).
+        /// </summary>
+        private void EnsureNeighborSectorsForDirtyBoundaries()
+        {
+            // Collect which neighbor sectors need to be created
+            HashSet<int3> sectorsToCreate = new HashSet<int3>();
+
+            foreach (var kvp in sectors)
+            {
+                int3 sectorPos = kvp.Key;
+                ref Sector sector = ref kvp.Value.Get();
+
+                // Skip if sector has no dirty flags
+                if (sector.sectorDirtyFlags == 0) continue;
+
+                // Check bricks on sector boundaries for dirty flags
+                for (int brickIdx = 0; brickIdx < Sector.BRICKS_IN_SECTOR; brickIdx++)
+                {
+                    // Skip non-dirty bricks
+                    if (sector.brickDirtyFlags[brickIdx] == 0) continue;
+
+                    int3 brickPos = Sector.ToBrickPos((short)brickIdx);
+                    uint directionMask = sector.brickDirtyDirectionMask[brickIdx];
+
+                    // For each direction this brick wants to propagate to
+                    for (int dir = 0; dir < NeighborhoodSettings.neighborhoodCount; dir++)
+                    {
+                        // Skip if brick doesn't want to propagate in this direction
+                        if ((directionMask & (1u << dir)) == 0) continue;
+
+                        int3 neighborBrickPos = brickPos + NeighborhoodSettings.Directions[dir];
+
+                        // Check if neighbor brick is in a different sector
+                        bool outsideSector =
+                            neighborBrickPos.x < 0 || neighborBrickPos.x >= Sector.SIZE_IN_BRICKS ||
+                            neighborBrickPos.y < 0 || neighborBrickPos.y >= Sector.SIZE_IN_BRICKS ||
+                            neighborBrickPos.z < 0 || neighborBrickPos.z >= Sector.SIZE_IN_BRICKS;
+
+                        if (outsideSector)
+                        {
+                            // Calculate which neighbor sector is needed
+                            int3 neighborSectorOffset = new int3(
+                                neighborBrickPos.x < 0 ? -1 : (neighborBrickPos.x >= Sector.SIZE_IN_BRICKS ? 1 : 0),
+                                neighborBrickPos.y < 0 ? -1 : (neighborBrickPos.y >= Sector.SIZE_IN_BRICKS ? 1 : 0),
+                                neighborBrickPos.z < 0 ? -1 : (neighborBrickPos.z >= Sector.SIZE_IN_BRICKS ? 1 : 0)
+                            );
+                            int3 neighborSectorPos = sectorPos + neighborSectorOffset;
+
+                            // Add to creation list if it doesn't exist
+                            if (!sectors.ContainsKey(neighborSectorPos))
+                            {
+                                sectorsToCreate.Add(neighborSectorPos);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Create all needed sectors
+            foreach (int3 pos in sectorsToCreate)
+            {
+                AddEmptySectorAt(pos);
+            }
         }
 
         /// <summary>
