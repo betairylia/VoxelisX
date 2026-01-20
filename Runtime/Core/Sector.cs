@@ -1,5 +1,7 @@
 using System;
 using System.Runtime.CompilerServices;
+using System.Threading;
+using System.Threading.Tasks;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
@@ -138,6 +140,9 @@ namespace Voxelis
         /// </summary>
         [NativeDisableUnsafePtrRestriction]
         private int* currentBrickId;
+        
+        // Lock for brick-thread-safe write
+        private long _sectorAllocLock, _sectorSetDirtyLock;
 
         /// <summary>
         /// Gets the number of non-empty bricks allocated in this sector for rendering.
@@ -475,6 +480,10 @@ namespace Voxelis
             // Create the brick first
             if (bid == BRICKID_EMPTY)
             {
+                // Wait until lock release
+                while(Interlocked.Read(ref _sectorAllocLock) != 0) {}
+                Interlocked.Increment(ref _sectorAllocLock);
+                
                 targetBrickIdx[brick_sector_index_id] = (short)currentBrickId[0];
                 bid = (short)currentBrickId[0];
                 targetVoxels.AddReplicate(Block.Empty, BLOCKS_IN_BRICK);
@@ -483,6 +492,8 @@ namespace Voxelis
                 updateRecord.Add((short)brick_sector_index_id);
 
                 currentBrickId[0]++;
+                
+                Interlocked.Decrement(ref _sectorAllocLock);
             }
 
             // Set the block in target brick
@@ -491,7 +502,7 @@ namespace Voxelis
                       x & BRICK_MASK,
                       y & BRICK_MASK,
                       z & BRICK_MASK);
-
+            
             if (targetVoxels[vid] != b)
             {
                 MarkBrickDirty(brick_sector_index_id, DirtyFlags.Reserved0);
@@ -501,7 +512,14 @@ namespace Voxelis
             if (brickFlags[brick_sector_index_id] == BrickUpdateInfo.Type.Idle)
             {
                 brickFlags[brick_sector_index_id] = BrickUpdateInfo.Type.Modified;
+                
+                // Wait until lock release
+                while(Interlocked.Read(ref _sectorSetDirtyLock) != 0) {}
+                Interlocked.Increment(ref _sectorSetDirtyLock);
+                
                 updateRecord.Add((short)brick_sector_index_id);
+                
+                Interlocked.Decrement(ref _sectorSetDirtyLock);
             }
         }
 
@@ -546,7 +564,15 @@ namespace Voxelis
         public void MarkBrickDirty(int brickIdx, DirtyFlags flags)
         {
             brickDirtyFlags[brickIdx] |= (ushort)flags;
+            if ((sectorDirtyFlags & (ushort)flags) == (ushort)flags) return;
+            
+            // Wait until lock release
+            while(Interlocked.Read(ref _sectorSetDirtyLock) != 0) {}
+            Interlocked.Increment(ref _sectorSetDirtyLock);
+            
             sectorDirtyFlags |= (ushort)flags;
+            
+            Interlocked.Decrement(ref _sectorSetDirtyLock);
         }
 
         /// <summary>
