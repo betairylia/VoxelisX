@@ -111,72 +111,37 @@ namespace Voxelis.Rendering
             /// </summary>
             public NativeArray<int> syncRecord;
 
-            /// <summary>
-            /// Consumes the next dirty brick from the update queue.
-            /// </summary>
-            /// <param name="index">Index parameter (currently unused).</param>
-            /// <returns>Update info for the dirty brick, or null if no more dirty bricks.</returns>
-            public unsafe BrickUpdateInfo? ConsumeDirtyBrick(int index)
-            {
-                if (index >= sector.updateRecord.Length) return null;
-                
-                short absolute_bid = sector.updateRecord[index];
-                
-                var result = new BrickUpdateInfo()
-                {
-                    brickIdx = sector.brickIdx[absolute_bid],
-                    brickIdxAbsolute = absolute_bid,
-                    type = sector.brickFlags[absolute_bid]
-                };
-
-                // sector.brickFlags[absolute_bid] = BrickUpdateInfo.Type.Idle;
-                
-                return result;
-            }
-            
             public void Execute()
             {
                 syncRecord[0] = 65536;
                 syncRecord[1] = 0;
 
-                // Process updateRecord for Added/Removed bricks
-                int id = 0;
-
-                BrickUpdateInfo? record = ConsumeDirtyBrick(id);
-                while (record != null)
-                {
-                    if (record.Value.type == BrickUpdateInfo.Type.Idle) continue;
-                    if (record.Value.type == BrickUpdateInfo.Type.Removed) throw new System.NotImplementedException();
-
-                    ProcessBrick(record.Value);
-
-                    // Go to next brick
-                    id++;
-                    record = ConsumeDirtyBrick(id);
-                }
-
-                // Process bricks with Reserved0 dirty flag (content changed)
+                // Sweep all bricks to find dirty ones
                 unsafe
                 {
                     for (int brickIdxAbs = 0; brickIdxAbs < Sector.BRICKS_IN_SECTOR; brickIdxAbs++)
                     {
-                        // Skip if already processed as Added (or if not dirty)
-                        if (sector.brickFlags[brickIdxAbs] == BrickUpdateInfo.Type.Added) continue;
-                        if ((sector.brickDirtyFlags[brickIdxAbs] & (ushort)DirtyFlags.Reserved0) == 0) continue;
+                        // Check if brick is Added or has Reserved0 flag (content changed)
+                        bool isAdded = sector.brickFlags[brickIdxAbs] == BrickUpdateInfo.Type.Added;
+                        bool isModified = (sector.brickDirtyFlags[brickIdxAbs] & (ushort)DirtyFlags.Reserved0) != 0;
+
+                        if (!isAdded && !isModified) continue;
+                        if (sector.brickFlags[brickIdxAbs] == BrickUpdateInfo.Type.Removed)
+                            throw new System.NotImplementedException();
 
                         // Check if brick exists (not empty)
                         short bid = sector.brickIdx[brickIdxAbs];
                         if (bid == Sector.BRICKID_EMPTY) continue;
 
-                        // Process as Modified
-                        var modifiedRecord = new BrickUpdateInfo()
+                        // Create record for this brick
+                        var record = new BrickUpdateInfo()
                         {
                             brickIdx = bid,
                             brickIdxAbsolute = (short)brickIdxAbs,
-                            type = BrickUpdateInfo.Type.Modified
+                            type = isAdded ? BrickUpdateInfo.Type.Added : BrickUpdateInfo.Type.Modified
                         };
 
-                        ProcessBrick(modifiedRecord);
+                        ProcessBrick(record);
                     }
                 }
             }

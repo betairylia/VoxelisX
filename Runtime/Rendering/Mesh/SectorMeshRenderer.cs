@@ -133,27 +133,16 @@ namespace Voxelis.Rendering.Meshing
         {
             ref Sector sector = ref sectorHandle.Get();
 
-            // Check sector update records to mark dirty chunks (Added/Removed bricks)
-            for (int i = 0; i < sector.updateRecord.Length; i++)
-            {
-                short brickIdxAbs = sector.updateRecord[i];
-                int3 brickPos = Sector.ToBrickPos(brickIdxAbs);
-
-                // Determine which chunk(s) this brick affects
-                int3 chunkIdx = (brickPos * Sector.SIZE_IN_BLOCKS) / chunkSize;
-
-                if (IsValidChunkIndex(chunkIdx))
-                {
-                    dirtyChunks.Add(GetChunkIndex(chunkIdx.x, chunkIdx.y, chunkIdx.z));
-                }
-            }
-
-            // Check brick dirty flags for content changes (Reserved0)
+            // Sweep all bricks to find dirty ones (Added or content changed)
             unsafe
             {
                 for (int brickIdx = 0; brickIdx < Sector.BRICKS_IN_SECTOR; brickIdx++)
                 {
-                    if ((sector.brickDirtyFlags[brickIdx] & (ushort)DirtyFlags.Reserved0) != 0)
+                    // Check if brick is Added or has Reserved0 flag (content changed)
+                    bool isAdded = sector.brickFlags[brickIdx] == BrickUpdateInfo.Type.Added;
+                    bool isModified = (sector.brickDirtyFlags[brickIdx] & (ushort)DirtyFlags.Reserved0) != 0;
+
+                    if (isAdded || isModified)
                     {
                         int3 brickPos = Sector.ToBrickPos(brickIdx);
                         int3 chunkIdx = (brickPos * Sector.SIZE_IN_BLOCKS) / chunkSize;
@@ -234,11 +223,10 @@ namespace Voxelis.Rendering.Meshing
             meshDataList.Clear();
             chunkIndices.Clear();
 
-            // Clear sector dirty flags and update records
+            // Clear sector state
             ref Sector sector = ref sectorHandle.Get();
-            sector.ClearDirtyFlags(DirtyFlags.Reserved0);  // Clear renderer dirty flags
             sector.ReorderBricks();
-            sector.EndTick();  // Clear Added/Removed update records
+            sector.EndTick();
         }
 
         /// <summary>
