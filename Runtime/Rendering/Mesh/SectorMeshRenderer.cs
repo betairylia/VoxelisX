@@ -133,7 +133,7 @@ namespace Voxelis.Rendering.Meshing
         {
             ref Sector sector = ref sectorHandle.Get();
 
-            // Check sector update records to mark dirty chunks
+            // Check sector update records to mark dirty chunks (Added/Removed bricks)
             for (int i = 0; i < sector.updateRecord.Length; i++)
             {
                 short brickIdxAbs = sector.updateRecord[i];
@@ -145,6 +145,24 @@ namespace Voxelis.Rendering.Meshing
                 if (IsValidChunkIndex(chunkIdx))
                 {
                     dirtyChunks.Add(GetChunkIndex(chunkIdx.x, chunkIdx.y, chunkIdx.z));
+                }
+            }
+
+            // Check brick dirty flags for content changes (Reserved0)
+            unsafe
+            {
+                for (int brickIdx = 0; brickIdx < Sector.BRICKS_IN_SECTOR; brickIdx++)
+                {
+                    if ((sector.brickDirtyFlags[brickIdx] & (ushort)DirtyFlags.Reserved0) != 0)
+                    {
+                        int3 brickPos = Sector.ToBrickPos(brickIdx);
+                        int3 chunkIdx = (brickPos * Sector.SIZE_IN_BLOCKS) / chunkSize;
+
+                        if (IsValidChunkIndex(chunkIdx))
+                        {
+                            dirtyChunks.Add(GetChunkIndex(chunkIdx.x, chunkIdx.y, chunkIdx.z));
+                        }
+                    }
                 }
             }
 
@@ -215,11 +233,12 @@ namespace Voxelis.Rendering.Meshing
             jobHandles.Clear();
             meshDataList.Clear();
             chunkIndices.Clear();
-            
-            // Clear sector dirty flags etc.
+
+            // Clear sector dirty flags and update records
             ref Sector sector = ref sectorHandle.Get();
+            sector.ClearDirtyFlags(DirtyFlags.Reserved0);  // Clear renderer dirty flags
             sector.ReorderBricks();
-            sector.EndTick();
+            sector.EndTick();  // Clear Added/Removed update records
         }
 
         /// <summary>

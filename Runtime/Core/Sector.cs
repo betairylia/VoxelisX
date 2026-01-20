@@ -125,7 +125,7 @@ namespace Voxelis
         /// <summary>
         /// Returns true if there are pending brick updates for the renderer.
         /// </summary>
-        public bool IsRendererDirty => !updateRecord.IsEmpty;
+        public bool IsRendererDirty => !updateRecord.IsEmpty || (sectorDirtyFlags & (ushort)DirtyFlags.Reserved0) != 0;
 
         /// <summary>
         /// Returns true if the sector contains no allocated bricks.
@@ -497,12 +497,6 @@ namespace Voxelis
                 MarkBrickDirty(brick_sector_index_id, DirtyFlags.Reserved0);
                 targetVoxels[vid] = b;
             }
-            
-            if (brickFlags[brick_sector_index_id] == BrickUpdateInfo.Type.Idle)
-            {
-                brickFlags[brick_sector_index_id] = BrickUpdateInfo.Type.Modified;
-                updateRecord.Add((short)brick_sector_index_id);
-            }
         }
 
         /// <summary>
@@ -588,6 +582,25 @@ namespace Voxelis
             }
 
             sectorRequireUpdateFlags = aggregated;
+        }
+
+        /// <summary>
+        /// Clears specific dirty flags for all bricks in the sector.
+        /// </summary>
+        /// <param name="flags">The flags to clear.</param>
+        public void ClearDirtyFlags(DirtyFlags flags)
+        {
+            ushort clearMask = (ushort)~flags;
+            int totalBricks = SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS;
+            ushort aggregated = 0;
+
+            for (int i = 0; i < totalBricks; i++)
+            {
+                brickDirtyFlags[i] &= clearMask;
+                aggregated |= brickDirtyFlags[i];
+            }
+
+            sectorDirtyFlags = aggregated;
         }
 
         /// <summary>

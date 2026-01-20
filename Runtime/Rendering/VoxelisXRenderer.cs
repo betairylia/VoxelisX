@@ -335,8 +335,9 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
                 sectorRenderers[key].RenderModifyAS(ref _voxelScene, e, sectorPos, sector);
 
                 // Call sector tick
+                sector.ClearDirtyFlags(DirtyFlags.Reserved0);  // Clear renderer dirty flags
                 sector.ReorderBricks();
-                sector.EndTick();
+                sector.EndTick();  // Clear Added/Removed update records
             }
         }
     }

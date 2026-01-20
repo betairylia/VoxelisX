@@ -139,60 +139,91 @@ namespace Voxelis.Rendering
                 syncRecord[0] = 65536;
                 syncRecord[1] = 0;
 
+                // Process updateRecord for Added/Removed bricks
                 int id = 0;
-                
+
                 BrickUpdateInfo? record = ConsumeDirtyBrick(id);
                 while (record != null)
                 {
                     if (record.Value.type == BrickUpdateInfo.Type.Idle) continue;
                     if (record.Value.type == BrickUpdateInfo.Type.Removed) throw new System.NotImplementedException();
-                    
-                    // Buffer start position
-                    short bid = record.Value.brickIdx;
-                    int bp = bid * BRICK_DATA_LENGTH;
-                    
-                    // Record modifications for Host-Device buffer sync
-                    syncRecord[0] = math.min(syncRecord[0], bid);
-                    syncRecord[1] = math.max(syncRecord[1], bid);
 
-                    // Brick position
-                    brickData[bp] = record.Value.brickIdxAbsolute;
+                    ProcessBrick(record.Value);
 
-                    // Brick data
-                    for (int bz = 0; bz < Sector.SIZE_IN_BLOCKS; bz++)
-                    {
-                        for (int by = 0; by < Sector.SIZE_IN_BLOCKS; by++)
-                        {
-                            // Assume X-First
-                            int blockStart = bid * Sector.BLOCKS_IN_BRICK +
-                                             Sector.ToBlockIdx(0, by, bz);
-
-                            for (int bx = 0; bx < Sector.SIZE_IN_BLOCKS; bx += 2)
-                            {
-                                brickData[
-                                        bp + 1 + bz * (Sector.SIZE_IN_BLOCKS_SQUARED / 2) +
-                                        by * (Sector.SIZE_IN_BLOCKS / 2) + bx / 2] =
-                                    ((sector.voxels[blockStart + bx].id << 16) | sector.voxels[blockStart + bx + 1].id);
-                                    // ~(0x00010001);
-                            }
-                        }
-                    }
-
-                    // AABB
-                    // Only do for new bricks
-                    if (record.Value.type == BrickUpdateInfo.Type.Added)
-                    {
-                        Vector3 brickPos = Sector.ToBrickPos(record.Value.brickIdxAbsolute).ToVector3Int();
-                        aabbBuffer[bid] = new AABB()
-                        {
-                            min = brickPos * Sector.SIZE_IN_BLOCKS,
-                            max = (brickPos + Vector3.one) * Sector.SIZE_IN_BLOCKS
-                        };
-                    }
-                    
                     // Go to next brick
                     id++;
                     record = ConsumeDirtyBrick(id);
+                }
+
+                // Process bricks with Reserved0 dirty flag (content changed)
+                unsafe
+                {
+                    for (int brickIdxAbs = 0; brickIdxAbs < Sector.BRICKS_IN_SECTOR; brickIdxAbs++)
+                    {
+                        // Skip if already processed as Added (or if not dirty)
+                        if (sector.brickFlags[brickIdxAbs] == BrickUpdateInfo.Type.Added) continue;
+                        if ((sector.brickDirtyFlags[brickIdxAbs] & (ushort)DirtyFlags.Reserved0) == 0) continue;
+
+                        // Check if brick exists (not empty)
+                        short bid = sector.brickIdx[brickIdxAbs];
+                        if (bid == Sector.BRICKID_EMPTY) continue;
+
+                        // Process as Modified
+                        var modifiedRecord = new BrickUpdateInfo()
+                        {
+                            brickIdx = bid,
+                            brickIdxAbsolute = (short)brickIdxAbs,
+                            type = BrickUpdateInfo.Type.Modified
+                        };
+
+                        ProcessBrick(modifiedRecord);
+                    }
+                }
+            }
+
+            private void ProcessBrick(BrickUpdateInfo record)
+            {
+                // Buffer start position
+                short bid = record.brickIdx;
+                int bp = bid * BRICK_DATA_LENGTH;
+
+                // Record modifications for Host-Device buffer sync
+                syncRecord[0] = math.min(syncRecord[0], bid);
+                syncRecord[1] = math.max(syncRecord[1], bid);
+
+                // Brick position
+                brickData[bp] = record.brickIdxAbsolute;
+
+                // Brick data
+                for (int bz = 0; bz < Sector.SIZE_IN_BLOCKS; bz++)
+                {
+                    for (int by = 0; by < Sector.SIZE_IN_BLOCKS; by++)
+                    {
+                        // Assume X-First
+                        int blockStart = bid * Sector.BLOCKS_IN_BRICK +
+                                         Sector.ToBlockIdx(0, by, bz);
+
+                        for (int bx = 0; bx < Sector.SIZE_IN_BLOCKS; bx += 2)
+                        {
+                            brickData[
+                                    bp + 1 + bz * (Sector.SIZE_IN_BLOCKS_SQUARED / 2) +
+                                    by * (Sector.SIZE_IN_BLOCKS / 2) + bx / 2] =
+                                ((sector.voxels[blockStart + bx].id << 16) | sector.voxels[blockStart + bx + 1].id);
+                                // ~(0x00010001);
+                        }
+                    }
+                }
+
+                // AABB
+                // Only do for new bricks
+                if (record.type == BrickUpdateInfo.Type.Added)
+                {
+                    Vector3 brickPos = Sector.ToBrickPos(record.brickIdxAbsolute).ToVector3Int();
+                    aabbBuffer[bid] = new AABB()
+                    {
+                        min = brickPos * Sector.SIZE_IN_BLOCKS,
+                        max = (brickPos + Vector3.one) * Sector.SIZE_IN_BLOCKS
+                    };
                 }
             }
         }
