@@ -59,5 +59,61 @@ namespace Voxelis
             // Corner pairs: 18<->25, 19<->24, 20<->23, 21<->22
             25, 24, 23, 22, 21, 20, 19, 18
         };
+
+        // Lookup table for converting direction vectors to indices using trinary encoding
+        // Maps 3D vectors of {-1,0,1}^3 to direction indices 0-25, or -1 for center (0,0,0)
+        // Encoding: index = (x+1)*9 + (y+1)*3 + (z+1), giving range 0-26
+        private static readonly int[] DirectionLookup = new int[27]
+        {
+            25,  // 0: (-1,-1,-1)
+             9,  // 1: (-1,-1, 0)
+            24,  // 2: (-1,-1, 1)
+            13,  // 3: (-1, 0,-1)
+             1,  // 4: (-1, 0, 0)
+            12,  // 5: (-1, 0, 1)
+            23,  // 6: (-1, 1,-1)
+             8,  // 7: (-1, 1, 0)
+            22,  // 8: (-1, 1, 1)
+            17,  // 9: ( 0,-1,-1)
+             3,  // 10: ( 0,-1, 0)
+            16,  // 11: ( 0,-1, 1)
+             5,  // 12: ( 0, 0,-1)
+            -1,  // 13: ( 0, 0, 0) - center, not a neighbor
+             4,  // 14: ( 0, 0, 1)
+            15,  // 15: ( 0, 1,-1)
+             2,  // 16: ( 0, 1, 0)
+            14,  // 17: ( 0, 1, 1)
+            21,  // 18: ( 1,-1,-1)
+             7,  // 19: ( 1,-1, 0)
+            20,  // 20: ( 1,-1, 1)
+            11,  // 21: ( 1, 0,-1)
+             0,  // 22: ( 1, 0, 0)
+            10,  // 23: ( 1, 0, 1)
+            19,  // 24: ( 1, 1,-1)
+             6,  // 25: ( 1, 1, 0)
+            18   // 26: ( 1, 1, 1)
+        };
+
+        /// <summary>
+        /// Converts a direction vector to its corresponding direction index using O(1) lookup.
+        /// </summary>
+        /// <param name="direction">Direction vector with components in {-1, 0, 1}</param>
+        /// <returns>Direction index [0, 25], or -1 if direction is (0,0,0) or invalid</returns>
+        public static int DirectionToIndex(int3 direction)
+        {
+            // Encode direction using trinary: (x+1)*9 + (y+1)*3 + (z+1)
+            int x = direction.x + 1;
+            int y = direction.y + 1;
+            int z = direction.z + 1;
+
+            // Validate that components are in valid range {0, 1, 2} (original {-1, 0, 1})
+            if (x < 0 || x > 2 || y < 0 || y > 2 || z < 0 || z > 2)
+            {
+                return -1;
+            }
+
+            int lookupIndex = x * 9 + y * 3 + z;
+            return DirectionLookup[lookupIndex];
+        }
     }
 }
