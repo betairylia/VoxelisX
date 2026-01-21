@@ -49,6 +49,9 @@ namespace Voxelis
         public override void Init()
         {
             base.Init();
+
+            // Precompute lookup tables for dirty propagation optimization
+            Sector.PrecomputePropagationLookupTables();
         }
 
         private void Update()

@@ -100,13 +100,13 @@ namespace Voxelis
                     uint neighborDirMask = helper.GetBrickDirtyDirectionMask(neighborBrickPos);
 
                     // If neighbor has no direction mask, skip it (optimization)
-                    if (neighborDirMask == 0) continue;
+                    if (!NeighborhoodSettings.HasAnyDirection(neighborDirMask)) continue;
 
                     // Calculate the direction from neighbor back to us
                     int oppositeDir = NeighborhoodSettings.OppositeDirectionIndices[dir];
 
                     // Skip if neighbor doesn't want to propagate in our direction
-                    if ((neighborDirMask & (1u << oppositeDir)) == 0) continue;
+                    if (!NeighborhoodSettings.HasDirection(neighborDirMask, oppositeDir)) continue;
 
                     // Neighbor wants to propagate to us, so check its dirty flags
                     ushort neighborDirty = helper.GetBrickDirtyFlags(neighborBrickPos);

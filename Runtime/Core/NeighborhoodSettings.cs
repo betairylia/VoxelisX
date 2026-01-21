@@ -59,5 +59,40 @@ namespace Voxelis
             // Corner pairs: 18<->25, 19<->24, 20<->23, 21<->22
             25, 24, 23, 22, 21, 20, 19, 18
         };
+
+        /// <summary>
+        /// Checks if a specific direction bit is set in a direction mask.
+        /// </summary>
+        /// <param name="mask">The direction bitmask to check</param>
+        /// <param name="directionIndex">The direction index (0-25)</param>
+        /// <returns>True if the direction bit is set</returns>
+        [MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        public static bool HasDirection(uint mask, int directionIndex)
+        {
+            return (mask & (1u << directionIndex)) != 0;
+        }
+
+        /// <summary>
+        /// Sets a specific direction bit in a direction mask.
+        /// </summary>
+        /// <param name="mask">The direction bitmask to modify</param>
+        /// <param name="directionIndex">The direction index (0-25)</param>
+        /// <returns>The modified mask with the direction bit set</returns>
+        [MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        public static uint SetDirection(uint mask, int directionIndex)
+        {
+            return mask | (1u << directionIndex);
+        }
+
+        /// <summary>
+        /// Checks if any direction bits are set in the mask.
+        /// </summary>
+        /// <param name="mask">The direction bitmask to check</param>
+        /// <returns>True if at least one direction bit is set</returns>
+        [MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        public static bool HasAnyDirection(uint mask)
+        {
+            return mask != 0;
+        }
     }
 }
