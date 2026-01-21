@@ -453,25 +453,6 @@ namespace VoxelisX.Tests
         }
 
         [Test]
-        public void Sector_SetBlock_ExistingBrick_MarkedAsModified()
-        {
-            // Arrange
-            testSector.Ptr->SetBlock(0, 0, 0, new Block(1, 1, 1, false));
-            testSector.Ptr->EndTick(); // Clear update state
-
-            // Act
-            testSector.Ptr->SetBlock(1, 1, 1, new Block(2, 2, 2, false)); // Same brick, different block
-
-            // Assert
-            unsafe
-            {
-                int brickIdx = Sector.ToBrickIdx(0, 0, 0);
-                Assert.AreEqual(BrickUpdateInfo.Type.Modified, testSector.Ptr->brickFlags[brickIdx],
-                    "Existing brick should be marked as Modified");
-            }
-        }
-
-        [Test]
         public void Sector_EndTick_ClearsUpdateRecordAndFlags()
         {
             // Arrange

@@ -319,121 +319,6 @@ namespace Voxelis
         }
 
         /// <summary>
-        /// Precomputed lookup table for voxel position to propagation direction mask.
-        /// Index: voxel flat index within brick (0-511), Value: bitmask of 26 neighbor directions.
-        /// Initialized by PrecomputeVoxelPropagationMasks() on first use.
-        /// </summary>
-        private static uint[] s_voxelPropagationMasks = null;
-
-        /// <summary>
-        /// Precomputed lookup table for brick position to sector neighbor directions.
-        /// Index: brick flat index (0-4095), Value: bitmask of 26 sector neighbor directions this brick touches.
-        /// A brick at sector boundary will have bits set for which neighboring sectors it touches.
-        /// Initialized by PrecomputeBrickSectorNeighborMasks() on first use.
-        /// </summary>
-        private static uint[] s_brickSectorNeighborMasks = null;
-
-        /// <summary>
-        /// Precomputes both voxel and brick propagation lookup tables.
-        /// Must be called during initialization before any dirty propagation occurs.
-        /// </summary>
-        public static void PrecomputePropagationLookupTables()
-        {
-            PrecomputeVoxelPropagationMasks();
-            PrecomputeBrickSectorNeighborMasks();
-        }
-
-        /// <summary>
-        /// Precomputes the propagation direction masks for all 512 voxel positions within a brick.
-        /// </summary>
-        private static void PrecomputeVoxelPropagationMasks()
-        {
-            if (s_voxelPropagationMasks != null) return; // Already initialized
-
-            s_voxelPropagationMasks = new uint[BLOCKS_IN_BRICK]; // 512 entries
-
-            for (int z = 0; z < SIZE_IN_BLOCKS; z++)
-            {
-                for (int y = 0; y < SIZE_IN_BLOCKS; y++)
-                {
-                    for (int x = 0; x < SIZE_IN_BLOCKS; x++)
-                    {
-                        int voxelIdx = ToBlockIdx(x, y, z);
-                        s_voxelPropagationMasks[voxelIdx] = ComputeBoundaryDirectionMask(x, y, z, SIZE_IN_BLOCKS);
-                    }
-                }
-            }
-        }
-
-        /// <summary>
-        /// Precomputes which sector neighbors each brick position touches (for bricks at sector boundaries).
-        /// </summary>
-        private static void PrecomputeBrickSectorNeighborMasks()
-        {
-            if (s_brickSectorNeighborMasks != null) return; // Already initialized
-
-            s_brickSectorNeighborMasks = new uint[BRICKS_IN_SECTOR]; // 4096 entries
-
-            for (int z = 0; z < SIZE_IN_BRICKS; z++)
-            {
-                for (int y = 0; y < SIZE_IN_BRICKS; y++)
-                {
-                    for (int x = 0; x < SIZE_IN_BRICKS; x++)
-                    {
-                        int brickIdx = ToBrickIdx(x, y, z);
-                        s_brickSectorNeighborMasks[brickIdx] = ComputeBoundaryDirectionMask(x, y, z, SIZE_IN_BRICKS);
-                    }
-                }
-            }
-        }
-
-        /// <summary>
-        /// Unified method to compute which neighbor directions need propagation based on position within a volume.
-        /// Works for both voxel-in-brick (sideLength=8) and brick-in-sector (sideLength=16) calculations.
-        /// </summary>
-        /// <param name="x">X coordinate within volume</param>
-        /// <param name="y">Y coordinate within volume</param>
-        /// <param name="z">Z coordinate within volume</param>
-        /// <param name="sideLength">Side length of the volume (8 for brick, 16 for sector)</param>
-        /// <returns>Bitmask where bit i indicates if direction i needs propagation</returns>
-        private static uint ComputeBoundaryDirectionMask(int x, int y, int z, int sideLength)
-        {
-            int maxCoord = sideLength - 1;
-
-            // Determine which boundaries this position is at
-            bool atMinX = (x == 0);
-            bool atMaxX = (x == maxCoord);
-            bool atMinY = (y == 0);
-            bool atMaxY = (y == maxCoord);
-            bool atMinZ = (z == 0);
-            bool atMaxZ = (z == maxCoord);
-
-            uint mask = 0;
-
-            // For each of the 26 neighbor directions, check if we're at the corresponding boundary
-            for (int dir = 0; dir < 26; dir++)
-            {
-                int3 direction = NeighborhoodSettings.Directions[dir];
-                bool atBoundary = true;
-
-                // Check if we're at the required boundary for this direction
-                if (direction.x < 0 && !atMinX) atBoundary = false;
-                if (direction.x > 0 && !atMaxX) atBoundary = false;
-                if (direction.y < 0 && !atMinY) atBoundary = false;
-                if (direction.y > 0 && !atMaxY) atBoundary = false;
-                if (direction.z < 0 && !atMinZ) atBoundary = false;
-                if (direction.z > 0 && !atMaxZ) atBoundary = false;
-
-                if (atBoundary)
-                {
-                    mask |= (1u << dir);
-                }
-            }
-
-            return mask;
-        }
-
-        /// <summary>
         /// Gets the precomputed propagation direction mask for a voxel position within a brick.
         /// </summary>
         /// <param name="voxelIdxInBrick">Flat voxel index within brick (0-511)</param>
@@ -441,7 +326,7 @@ namespace Voxelis
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static uint GetVoxelPropagationMask(int voxelIdxInBrick)
         {
-            return s_voxelPropagationMasks[voxelIdxInBrick];
+            return NeighborhoodSettings.s_voxelPropagationMasks[voxelIdxInBrick];
         }
 
         /// <summary>
@@ -452,7 +337,7 @@ namespace Voxelis
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static uint GetBrickSectorNeighborMask(int brickIdx)
         {
-            return s_brickSectorNeighborMasks[brickIdx];
+            return NeighborhoodSettings.s_brickSectorNeighborMasks[brickIdx];
         }
 
         /// <summary>
@@ -703,7 +588,13 @@ namespace Voxelis
             uint crossSectorPropagation = directionMask & brickSectorNeighborMask;
             if (crossSectorPropagation != 0)
             {
+                // Wait until lock release
+                while (Interlocked.Read(ref _sectorSetDirtyLock) != 0) { }
+                Interlocked.Increment(ref _sectorSetDirtyLock);
+                
                 sectorNeighborsToCreate |= crossSectorPropagation;
+                
+                Interlocked.Decrement(ref _sectorSetDirtyLock);
             }
 
             if ((sectorDirtyFlags & (ushort)flags) == (ushort)flags) return;

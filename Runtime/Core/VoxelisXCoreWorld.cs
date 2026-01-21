@@ -44,14 +44,12 @@ namespace Voxelis
         protected virtual void ReleaseResources()
         {
             // Entities will dispose themselves
+            // BoundaryMaskHelper.DisposePrecomputedBuffers();
         }
 
         public override void Init()
         {
             base.Init();
-
-            // Precompute lookup tables for dirty propagation optimization
-            Sector.PrecomputePropagationLookupTables();
         }
 
         private void Update()
