@@ -290,7 +290,7 @@ namespace Voxelis
         /// <returns>The neighbor index, or -1 if not found</returns>
         private int FindNeighborIndex(int3 offset)
         {
-            return NeighborhoodSettings.DirectionToIndex(offset);
+            return NeighborhoodSettings.DirectionToIndexMinusOne(offset);
         }
 
         /// <summary>

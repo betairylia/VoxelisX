@@ -67,7 +67,7 @@ namespace Voxelis
         // Lookup table for converting direction vectors to indices using trinary encoding
         // Maps 3D vectors of {-1,0,1}^3 to direction indices 0-25, or -1 for center (0,0,0)
         // Encoding: index = (x+1)*9 + (y+1)*3 + (z+1), giving range 0-26
-        private static readonly int[] DirectionLookup = new int[27]
+        private static readonly int[] DirectionLookupMinusOne = new int[27]
         {
             25,  // 0: (-1,-1,-1)
              9,  // 1: (-1,-1, 0)
@@ -103,7 +103,7 @@ namespace Voxelis
         /// </summary>
         /// <param name="direction">Direction vector with components in {-1, 0, 1}</param>
         /// <returns>Direction index [0, 25], or -1 if direction is (0,0,0) or invalid</returns>
-        public static int DirectionToIndex(int3 direction)
+        public static int DirectionToIndexMinusOne(int3 direction)
         {
             // Encode direction using trinary: (x+1)*9 + (y+1)*3 + (z+1)
             int x = direction.x + 1;
@@ -117,7 +117,7 @@ namespace Voxelis
             }
 
             int lookupIndex = x * 9 + y * 3 + z;
-            return DirectionLookup[lookupIndex];
+            return DirectionLookupMinusOne[lookupIndex];
         }
 
         /// <summary>
