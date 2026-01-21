@@ -284,19 +284,13 @@ namespace Voxelis
 
         /// <summary>
         /// Finds the neighbor array index for a given sector offset.
+        /// Uses O(1) lookup table instead of linear search.
         /// </summary>
         /// <param name="offset">The sector offset (-1, 0, or 1 for each axis)</param>
         /// <returns>The neighbor index, or -1 if not found</returns>
         private int FindNeighborIndex(int3 offset)
         {
-            for (int i = 0; i < NeighborhoodSettings.neighborhoodCount; i++)
-            {
-                if (NeighborhoodSettings.Directions[i].Equals(offset))
-                {
-                    return i;
-                }
-            }
-            return -1;
+            return NeighborhoodSettings.DirectionToIndex(offset);
         }
 
         /// <summary>
