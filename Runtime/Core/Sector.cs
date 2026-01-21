@@ -359,7 +359,7 @@ namespace Voxelis
                     for (int x = 0; x < SIZE_IN_BLOCKS; x++)
                     {
                         int voxelIdx = ToBlockIdx(x, y, z);
-                        s_voxelPropagationMasks[voxelIdx] = ComputePropagationDirectionMaskInternal(x, y, z);
+                        s_voxelPropagationMasks[voxelIdx] = ComputeBoundaryDirectionMask(x, y, z, SIZE_IN_BLOCKS);
                     }
                 }
             }
@@ -381,35 +381,42 @@ namespace Voxelis
                     for (int x = 0; x < SIZE_IN_BRICKS; x++)
                     {
                         int brickIdx = ToBrickIdx(x, y, z);
-                        s_brickSectorNeighborMasks[brickIdx] = ComputeBrickSectorNeighborMaskInternal(x, y, z);
+                        s_brickSectorNeighborMasks[brickIdx] = ComputeBoundaryDirectionMask(x, y, z, SIZE_IN_BRICKS);
                     }
                 }
             }
         }
 
         /// <summary>
-        /// Internal method to compute which sector neighbors a brick at the given position touches.
-        /// A brick touches a sector neighbor if it's at the corresponding sector boundary.
+        /// Unified method to compute which neighbor directions need propagation based on position within a volume.
+        /// Works for both voxel-in-brick (sideLength=8) and brick-in-sector (sideLength=16) calculations.
         /// </summary>
-        private static uint ComputeBrickSectorNeighborMaskInternal(int bx, int by, int bz)
+        /// <param name="x">X coordinate within volume</param>
+        /// <param name="y">Y coordinate within volume</param>
+        /// <param name="z">Z coordinate within volume</param>
+        /// <param name="sideLength">Side length of the volume (8 for brick, 16 for sector)</param>
+        /// <returns>Bitmask where bit i indicates if direction i needs propagation</returns>
+        private static uint ComputeBoundaryDirectionMask(int x, int y, int z, int sideLength)
         {
-            // Determine which sector boundaries this brick is at
-            bool atMinX = (bx == 0);
-            bool atMaxX = (bx == SIZE_IN_BRICKS - 1);
-            bool atMinY = (by == 0);
-            bool atMaxY = (by == SIZE_IN_BRICKS - 1);
-            bool atMinZ = (bz == 0);
-            bool atMaxZ = (bz == SIZE_IN_BRICKS - 1);
+            int maxCoord = sideLength - 1;
+
+            // Determine which boundaries this position is at
+            bool atMinX = (x == 0);
+            bool atMaxX = (x == maxCoord);
+            bool atMinY = (y == 0);
+            bool atMaxY = (y == maxCoord);
+            bool atMinZ = (z == 0);
+            bool atMaxZ = (z == maxCoord);
 
             uint mask = 0;
 
-            // For each of the 26 neighbor directions, check if brick is at that boundary
+            // For each of the 26 neighbor directions, check if we're at the corresponding boundary
             for (int dir = 0; dir < 26; dir++)
             {
                 int3 direction = NeighborhoodSettings.Directions[dir];
                 bool atBoundary = true;
 
-                // Check if we're at the required boundary for this sector neighbor
+                // Check if we're at the required boundary for this direction
                 if (direction.x < 0 && !atMinX) atBoundary = false;
                 if (direction.x > 0 && !atMaxX) atBoundary = false;
                 if (direction.y < 0 && !atMinY) atBoundary = false;
@@ -446,45 +453,6 @@ namespace Voxelis
         public static uint GetBrickSectorNeighborMask(int brickIdx)
         {
             return s_brickSectorNeighborMasks[brickIdx];
-        }
-
-        /// <summary>
-        /// Internal method to compute propagation direction mask for a voxel position.
-        /// Used during precomputation only.
-        /// </summary>
-        private static uint ComputePropagationDirectionMaskInternal(int x_in_brick, int y_in_brick, int z_in_brick)
-        {
-            // Determine which boundaries this voxel is at
-            bool atMinX = (x_in_brick == 0);
-            bool atMaxX = (x_in_brick == SIZE_IN_BLOCKS - 1);
-            bool atMinY = (y_in_brick == 0);
-            bool atMaxY = (y_in_brick == SIZE_IN_BLOCKS - 1);
-            bool atMinZ = (z_in_brick == 0);
-            bool atMaxZ = (z_in_brick == SIZE_IN_BLOCKS - 1);
-
-            uint mask = 0;
-
-            // For each of the 26 neighbor directions, check if we're at the corresponding boundary
-            for (int dir = 0; dir < 26; dir++)
-            {
-                int3 direction = NeighborhoodSettings.Directions[dir];
-                bool shouldPropagate = true;
-
-                // Check if we're at the required boundary for this direction
-                if (direction.x < 0 && !atMinX) shouldPropagate = false;
-                if (direction.x > 0 && !atMaxX) shouldPropagate = false;
-                if (direction.y < 0 && !atMinY) shouldPropagate = false;
-                if (direction.y > 0 && !atMaxY) shouldPropagate = false;
-                if (direction.z < 0 && !atMinZ) shouldPropagate = false;
-                if (direction.z > 0 && !atMaxZ) shouldPropagate = false;
-
-                if (shouldPropagate)
-                {
-                    mask |= (1u << dir);
-                }
-            }
-
-            return mask;
         }
 
         /// <summary>
