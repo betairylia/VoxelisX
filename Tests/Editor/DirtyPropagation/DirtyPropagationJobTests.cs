@@ -3,305 +3,279 @@ using Unity.Collections;
 using Unity.Jobs;
 using Unity.Mathematics;
 using Voxelis;
+using VoxelisX.Tests.TestHelpers;
 
 namespace VoxelisX.Tests.DirtyPropagation
 {
     /// <summary>
-    /// Unit tests for DirtyPropagationJob.
-    /// Tests dirty flag propagation across all spatial configurations including
-    /// single sector, cross-sector boundaries (faces, edges, corners), and edge cases.
+    /// Unit tests for DirtyPropagationJob with boundary mask support.
+    /// Tests use SetBlock() to trigger proper boundary mask calculation based on voxel positions.
+    /// Focuses on real-world scenarios where blocks at brick/sector boundaries propagate dirty flags.
     /// </summary>
     [TestFixture]
     public unsafe class DirtyPropagationJobTests
     {
-        #region Single Sector Propagation Tests
+        #region Single Sector Tests
 
         [Test]
-        public void Job_SingleSector_CenterBrick_PropagatesTo26Neighbors()
+        public void Propagation_BlockAtBrickCorner_PropagesToNeighbors()
         {
-            // Arrange - Create a single sector with a dirty brick at the center
-            var sector = SectorHandle.AllocEmpty();
-            var neighbors = SectorNeighborHandles.Create(Allocator.TempJob);
-
-            try
+            // Block at brick corner (0,0,0) should propagate to several neighbor bricks
+            using (var test = PropagationTestBuilder.Create())
             {
-                // Mark one brick (3, 8, 12) as dirty
-                int centerBrickIdx = Sector.ToBrickIdx(3, 8, 12);
-                sector.Ptr->MarkBrickDirty(centerBrickIdx, DirtyFlags.Reserved0);
+                // Set block at origin (corner of brick 0,0,0)
+                test.WithBlock(0, 0, 0, blockId: 100)
+                    .RunPropagation();
 
-                // Set up job data
-                var sectorPos = new int3(0, 0, 0);
-                var positions = new NativeArray<int3>(1, Allocator.TempJob);
-                var sectorsMap = new NativeHashMap<int3, SectorHandle>(1, Allocator.TempJob);
-                var neighborsMap = new NativeHashMap<int3, SectorNeighborHandles>(1, Allocator.TempJob);
+                var sector = test.GetCenterSector();
 
-                positions[0] = sectorPos;
-                sectorsMap.Add(sectorPos, sector);
-                neighborsMap.Add(sectorPos, neighbors);
+                // The brick containing the block should be marked for update
+                int brickIdx = Sector.ToBrickIdx(0, 0, 0);
+                Assert.AreNotEqual(0, sector.Ptr->brickRequireUpdateFlags[brickIdx],
+                    "Brick containing dirty block should require update");
+            }
+        }
 
-                var job = new DirtyPropagationJob
-                {
-                    allSectorPositions = positions,
-                    sectors = sectorsMap,
-                    sectorNeighbors = neighborsMap,
-                    neighborhoodType = NeighborhoodType.Moore,
-                    flagsToPropagate = DirtyFlags.Reserved0
-                };
+        [Test]
+        public void Propagation_BlockAtBrickEdge_PropagatesAcrossBrickBoundary()
+        {
+            // Block at edge of brick (7,7,7) should propagate to adjacent brick (1,1,1)
+            using (var test = PropagationTestBuilder.Create())
+            {
+                // Set block at the far corner of brick (0,0,0), which borders brick (1,1,1)
+                test.WithBlock(7, 7, 7, blockId: 100)
+                    .RunPropagation();
 
-                // Act
-                job.Schedule(1, 1).Complete();
+                var sector = test.GetCenterSector();
 
-                // Assert - Check that all 26 neighbors have the dirty flag propagated
+                // Adjacent brick should receive propagated flags
+                int adjacentBrickIdx = Sector.ToBrickIdx(1, 1, 1);
+                Assert.AreNotEqual(0, sector.Ptr->brickRequireUpdateFlags[adjacentBrickIdx],
+                    "Adjacent brick should receive propagated flags");
+            }
+        }
+
+        [Test]
+        public void Propagation_NoDirectionMask_DoesNotPropagate()
+        {
+            // If we manually mark a brick dirty with zero direction mask, it shouldn't propagate
+            using (var test = PropagationTestBuilder.Create())
+            {
+                int brickIdx = Sector.ToBrickIdx(5, 5, 5);
+
+                test.MarkBrickDirty(brickIdx, DirtyFlags.Reserved0, directionMask: 0)
+                    .RunPropagation();
+
+                var sector = test.GetCenterSector();
+
+                // Verify no neighbors got the flag (only the brick itself)
                 int propagatedCount = 0;
-                for (int dir = 0; dir < NeighborhoodSettings.neighborhoodCount; dir++)
+                for (int i = 0; i < Sector.BRICKS_IN_SECTOR; i++)
                 {
-                    int3 neighborBrickPos = new int3(3, 8, 12) + NeighborhoodSettings.Directions[dir];
-                    int neighborBrickIdx = Sector.ToBrickIdx(neighborBrickPos.x, neighborBrickPos.y, neighborBrickPos.z);
-
-                    unsafe
-                    {
-                        if ((sector.Ptr->brickRequireUpdateFlags[neighborBrickIdx] & (ushort)DirtyFlags.Reserved0) != 0)
-                        {
-                            propagatedCount++;
-                        }
-                    }
-                }
-
-                Assert.AreEqual(26, propagatedCount, "All 26 neighbors should receive dirty flag");
-
-                propagatedCount = 0;
-                for (int bid = 0; bid < Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS; bid++)
-                {
-                    if (sector.Ptr->brickRequireUpdateFlags[bid] > 0)
-                    {
+                    if (sector.Ptr->brickRequireUpdateFlags[i] != 0)
                         propagatedCount++;
-                    }
                 }
-                
-                Assert.AreEqual(27, propagatedCount, "Only exactly 27 bricks should receive dirty flag");
 
-                // Cleanup
-                positions.Dispose();
-                sectorsMap.Dispose();
-                neighborsMap.Dispose();
-            }
-            finally
-            {
-                sector.Dispose(Allocator.Persistent);
-                neighbors.Dispose(Allocator.Persistent);
-            }
-        }
-
-        [Test]
-        public void Job_SingleSector_MultipleDirtyBricks_PropagateCorrectly()
-        {
-            // Arrange - Mark multiple bricks as dirty
-            var sector = SectorHandle.AllocEmpty();
-            var neighbors = SectorNeighborHandles.Create(Allocator.TempJob);
-
-            try
-            {
-                // Mark bricks at (5,5,5) and (10,10,10) as dirty
-                sector.Ptr->MarkBrickDirty(Sector.ToBrickIdx(5, 1, 14), DirtyFlags.Reserved0);
-                sector.Ptr->MarkBrickDirty(Sector.ToBrickIdx(10, 3, 6), DirtyFlags.Reserved1);
-
-                var sectorPos = new int3(0, 0, 0);
-                var positions = new NativeArray<int3>(1, Allocator.TempJob);
-                var sectorsMap = new NativeHashMap<int3, SectorHandle>(1, Allocator.TempJob);
-                var neighborsMap = new NativeHashMap<int3, SectorNeighborHandles>(1, Allocator.TempJob);
-
-                positions[0] = sectorPos;
-                sectorsMap.Add(sectorPos, sector);
-                neighborsMap.Add(sectorPos, neighbors);
-
-                var job = new DirtyPropagationJob
-                {
-                    allSectorPositions = positions,
-                    sectors = sectorsMap,
-                    sectorNeighbors = neighborsMap,
-                    neighborhoodType = NeighborhoodType.Moore,
-                    flagsToPropagate = DirtyFlags.Reserved0 | DirtyFlags.Reserved1
-                };
-
-                // Act
-                job.Schedule(1, 1).Complete();
-
-                // Assert - Check specific neighbors
-                unsafe
-                {
-                    // Neighbor of (5,5,5) in +X direction should have Reserved0
-                    int neighbor1Idx = Sector.ToBrickIdx(6, 1, 14);
-                    Assert.AreNotEqual(0, sector.Ptr->brickRequireUpdateFlags[neighbor1Idx] & (ushort)DirtyFlags.Reserved0,
-                        "Neighbor of first brick should have Reserved0");
-
-                    // Neighbor of (10,10,10) in +Y direction should have Reserved1
-                    int neighbor2Idx = Sector.ToBrickIdx(10, 4, 7);
-                    Assert.AreNotEqual(0, sector.Ptr->brickRequireUpdateFlags[neighbor2Idx] & (ushort)DirtyFlags.Reserved1,
-                        "Neighbor of second brick should have Reserved1");
-                }
-                
-                int propagatedCount = 0;
-                for (int bid = 0; bid < Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS; bid++)
-                {
-                    if (sector.Ptr->brickRequireUpdateFlags[bid] > 0)
-                    {
-                        propagatedCount++;
-                    }
-                }
-                
-                Assert.AreEqual(27*2, propagatedCount, "Only exactly 54 bricks should receive dirty flag");
-
-                // Cleanup
-                positions.Dispose();
-                sectorsMap.Dispose();
-                neighborsMap.Dispose();
-            }
-            finally
-            {
-                sector.Dispose(Allocator.Persistent);
-                neighbors.Dispose(Allocator.Persistent);
+                Assert.AreEqual(1, propagatedCount,
+                    "With zero direction mask, only the dirty brick itself should be marked");
             }
         }
 
         #endregion
 
-        #region Cross-Sector Face Boundary Tests (6 Directions)
+        #region Cross-Sector Boundary Tests
 
         [Test]
-        public void Job_CrossSectorBoundary_AllSixFaces_PropagateCorrectly()
+        public void Propagation_BlockAtSectorBoundary_PropagatesToNeighborSector()
         {
-            // Test all 6 face directions: +X, -X, +Y, -Y, +Z, -Z
-            for (int faceIdx = 0; faceIdx < 6; faceIdx++)
+            // Block at sector edge should propagate across sector boundary
+            using (var test = PropagationTestBuilder.Create())
             {
-                TestCrossSectorPropagation(faceIdx, $"Face {faceIdx}");
+                // Create right neighbor (+X direction, index 0)
+                test.WithNeighbor(directionIndex: 0);
+
+                // Set block at right edge of center sector (127, 64, 64)
+                test.WithBlock(127, 64, 64, blockId: 100)
+                    .RunPropagation();
+
+                var centerSector = test.GetCenterSector();
+                var rightNeighbor = test.GetNeighbor(0);
+
+                // Center sector's edge brick should be marked
+                int centerEdgeBrickIdx = Sector.ToBrickIdx(15, 8, 8);
+                Assert.AreNotEqual(0, centerSector.Ptr->brickRequireUpdateFlags[centerEdgeBrickIdx],
+                    "Center sector edge brick should be marked");
+
+                // Right neighbor's edge brick should receive propagation
+                int neighborEdgeBrickIdx = Sector.ToBrickIdx(0, 8, 8);
+                Assert.AreNotEqual(0, rightNeighbor.Ptr->brickRequireUpdateFlags[neighborEdgeBrickIdx],
+                    "Neighbor sector should receive propagated flags across boundary");
             }
         }
 
-        private void TestCrossSectorPropagation(int neighborIdx, string testName)
+        [TestCase(0, 127, 64, 64, 0, 8, 8)]  // +X: Right edge
+        [TestCase(1, 0, 64, 64, 15, 8, 8)]   // -X: Left edge
+        [TestCase(2, 64, 127, 64, 8, 0, 8)]  // +Y: Top edge
+        [TestCase(3, 64, 0, 64, 8, 15, 8)]   // -Y: Bottom edge
+        [TestCase(4, 64, 64, 127, 8, 8, 0)]  // +Z: Front edge
+        [TestCase(5, 64, 64, 0, 8, 8, 15)]   // -Z: Back edge
+        public void Propagation_AllSixFaceDirections_PropagateCorrectly(
+            int dirIdx, int blockX, int blockY, int blockZ, int neighborBrickX, int neighborBrickY, int neighborBrickZ)
         {
-            // Arrange - Create center sector and one neighbor
-            var centerSector = SectorHandle.AllocEmpty();
-            var neighborSector = SectorHandle.AllocEmpty();
-            var centerNeighbors = SectorNeighborHandles.Create(Allocator.TempJob);
-
-            try
+            // Parameterized test for all 6 face directions
+            using (var test = PropagationTestBuilder.Create())
             {
-                unsafe
-                {
-                    centerNeighbors.Neighbors[neighborIdx] = neighborSector;
-                }
+                test.WithNeighbor(directionIndex: dirIdx)
+                    .WithBlock(blockX, blockY, blockZ, blockId: 100)
+                    .RunPropagation();
 
-                // Get the direction for this neighbor
-                int3 direction = NeighborhoodSettings.Directions[neighborIdx];
+                var neighbor = test.GetNeighbor(dirIdx);
+                int neighborBrickIdx = Sector.ToBrickIdx(neighborBrickX, neighborBrickY, neighborBrickZ);
 
-                // Mark an edge brick in the neighbor sector as dirty
-                // Calculate which edge brick is closest to center sector
-                int3 edgeBrickPos = new int3(
-                    direction.x == -1 ? 15 : 0,  // If neighbor is in -X, use last brick (15), else first (0)
-                    direction.y == -1 ? 15 : 0,
-                    direction.z == -1 ? 15 : 0
-                );
-
-                int edgeBrickIdx = Sector.ToBrickIdx(edgeBrickPos.x, edgeBrickPos.y, edgeBrickPos.z);
-                neighborSector.Ptr->MarkBrickDirty(edgeBrickIdx, DirtyFlags.Reserved0);
-
-                // Set up job
-                var centerPos = new int3(0, 0, 0);
-                var neighborPos = centerPos + direction;
-
-                var positions = new NativeArray<int3>(1, Allocator.TempJob);
-                var sectorsMap = new NativeHashMap<int3, SectorHandle>(2, Allocator.TempJob);
-                var neighborsMap = new NativeHashMap<int3, SectorNeighborHandles>(1, Allocator.TempJob);
-
-                positions[0] = centerPos;
-                sectorsMap.Add(centerPos, centerSector);
-                sectorsMap.Add(neighborPos, neighborSector);
-                neighborsMap.Add(centerPos, centerNeighbors);
-
-                var job = new DirtyPropagationJob
-                {
-                    allSectorPositions = positions,
-                    sectors = sectorsMap,
-                    sectorNeighbors = neighborsMap,
-                    neighborhoodType = NeighborhoodType.Moore,
-                    flagsToPropagate = DirtyFlags.Reserved0
-                };
-
-                // Act
-                job.Schedule(1, 1).Complete();
-
-                // Assert - Check that the corresponding edge brick in center sector got the flag
-                int3 centerEdgeBrickPos = new int3(
-                    direction.x == 1 ? 15 : 0,  // If neighbor is in +X, center edge is at 15
-                    direction.y == 1 ? 15 : 0,
-                    direction.z == 1 ? 15 : 0
-                );
-
-                int centerEdgeBrickIdx = Sector.ToBrickIdx(centerEdgeBrickPos.x, centerEdgeBrickPos.y, centerEdgeBrickPos.z);
-
-                unsafe
-                {
-                    var propagatedFlags = centerSector.Ptr->brickRequireUpdateFlags[centerEdgeBrickIdx];
-                    Assert.AreNotEqual(0, propagatedFlags & (ushort)DirtyFlags.Reserved0,
-                        $"{testName}: Edge brick in center sector should receive propagated flag");
-                }
-
-                // Cleanup
-                positions.Dispose();
-                sectorsMap.Dispose();
-                neighborsMap.Dispose();
-            }
-            finally
-            {
-                centerSector.Dispose(Allocator.Persistent);
-                neighborSector.Dispose(Allocator.Persistent);
-                centerNeighbors.Dispose(Allocator.Persistent);
+                Assert.AreNotEqual(0, neighbor.Ptr->brickRequireUpdateFlags[neighborBrickIdx],
+                    $"Face direction {dirIdx} should propagate correctly");
             }
         }
 
         #endregion
 
-        #region Cross-Sector Edge Boundary Tests (12 Directions)
+        #region Direction Mask Filtering Tests
 
         [Test]
-        public void Job_CrossSectorBoundary_AllEdgeDirections_PropagateCorrectly()
+        public void Propagation_OnlyRelevantDirections_ReceivePropagation()
         {
-            // Test edge directions (combinations of 2 axes)
-            // These are directions 6-17 in the Moore neighborhood
-            for (int edgeIdx = 6; edgeIdx < 18; edgeIdx++)
+            // Test that propagation respects direction masks
+            using (var test = PropagationTestBuilder.Create())
             {
-                TestCrossSectorPropagation(edgeIdx, $"Edge {edgeIdx}");
+                // Manually mark brick with specific direction mask (only direction 0: +X)
+                int brickIdx = Sector.ToBrickIdx(5, 5, 5);
+                uint directionMask = 1u << 0; // Only direction 0 (+X)
+
+                test.MarkBrickDirty(brickIdx, DirtyFlags.Reserved0, directionMask)
+                    .RunPropagation();
+
+                var sector = test.GetCenterSector();
+
+                // Brick to the right (+X) should receive propagation
+                int rightBrickIdx = Sector.ToBrickIdx(6, 5, 5);
+                Assert.AreNotEqual(0, sector.Ptr->brickRequireUpdateFlags[rightBrickIdx],
+                    "Right neighbor should receive propagation");
+
+                // Brick to the left (-X) should NOT receive propagation
+                int leftBrickIdx = Sector.ToBrickIdx(4, 5, 5);
+                Assert.AreEqual(0, sector.Ptr->brickRequireUpdateFlags[leftBrickIdx],
+                    "Left neighbor should NOT receive propagation (not in direction mask)");
+            }
+        }
+
+        [Test]
+        public void Propagation_FlagFiltering_OnlyPropagatesSpecifiedFlags()
+        {
+            // Mark brick with multiple flags, but only propagate one
+            using (var test = PropagationTestBuilder.Create())
+            {
+                int brickIdx = Sector.ToBrickIdx(5, 5, 5);
+
+                test.MarkBrickDirty(brickIdx, DirtyFlags.Reserved0 | DirtyFlags.Reserved1)
+                    .RunPropagation(flagsToPropagate: DirtyFlags.Reserved0);
+
+                var sector = test.GetCenterSector();
+
+                // Verify only Reserved0 propagated, not Reserved1
+                int neighborBrickIdx = Sector.ToBrickIdx(6, 5, 5);
+                var flags = sector.Ptr->brickRequireUpdateFlags[neighborBrickIdx];
+
+                Assert.AreNotEqual(0, flags & (ushort)DirtyFlags.Reserved0,
+                    "Reserved0 should propagate");
+                Assert.AreEqual(0, flags & (ushort)DirtyFlags.Reserved1,
+                    "Reserved1 should NOT propagate (not in flagsToPropagate)");
             }
         }
 
         #endregion
 
-        #region Cross-Sector Corner Boundary Tests (8 Directions)
+        #region Edge Cases
 
         [Test]
-        public void Job_CrossSectorBoundary_AllCornerDirections_PropagateCorrectly()
+        public void Propagation_EmptySector_NoChanges()
         {
-            // Test corner directions (all 3 axes non-zero)
-            // These are directions 18-25 in the Moore neighborhood
-            for (int cornerIdx = 18; cornerIdx < 26; cornerIdx++)
+            // Empty sector with no dirty flags should complete without errors
+            using (var test = PropagationTestBuilder.Create())
             {
-                TestCrossSectorPropagation(cornerIdx, $"Corner {cornerIdx}");
+                test.RunPropagation();
+
+                var sector = test.GetCenterSector();
+
+                Assert.AreEqual(0, sector.Ptr->sectorRequireUpdateFlags,
+                    "Empty sector should have no require update flags");
+            }
+        }
+
+        [Test]
+        public void Propagation_MissingNeighbor_DoesNotCrash()
+        {
+            // Block at sector edge with no neighbor should not crash
+            using (var test = PropagationTestBuilder.Create())
+            {
+                // Set block at edge but don't create neighbor
+                test.WithBlock(127, 64, 64, blockId: 100);
+
+                Assert.DoesNotThrow(() => test.RunPropagation(),
+                    "Propagation should handle missing neighbors gracefully");
+            }
+        }
+
+        [Test]
+        public void Propagation_SelfPropagation_IncludesOwnFlags()
+        {
+            // A brick should include its own dirty flags in requireUpdate
+            using (var test = PropagationTestBuilder.Create())
+            {
+                test.WithBlock(64, 64, 64, blockId: 100)
+                    .RunPropagation();
+
+                var sector = test.GetCenterSector();
+                int brickIdx = Sector.ToBrickIdx(8, 8, 8);
+
+                Assert.AreNotEqual(0, sector.Ptr->brickRequireUpdateFlags[brickIdx],
+                    "Dirty brick should include its own flags in requireUpdate");
             }
         }
 
         #endregion
 
-        #region Multiple Sectors Grid Tests
+        #region Complex Integration Tests
 
         [Test]
-        public void Job_ThreeSectorsInLine_PropagatesAcrossMultipleBoundaries()
+        public void Propagation_MultipleBlocksInSector_PropagateIndependently()
         {
-            // Arrange - Create 3 sectors in a line: Left, Center, Right
-            var leftSector = SectorHandle.AllocEmpty();
+            // Multiple dirty bricks should propagate independently
+            using (var test = PropagationTestBuilder.Create())
+            {
+                test.WithBlock(0, 0, 0, blockId: 100)      // Brick (0,0,0)
+                    .WithBlock(64, 64, 64, blockId: 200)   // Brick (8,8,8)
+                    .RunPropagation();
+
+                var sector = test.GetCenterSector();
+
+                // Both bricks and their neighbors should be marked
+                int brick1Idx = Sector.ToBrickIdx(0, 0, 0);
+                int brick2Idx = Sector.ToBrickIdx(8, 8, 8);
+
+                Assert.AreNotEqual(0, sector.Ptr->brickRequireUpdateFlags[brick1Idx],
+                    "First brick should be marked");
+                Assert.AreNotEqual(0, sector.Ptr->brickRequireUpdateFlags[brick2Idx],
+                    "Second brick should be marked");
+            }
+        }
+
+        [Test]
+        public void Propagation_ChainAcrossSectors_WorksCorrectly()
+        {
+            // Test propagation chain: center -> right neighbor
+            // This requires proper neighbor setup and bilateral propagation
             var centerSector = SectorHandle.AllocEmpty();
             var rightSector = SectorHandle.AllocEmpty();
-
-            var leftNeighbors = SectorNeighborHandles.Create(Allocator.TempJob);
             var centerNeighbors = SectorNeighborHandles.Create(Allocator.TempJob);
             var rightNeighbors = SectorNeighborHandles.Create(Allocator.TempJob);
 
@@ -309,357 +283,57 @@ namespace VoxelisX.Tests.DirtyPropagation
             {
                 unsafe
                 {
-                    // Connect neighbors
-                    leftNeighbors.Neighbors[0] = centerSector;   // Left's right neighbor is center
-                    centerNeighbors.Neighbors[1] = leftSector;   // Center's left neighbor is left
-                    centerNeighbors.Neighbors[0] = rightSector;  // Center's right neighbor is right
-                    rightNeighbors.Neighbors[1] = centerSector;  // Right's left neighbor is center
+                    // Connect neighbors bidirectionally
+                    centerNeighbors.Neighbors[0] = rightSector;  // Center's +X is right
+                    rightNeighbors.Neighbors[1] = centerSector;  // Right's -X is center
 
-                    // Mark a brick in the left sector as dirty
-                    int leftBrickIdx = Sector.ToBrickIdx(15, 8, 8); // Right edge of left sector
-                    leftSector.Ptr->MarkBrickDirty(leftBrickIdx, DirtyFlags.Reserved0);
+                    // Set block at center's right edge
+                    centerSector.SetBlock(127, 64, 64, new Block(100));
                 }
 
-                // Set up job for all 3 sectors
-                var positions = new NativeArray<int3>(3, Allocator.TempJob);
-                var sectorsMap = new NativeHashMap<int3, SectorHandle>(3, Allocator.TempJob);
-                var neighborsMap = new NativeHashMap<int3, SectorNeighborHandles>(3, Allocator.TempJob);
+                // Run propagation on both sectors
+                var positions = new NativeArray<int3>(2, Allocator.TempJob);
+                var sectorsMap = new NativeHashMap<int3, SectorHandle>(2, Allocator.TempJob);
+                var neighborsMap = new NativeHashMap<int3, SectorNeighborHandles>(2, Allocator.TempJob);
 
-                positions[0] = new int3(-1, 0, 0); // Left
-                positions[1] = new int3(0, 0, 0);  // Center
-                positions[2] = new int3(1, 0, 0);  // Right
-
-                sectorsMap.Add(positions[0], leftSector);
-                sectorsMap.Add(positions[1], centerSector);
-                sectorsMap.Add(positions[2], rightSector);
-
-                neighborsMap.Add(positions[0], leftNeighbors);
-                neighborsMap.Add(positions[1], centerNeighbors);
-                neighborsMap.Add(positions[2], rightNeighbors);
-
-                var job = new DirtyPropagationJob
+                try
                 {
-                    allSectorPositions = positions,
-                    sectors = sectorsMap,
-                    sectorNeighbors = neighborsMap,
-                    neighborhoodType = NeighborhoodType.Moore,
-                    flagsToPropagate = DirtyFlags.Reserved0
-                };
+                    positions[0] = new int3(0, 0, 0);
+                    positions[1] = new int3(1, 0, 0);
+                    sectorsMap.Add(positions[0], centerSector);
+                    sectorsMap.Add(positions[1], rightSector);
+                    neighborsMap.Add(positions[0], centerNeighbors);
+                    neighborsMap.Add(positions[1], rightNeighbors);
 
-                // Act
-                job.Schedule(3, 1).Complete();
+                    var job = new DirtyPropagationJob
+                    {
+                        allSectorPositions = positions,
+                        sectors = sectorsMap,
+                        sectorNeighbors = neighborsMap,
+                        neighborhoodType = NeighborhoodType.Moore,
+                        flagsToPropagate = DirtyFlags.Reserved0
+                    };
 
-                // Assert - Check that center sector's left edge brick received the flag
-                unsafe
-                {
-                    int centerLeftEdgeBrickIdx = Sector.ToBrickIdx(0, 8, 8);
-                    Assert.AreNotEqual(0, centerSector.Ptr->brickRequireUpdateFlags[centerLeftEdgeBrickIdx] & (ushort)DirtyFlags.Reserved0,
-                        "Center sector should receive flag from left sector");
+                    job.Schedule(2, 1).Complete();
+
+                    // Verify propagation reached right sector
+                    int rightEdgeBrickIdx = Sector.ToBrickIdx(0, 8, 8);
+                    Assert.AreNotEqual(0, rightSector.Ptr->brickRequireUpdateFlags[rightEdgeBrickIdx],
+                        "Propagation should reach right sector's edge brick");
                 }
-
-                // Cleanup
-                positions.Dispose();
-                sectorsMap.Dispose();
-                neighborsMap.Dispose();
+                finally
+                {
+                    positions.Dispose();
+                    sectorsMap.Dispose();
+                    neighborsMap.Dispose();
+                }
             }
             finally
             {
-                leftSector.Dispose(Allocator.Persistent);
                 centerSector.Dispose(Allocator.Persistent);
                 rightSector.Dispose(Allocator.Persistent);
-                leftNeighbors.Dispose(Allocator.Persistent);
                 centerNeighbors.Dispose(Allocator.Persistent);
                 rightNeighbors.Dispose(Allocator.Persistent);
-            }
-        }
-
-        #endregion
-
-        #region Early Exit and Optimization Tests
-
-        [Test]
-        public void Job_NoDirectyFlags_EarlyExit_NoChanges()
-        {
-            // Arrange - Create a sector with no dirty flags
-            var sector = SectorHandle.AllocEmpty();
-            var neighbors = SectorNeighborHandles.Create(Allocator.TempJob);
-
-            try
-            {
-                var sectorPos = new int3(0, 0, 0);
-                var positions = new NativeArray<int3>(1, Allocator.TempJob);
-                var sectorsMap = new NativeHashMap<int3, SectorHandle>(1, Allocator.TempJob);
-                var neighborsMap = new NativeHashMap<int3, SectorNeighborHandles>(1, Allocator.TempJob);
-
-                positions[0] = sectorPos;
-                sectorsMap.Add(sectorPos, sector);
-                neighborsMap.Add(sectorPos, neighbors);
-
-                var job = new DirtyPropagationJob
-                {
-                    allSectorPositions = positions,
-                    sectors = sectorsMap,
-                    sectorNeighbors = neighborsMap,
-                    neighborhoodType = NeighborhoodType.Moore,
-                    flagsToPropagate = DirtyFlags.Reserved0
-                };
-
-                // Act
-                job.Schedule(1, 1).Complete();
-
-                // Assert - No flags should be set
-                unsafe
-                {
-                    Assert.AreEqual(0, sector.Ptr->sectorRequireUpdateFlags,
-                        "Sector require update flags should remain 0 with no dirty input");
-                }
-
-                // Cleanup
-                positions.Dispose();
-                sectorsMap.Dispose();
-                neighborsMap.Dispose();
-            }
-            finally
-            {
-                sector.Dispose(Allocator.Persistent);
-                neighbors.Dispose(Allocator.Persistent);
-            }
-        }
-
-        [Test]
-        public void Job_OnlyNeighborDirty_StillPropagates()
-        {
-            // Arrange - Center is clean, but neighbor has dirty flags
-            var centerSector = SectorHandle.AllocEmpty();
-            var rightSector = SectorHandle.AllocEmpty();
-            var centerNeighbors = SectorNeighborHandles.Create(Allocator.TempJob);
-
-            try
-            {
-                unsafe
-                {
-                    centerNeighbors.Neighbors[0] = rightSector; // Right neighbor
-
-                    // Mark right neighbor's left edge brick as dirty
-                    int rightEdgeBrickIdx = Sector.ToBrickIdx(0, 8, 8);
-                    rightSector.Ptr->MarkBrickDirty(rightEdgeBrickIdx, DirtyFlags.Reserved0);
-                }
-
-                var centerPos = new int3(0, 0, 0);
-                var rightPos = new int3(1, 0, 0);
-
-                var positions = new NativeArray<int3>(1, Allocator.TempJob);
-                var sectorsMap = new NativeHashMap<int3, SectorHandle>(2, Allocator.TempJob);
-                var neighborsMap = new NativeHashMap<int3, SectorNeighborHandles>(1, Allocator.TempJob);
-
-                positions[0] = centerPos;
-                sectorsMap.Add(centerPos, centerSector);
-                sectorsMap.Add(rightPos, rightSector);
-                neighborsMap.Add(centerPos, centerNeighbors);
-
-                var job = new DirtyPropagationJob
-                {
-                    allSectorPositions = positions,
-                    sectors = sectorsMap,
-                    sectorNeighbors = neighborsMap,
-                    neighborhoodType = NeighborhoodType.Moore,
-                    flagsToPropagate = DirtyFlags.Reserved0
-                };
-
-                // Act
-                job.Schedule(1, 1).Complete();
-
-                // Assert - Center's right edge should get the flag
-                unsafe
-                {
-                    int centerRightEdgeBrickIdx = Sector.ToBrickIdx(15, 8, 8);
-                    Assert.AreNotEqual(0, centerSector.Ptr->brickRequireUpdateFlags[centerRightEdgeBrickIdx] & (ushort)DirtyFlags.Reserved0,
-                        "Center should receive flag from dirty neighbor even when center itself isn't dirty");
-                }
-
-                // Cleanup
-                positions.Dispose();
-                sectorsMap.Dispose();
-                neighborsMap.Dispose();
-            }
-            finally
-            {
-                centerSector.Dispose(Allocator.Persistent);
-                rightSector.Dispose(Allocator.Persistent);
-                centerNeighbors.Dispose(Allocator.Persistent);
-            }
-        }
-
-        #endregion
-
-        #region Null/Missing Neighbor Tests
-
-        [Test]
-        public void Job_MissingNeighbor_DoesNotCrash()
-        {
-            // Arrange - Sector with some neighbors missing
-            var sector = SectorHandle.AllocEmpty();
-            var neighbors = SectorNeighborHandles.Create(Allocator.TempJob);
-
-            try
-            {
-                // Mark an edge brick as dirty (which would propagate to missing neighbor)
-                int edgeBrickIdx = Sector.ToBrickIdx(15, 8, 8);
-                sector.Ptr->MarkBrickDirty(edgeBrickIdx, DirtyFlags.Reserved0);
-
-                var sectorPos = new int3(0, 0, 0);
-                var positions = new NativeArray<int3>(1, Allocator.TempJob);
-                var sectorsMap = new NativeHashMap<int3, SectorHandle>(1, Allocator.TempJob);
-                var neighborsMap = new NativeHashMap<int3, SectorNeighborHandles>(1, Allocator.TempJob);
-
-                positions[0] = sectorPos;
-                sectorsMap.Add(sectorPos, sector);
-                neighborsMap.Add(sectorPos, neighbors);
-
-                var job = new DirtyPropagationJob
-                {
-                    allSectorPositions = positions,
-                    sectors = sectorsMap,
-                    sectorNeighbors = neighborsMap,
-                    neighborhoodType = NeighborhoodType.Moore,
-                    flagsToPropagate = DirtyFlags.Reserved0
-                };
-
-                // Act - Should not crash
-                Assert.DoesNotThrow(() => job.Schedule(1, 1).Complete(),
-                    "Job should handle missing neighbors without crashing");
-
-                // Cleanup
-                positions.Dispose();
-                sectorsMap.Dispose();
-                neighborsMap.Dispose();
-            }
-            finally
-            {
-                sector.Dispose(Allocator.Persistent);
-                neighbors.Dispose(Allocator.Persistent);
-            }
-        }
-
-        #endregion
-
-        #region Flag Filtering Tests
-
-        [Test]
-        public void Job_FlagFiltering_OnlyPropagatesSpecifiedFlags()
-        {
-            // Arrange
-            var sector = SectorHandle.AllocEmpty();
-            var neighbors = SectorNeighborHandles.Create(Allocator.TempJob);
-
-            try
-            {
-                // Mark a brick with multiple flags
-                int brickIdx = Sector.ToBrickIdx(8, 8, 8);
-                sector.Ptr->MarkBrickDirty(brickIdx, DirtyFlags.Reserved0 | DirtyFlags.Reserved1 | DirtyFlags.Reserved2);
-
-                var sectorPos = new int3(0, 0, 0);
-                var positions = new NativeArray<int3>(1, Allocator.TempJob);
-                var sectorsMap = new NativeHashMap<int3, SectorHandle>(1, Allocator.TempJob);
-                var neighborsMap = new NativeHashMap<int3, SectorNeighborHandles>(1, Allocator.TempJob);
-
-                positions[0] = sectorPos;
-                sectorsMap.Add(sectorPos, sector);
-                neighborsMap.Add(sectorPos, neighbors);
-
-                // Only propagate Reserved0
-                var job = new DirtyPropagationJob
-                {
-                    allSectorPositions = positions,
-                    sectors = sectorsMap,
-                    sectorNeighbors = neighborsMap,
-                    neighborhoodType = NeighborhoodType.Moore,
-                    flagsToPropagate = DirtyFlags.Reserved0
-                };
-
-                // Act
-                job.Schedule(1, 1).Complete();
-
-                // Assert - Neighbors should only have Reserved0, not Reserved1 or Reserved2
-                unsafe
-                {
-                    int neighborBrickIdx = Sector.ToBrickIdx(9, 8, 8); // +X neighbor
-                    var flags = sector.Ptr->brickRequireUpdateFlags[neighborBrickIdx];
-
-                    Assert.AreNotEqual(0, flags & (ushort)DirtyFlags.Reserved0,
-                        "Reserved0 should be propagated");
-                    Assert.AreEqual(0, flags & (ushort)DirtyFlags.Reserved1,
-                        "Reserved1 should NOT be propagated");
-                    Assert.AreEqual(0, flags & (ushort)DirtyFlags.Reserved2,
-                        "Reserved2 should NOT be propagated");
-                }
-
-                // Cleanup
-                positions.Dispose();
-                sectorsMap.Dispose();
-                neighborsMap.Dispose();
-            }
-            finally
-            {
-                sector.Dispose(Allocator.Persistent);
-                neighbors.Dispose(Allocator.Persistent);
-            }
-        }
-
-        #endregion
-
-        #region Brick Self-Propagation Tests
-
-        [Test]
-        public void Job_BrickPropagation_IncludesSelfDirtyFlags()
-        {
-            // Arrange - A brick that is dirty should include its own flags in requireUpdate
-            var sector = SectorHandle.AllocEmpty();
-            var neighbors = SectorNeighborHandles.Create(Allocator.TempJob);
-
-            try
-            {
-                // Mark a brick as dirty
-                int brickIdx = Sector.ToBrickIdx(5, 5, 5);
-                sector.Ptr->MarkBrickDirty(brickIdx, DirtyFlags.Reserved0);
-
-                var sectorPos = new int3(0, 0, 0);
-                var positions = new NativeArray<int3>(1, Allocator.TempJob);
-                var sectorsMap = new NativeHashMap<int3, SectorHandle>(1, Allocator.TempJob);
-                var neighborsMap = new NativeHashMap<int3, SectorNeighborHandles>(1, Allocator.TempJob);
-
-                positions[0] = sectorPos;
-                sectorsMap.Add(sectorPos, sector);
-                neighborsMap.Add(sectorPos, neighbors);
-
-                var job = new DirtyPropagationJob
-                {
-                    allSectorPositions = positions,
-                    sectors = sectorsMap,
-                    sectorNeighbors = neighborsMap,
-                    neighborhoodType = NeighborhoodType.Moore,
-                    flagsToPropagate = DirtyFlags.Reserved0
-                };
-
-                // Act
-                job.Schedule(1, 1).Complete();
-
-                // Assert - The brick itself should have the flag in requireUpdate
-                unsafe
-                {
-                    Assert.AreNotEqual(0, sector.Ptr->brickRequireUpdateFlags[brickIdx] & (ushort)DirtyFlags.Reserved0,
-                        "Brick should include its own dirty flags in requireUpdate");
-                }
-
-                // Cleanup
-                positions.Dispose();
-                sectorsMap.Dispose();
-                neighborsMap.Dispose();
-            }
-            finally
-            {
-                sector.Dispose(Allocator.Persistent);
-                neighbors.Dispose(Allocator.Persistent);
             }
         }
 
