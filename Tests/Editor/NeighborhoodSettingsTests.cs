@@ -202,5 +202,100 @@ namespace VoxelisX.Tests
         }
 
         #endregion
+
+        #region Direction Lookup Tests
+
+        [Test]
+        public void DirectionToIndexMinusOne_AllValidDirections_ReturnCorrectIndex()
+        {
+            // Test that the lookup function returns correct indices for all 26 directions
+            for (int expectedIndex = 0; expectedIndex < 26; expectedIndex++)
+            {
+                int3 direction = NeighborhoodSettings.Directions[expectedIndex];
+                int actualIndex = NeighborhoodSettings.DirectionToIndexMinusOne(direction);
+
+                Assert.AreEqual(expectedIndex, actualIndex,
+                    $"Direction {direction} should map to index {expectedIndex}");
+            }
+        }
+
+        [Test]
+        public void DirectionToIndexMinusOne_ZeroVector_ReturnsMinusOne()
+        {
+            int result = NeighborhoodSettings.DirectionToIndexMinusOne(new int3(0, 0, 0));
+
+            Assert.AreEqual(-1, result, "Zero vector (center) should return -1");
+        }
+
+        [Test]
+        public void DirectionToIndexMinusOne_InvalidDirection_ReturnsMinusOne()
+        {
+            // Test directions outside valid range {-1, 0, 1}
+            Assert.AreEqual(-1, NeighborhoodSettings.DirectionToIndexMinusOne(new int3(2, 0, 0)),
+                "Direction with component > 1 should return -1");
+            Assert.AreEqual(-1, NeighborhoodSettings.DirectionToIndexMinusOne(new int3(0, -2, 0)),
+                "Direction with component < -1 should return -1");
+            Assert.AreEqual(-1, NeighborhoodSettings.DirectionToIndexMinusOne(new int3(5, 5, 5)),
+                "Invalid direction should return -1");
+        }
+
+        [Test]
+        public void DirectionToIndexMinusOne_IsInverseOfDirections()
+        {
+            // Verify that DirectionToIndexMinusOne is the inverse of indexing into Directions array
+            for (int i = 0; i < 26; i++)
+            {
+                int3 direction = NeighborhoodSettings.Directions[i];
+                int retrievedIndex = NeighborhoodSettings.DirectionToIndexMinusOne(direction);
+
+                Assert.AreEqual(i, retrievedIndex,
+                    $"DirectionToIndexMinusOne should be inverse of Directions array access for index {i}");
+            }
+        }
+
+        #endregion
+
+        #region Direction Mask Tests
+
+        [Test]
+        public void HasDirection_SetBit_ReturnsTrue()
+        {
+            // Set bit 5
+            uint mask = 1u << 5;
+
+            Assert.IsTrue(NeighborhoodSettings.HasDirection(mask, 5),
+                "HasDirection should return true for set bit");
+            Assert.IsFalse(NeighborhoodSettings.HasDirection(mask, 4),
+                "HasDirection should return false for unset bit");
+        }
+
+        [Test]
+        public void SetDirection_SetsCorrectBit()
+        {
+            uint mask = 0;
+            mask = NeighborhoodSettings.SetDirection(mask, 10);
+
+            Assert.AreEqual(1u << 10, mask, "SetDirection should set correct bit");
+            Assert.IsTrue(NeighborhoodSettings.HasDirection(mask, 10),
+                "Set direction should be detectable with HasDirection");
+        }
+
+        [Test]
+        public void HasAnyDirection_ZeroMask_ReturnsFalse()
+        {
+            Assert.IsFalse(NeighborhoodSettings.HasAnyDirection(0),
+                "Zero mask should have no directions");
+        }
+
+        [Test]
+        public void HasAnyDirection_NonZeroMask_ReturnsTrue()
+        {
+            Assert.IsTrue(NeighborhoodSettings.HasAnyDirection(1),
+                "Non-zero mask should have at least one direction");
+            Assert.IsTrue(NeighborhoodSettings.HasAnyDirection(0xFFFFFFFF),
+                "All-bits-set mask should have directions");
+        }
+
+        #endregion
     }
 }

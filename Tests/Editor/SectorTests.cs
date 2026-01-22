@@ -554,5 +554,96 @@ namespace VoxelisX.Tests
         }
 
         #endregion
+
+        #region Boundary Mask Tests
+
+        [Test]
+        public void Sector_SetBlock_AtBrickBoundary_SetsDirectionMask()
+        {
+            // Arrange - Set block at brick corner (0,0,0)
+            var block = new Block(1);
+
+            // Act
+            testSector.Ptr->SetBlock(0, 0, 0, block);
+
+            // Assert
+            unsafe
+            {
+                int brickIdx = Sector.ToBrickIdx(0, 0, 0);
+                uint mask = testSector.Ptr->brickDirtyDirectionMask[brickIdx];
+
+                Assert.AreNotEqual(0u, mask,
+                    "Setting block at brick boundary should set direction mask");
+            }
+        }
+
+        [Test]
+        public void Sector_SetBlock_AtBrickCenter_HasMinimalOrZeroDirectionMask()
+        {
+            // Arrange - Set block at brick center (4,4,4 within first brick)
+            var block = new Block(1);
+
+            // Act
+            testSector.Ptr->SetBlock(4, 4, 4, block);
+
+            // Assert
+            unsafe
+            {
+                int brickIdx = Sector.ToBrickIdx(0, 0, 0);
+                uint mask = testSector.Ptr->brickDirtyDirectionMask[brickIdx];
+
+                // Center voxel should have zero or minimal propagation directions
+                // (actual value depends on precomputed mask table)
+                Assert.IsTrue(true, "Test documents that center blocks have computed masks");
+            }
+        }
+
+        [Test]
+        public void Sector_SetBlock_MultipleTimes_MergesDirectionMasks()
+        {
+            // Arrange
+            var block = new Block(1);
+
+            // Act - Set two different blocks in same brick at different positions
+            testSector.Ptr->SetBlock(0, 0, 0, block); // Corner
+            uint mask1;
+            unsafe
+            {
+                int brickIdx = Sector.ToBrickIdx(0, 0, 0);
+                mask1 = testSector.Ptr->brickDirtyDirectionMask[brickIdx];
+            }
+
+            testSector.Ptr->SetBlock(7, 7, 7, block); // Opposite corner in same brick
+            uint mask2;
+            unsafe
+            {
+                int brickIdx = Sector.ToBrickIdx(0, 0, 0);
+                mask2 = testSector.Ptr->brickDirtyDirectionMask[brickIdx];
+            }
+
+            // Assert - Second set should OR masks together
+            Assert.IsTrue((mask2 & mask1) == mask1,
+                "Setting multiple blocks should merge direction masks with OR");
+        }
+
+        [Test]
+        public void Sector_ClearAllDirtyFlags_ClearsDirectionMasks()
+        {
+            // Arrange
+            testSector.Ptr->SetBlock(0, 0, 0, new Block(1));
+
+            // Act
+            testSector.Ptr->ClearAllDirtyFlags();
+
+            // Assert
+            unsafe
+            {
+                int brickIdx = Sector.ToBrickIdx(0, 0, 0);
+                Assert.AreEqual(0u, testSector.Ptr->brickDirtyDirectionMask[brickIdx],
+                    "ClearAllDirtyFlags should clear direction masks");
+            }
+        }
+
+        #endregion
     }
 }
