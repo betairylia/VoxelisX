@@ -18,6 +18,11 @@ namespace Voxelis
     public unsafe struct VoxelEntityData
     {
         /// <summary>
+        /// Unique identifier for this entity, used for save/load persistence.
+        /// </summary>
+        public Guid guid;
+
+        /// <summary>
         /// Dictionary mapping sector positions to their corresponding sector data.
         /// Key is the sector position in sector-space coordinates.
         /// </summary>
@@ -38,6 +43,7 @@ namespace Voxelis
 
         public VoxelEntityData(Allocator allocator)
         {
+            guid = Guid.NewGuid();
             sectors = new(1, allocator);
             sectorNeighbors = new(1, allocator);
             sectorsToRemove = new(allocator);
@@ -48,6 +54,7 @@ namespace Voxelis
 
         public VoxelEntityData(Allocator allocator, Transform transform)
         {
+            guid = Guid.NewGuid();
             sectors = new(1, allocator);
             sectorNeighbors = new(1, allocator);
             sectorsToRemove = new(allocator);
@@ -366,6 +373,16 @@ namespace Voxelis
     {
         private VoxelEntityData data;
         public VoxelEntityData GetDataCopy() => data;
+
+        /// <summary>
+        /// Gets the unique identifier for this entity (used for save/load).
+        /// </summary>
+        public Guid EntityGuid => data.guid;
+
+        /// <summary>
+        /// Sets the entity's GUID (used when loading from save data).
+        /// </summary>
+        public void SetEntityGuid(Guid guid) => data.guid = guid;
 
         private void Awake()
         {
