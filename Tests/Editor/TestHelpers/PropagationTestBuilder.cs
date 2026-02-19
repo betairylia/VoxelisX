@@ -55,7 +55,7 @@ namespace VoxelisX.Tests.TestHelpers
         /// Marks a brick as dirty with specific flags and direction mask.
         /// Use this for testing specific direction propagation scenarios.
         /// </summary>
-        public PropagationTestBuilder MarkBrickDirty(int brickIdx, DirtyFlags flags, uint directionMask = 0xFFFFFFFF)
+        public unsafe PropagationTestBuilder MarkBrickDirty(int brickIdx, DirtyFlags flags, uint directionMask = 0xFFFFFFFF)
         {
             centerSector.Ptr->MarkBrickDirty(brickIdx, flags, directionMask);
             return this;
