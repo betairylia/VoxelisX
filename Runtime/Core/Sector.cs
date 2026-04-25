@@ -201,6 +201,8 @@ namespace Voxelis
                 sectorRequireUpdateFlags = 0,
                 sectorNeighborsToCreate = 0,
                 _snapshot_enabled = false,
+                _brickIdx_allocator = allocator,
+                _snapshot_allocator = Allocator.Invalid,
             };
 
             if (options == NativeArrayOptions.ClearMemory)
@@ -260,7 +262,12 @@ namespace Voxelis
         public void Dispose(Allocator allocator)
         {
             if (voxels.IsCreated) voxels.Dispose();
-            if (brickIdx != null) UnsafeUtility.Free(brickIdx, allocator);
+            if (_snapshot_voxels.IsCreated) _snapshot_voxels.Dispose();
+            if (brickIdx != null) UnsafeUtility.Free(brickIdx, _brickIdx_allocator == Allocator.Invalid ? allocator : _brickIdx_allocator);
+            if (_snapshot_brickIdx != null)
+            {
+                UnsafeUtility.Free(_snapshot_brickIdx, _snapshot_allocator == Allocator.Invalid ? allocator : _snapshot_allocator);
+            }
             if (brickFlags != null) UnsafeUtility.Free(brickFlags, allocator);
             if (updateRecord.IsCreated) updateRecord.Dispose();
             if (currentBrickId != null) UnsafeUtility.Free(currentBrickId, allocator);
@@ -268,6 +275,17 @@ namespace Voxelis
             if (brickDirtyFlags != null) UnsafeUtility.Free(brickDirtyFlags, allocator);
             if (brickRequireUpdateFlags != null) UnsafeUtility.Free(brickRequireUpdateFlags, allocator);
             if (brickDirtyDirectionMask != null) UnsafeUtility.Free(brickDirtyDirectionMask, allocator);
+
+            brickIdx = null;
+            _snapshot_brickIdx = null;
+            brickFlags = null;
+            currentBrickId = null;
+            brickDirtyFlags = null;
+            brickRequireUpdateFlags = null;
+            brickDirtyDirectionMask = null;
+            _snapshot_enabled = false;
+            _brickIdx_allocator = Allocator.Invalid;
+            _snapshot_allocator = Allocator.Invalid;
         }
 
         /// <summary>
@@ -407,6 +425,8 @@ namespace Voxelis
         public short* _snapshot_brickIdx;
 
         private bool _snapshot_enabled;
+        private Allocator _brickIdx_allocator;
+        private Allocator _snapshot_allocator;
 
         /// <summary>
         /// Activates snapshot mode for double-buffered sector updates.
@@ -439,6 +459,7 @@ namespace Voxelis
                     UnsafeUtility.AlignOf<short>(),
                     allocator
                 );
+                _snapshot_allocator = allocator;
             }
             
             _snapshot_voxels.Clear();
@@ -471,6 +492,9 @@ namespace Voxelis
             var tempBrickIdx = brickIdx;
             brickIdx = _snapshot_brickIdx;
             _snapshot_brickIdx = tempBrickIdx;
+            var tempAllocator = _brickIdx_allocator;
+            _brickIdx_allocator = _snapshot_allocator;
+            _snapshot_allocator = tempAllocator;
 
             _snapshot_enabled = false;
         }
