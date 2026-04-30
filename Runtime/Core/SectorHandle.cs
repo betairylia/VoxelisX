@@ -36,8 +36,10 @@ namespace Voxelis
 
         public void Dispose(Allocator allocator)
         {
+            if (_ptr == null) return;
             _ptr->Dispose(allocator);
             UnsafeUtility.Free(_ptr, allocator);
+            _ptr = null;
         }
 
         /// <summary>

@@ -24,6 +24,8 @@ namespace Voxelis
         [SerializeField] protected VoxelMeshRendererComponent meshingRenderer;
         
         [Header("Performance")] public float targetTPS = 100.0f;
+        [Header("Debug")] public bool freeze = true;
+        public bool isFirst = true;
         
         public struct WorldStageInputs
         {
@@ -74,6 +76,9 @@ namespace Voxelis
 
         public override void Tick()
         {
+            if ((!isFirst) && freeze) return;
+            isFirst = false;
+            
             // TEMP CODE -- Tick logic
             rayCaster?.Tick();
             

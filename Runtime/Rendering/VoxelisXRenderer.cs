@@ -341,6 +341,7 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
         }
     }
 
+    /*
     private void OnGUI()
     {
         GUILayout.BeginVertical();
@@ -364,4 +365,5 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
 
         GUILayout.EndVertical();
     }
+    */
 }

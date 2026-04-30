@@ -108,58 +108,55 @@ namespace Voxelis.Tick
             if (hooks.Count == 0)
                 return dependency;
 
-            // Track handles for combining
             NativeList<JobHandle> parallelHandles = new(Allocator.Temp);
-            JobHandle chainedHandle = dependency;
-
-            // Execute all hooks
-            foreach (var hook in hooks)
+            try
             {
-                try
-                {
-                    bool useChaining = hook.Execute(inputs, dependency, chainedHandle, out JobHandle handle);
+                JobHandle chainedHandle = dependency;
 
-                    if (useChaining)
+                foreach (var hook in hooks)
+                {
+                    try
                     {
-                        // Sequential: update the chain
-                        chainedHandle = handle;
-                    }
-                    else
-                    {
-                        // Parallel: track independently
-                        if (handle.IsCompleted == false)
+                        bool useChaining = hook.Execute(inputs, dependency, chainedHandle, out JobHandle handle);
+
+                        if (useChaining)
+                        {
+                            chainedHandle = handle;
+                        }
+                        else if (handle.IsCompleted == false)
                         {
                             parallelHandles.Add(handle);
                         }
                     }
+                    catch (Exception ex)
+                    {
+                        Debug.LogError($"[TickStage] Hook execution failed: {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
+                    }
                 }
-                catch (Exception ex)
-                {
-                    Debug.LogError($"[TickStage] Hook execution failed: {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-                    // Continue executing other hooks
-                }
-            }
 
-            // Combine all handles
-            // - Terminal chained handle (represents the end of the sequential chain)
-            // - All parallel handles (run independently)
-            if (parallelHandles.Length == 0)
-            {
-                // Only chained work
-                return chainedHandle;
-            }
-            else if (chainedHandle.Equals(dependency))
-            {
-                // Only parallel work (no chaining occurred)
-                return parallelHandles.Length == 1
-                    ? parallelHandles[0]
-                    : JobHandle.CombineDependencies(parallelHandles.AsArray());
-            }
-            else
-            {
-                // Both chained and parallel work
+                // Combine all handles
+                // - Terminal chained handle (represents the end of the sequential chain)
+                // - All parallel handles (run independently)
+                if (parallelHandles.Length == 0)
+                {
+                    // Only chained work
+                    return chainedHandle;
+                }
+
+                if (chainedHandle.Equals(dependency))
+                {
+                    // Only parallel work (no chaining occured)
+                    return parallelHandles.Length == 1
+                        ? parallelHandles[0]
+                        : JobHandle.CombineDependencies(parallelHandles.AsArray());
+                }
+
                 parallelHandles.Add(chainedHandle);
                 return JobHandle.CombineDependencies(parallelHandles.AsArray());
+            }
+            finally
+            {
+                parallelHandles.Dispose();
             }
         }
 

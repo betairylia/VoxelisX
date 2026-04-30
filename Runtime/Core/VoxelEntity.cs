@@ -319,6 +319,11 @@ namespace Voxelis
         /// </summary>
         public void Dispose()
         {
+            if (!sectors.IsCreated)
+            {
+                return;
+            }
+
             foreach (var kvp in sectors)
             {
                 Sector* sectorPtr = kvp.Value.Ptr;
@@ -337,6 +342,7 @@ namespace Voxelis
             if (sectors.IsCreated)
             {
                 sectors.Dispose();
+                sectors = default;
             }
             if (sectorNeighbors.IsCreated)
             {
@@ -345,10 +351,12 @@ namespace Voxelis
                     kvp.Value.Dispose();
                 }
                 sectorNeighbors.Dispose();
+                sectorNeighbors = default;
             }
             if (sectorsToRemove.IsCreated)
             {
                 sectorsToRemove.Dispose();
+                sectorsToRemove = default;
             }
         }
     }
@@ -459,7 +467,6 @@ namespace Voxelis
         /// </summary>
         public void Dispose()
         {
-            Debug.Log("Disposing");
             data.Dispose();
         }
 
