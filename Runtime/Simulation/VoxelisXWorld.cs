@@ -50,6 +50,7 @@ namespace Voxelis
         {
             public NativeList<VoxelEntityData> VoxelEntities;
             public NativeList<BrickInfo> BricksRequiredUpdate;
+            public AlienOccupancyQuery AlienQuery;
         }
         
         // Ticking
@@ -65,12 +66,17 @@ namespace Voxelis
             
             tickBuf.VoxelEntities = new NativeList<VoxelEntityData>(Allocator.Persistent);
             automataTickBuf.BricksRequiredUpdate = new NativeList<BrickInfo>(Allocator.Persistent);
+            automataTickBuf.AlienQuery = new AlienOccupancyQuery
+            {
+                EntitiesInDeterministicOrder = new NativeArray<AlienEntityView>(0, Allocator.Persistent)
+            };
         }
 
         protected override void ReleaseResources()
         {
             tickBuf.VoxelEntities.Dispose();
             automataTickBuf.BricksRequiredUpdate.Dispose();
+            automataTickBuf.AlienQuery.EntitiesInDeterministicOrder.Dispose();
             base.ReleaseResources();
         }
 
@@ -114,6 +120,8 @@ namespace Voxelis
                 }
             }
             
+            BuildAlienQueryViews();
+
             // Collect bricks to update
             automataTickBuf.BricksRequiredUpdate.Clear();
             BrickCollector.Collect(ref tickBuf.VoxelEntities, ref automataTickBuf.BricksRequiredUpdate);
@@ -174,6 +182,63 @@ namespace Voxelis
             entities.ForEach(e => e.ClearDirtyFlags());
         }
         
+        private void BuildAlienQueryViews()
+        {
+            int entityCount = tickBuf.VoxelEntities.Length;
+            NativeArray<AlienEntityView> currentViews = automataTickBuf.AlienQuery.EntitiesInDeterministicOrder;
+            if (!currentViews.IsCreated || currentViews.Length != entityCount)
+            {
+                if (currentViews.IsCreated) currentViews.Dispose();
+                currentViews = new NativeArray<AlienEntityView>(entityCount, Allocator.Persistent);
+                automataTickBuf.AlienQuery.EntitiesInDeterministicOrder = currentViews;
+            }
+
+            for (int i = 0; i < entityCount; i++)
+            {
+                VoxelEntityData entity = tickBuf.VoxelEntities[i];
+                float3 boundsMin = new float3(float.PositiveInfinity);
+                float3 boundsMax = new float3(float.NegativeInfinity);
+
+                foreach (var kvp in entity.sectors)
+                {
+                    int3 sectorPos = kvp.Key;
+                    float3 localMin = (float3)(sectorPos * Sector.SECTOR_SIZE_IN_BLOCKS);
+                    float3 localMax = localMin + new float3(Sector.SECTOR_SIZE_IN_BLOCKS);
+
+                    ExpandBoundsWithPoint(math.transform(entity.transform, localMin), ref boundsMin, ref boundsMax);
+                    ExpandBoundsWithPoint(math.transform(entity.transform, new float3(localMin.x, localMin.y, localMax.z)), ref boundsMin, ref boundsMax);
+                    ExpandBoundsWithPoint(math.transform(entity.transform, new float3(localMin.x, localMax.y, localMin.z)), ref boundsMin, ref boundsMax);
+                    ExpandBoundsWithPoint(math.transform(entity.transform, new float3(localMin.x, localMax.y, localMax.z)), ref boundsMin, ref boundsMax);
+                    ExpandBoundsWithPoint(math.transform(entity.transform, new float3(localMax.x, localMin.y, localMin.z)), ref boundsMin, ref boundsMax);
+                    ExpandBoundsWithPoint(math.transform(entity.transform, new float3(localMax.x, localMin.y, localMax.z)), ref boundsMin, ref boundsMax);
+                    ExpandBoundsWithPoint(math.transform(entity.transform, new float3(localMax.x, localMax.y, localMin.z)), ref boundsMin, ref boundsMax);
+                    ExpandBoundsWithPoint(math.transform(entity.transform, localMax), ref boundsMin, ref boundsMax);
+                }
+
+                if (entity.sectors.Count == 0)
+                {
+                    boundsMin = float.MaxValue;
+                    boundsMax = float.MinValue;
+                }
+
+                currentViews[i] = new AlienEntityView
+                {
+                    EntityId = i,
+                    LocalToWorld = entity.transform,
+                    WorldToLocal = math.inverse(new float4x4(entity.transform)),
+                    Sectors = entity.sectors,
+                    WorldAabbMin = boundsMin,
+                    WorldAabbMax = boundsMax
+                };
+            }
+        }
+
+        private static void ExpandBoundsWithPoint(float3 point, ref float3 boundsMin, ref float3 boundsMax)
+        {
+            boundsMin = math.min(boundsMin, point);
+            boundsMax = math.max(boundsMax, point);
+        }
+
         public virtual void DoTick(
             WorldStageInputs world) { }
     }
