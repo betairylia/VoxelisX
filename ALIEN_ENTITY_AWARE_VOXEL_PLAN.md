@@ -1,230 +1,217 @@
-# Alien-Entity Aware Voxel Update Plan
+# Alien-Entity Aware Voxel Reader Plan
 
 ## Summary
 
-This plan defines a simplified alien-entity aware voxel update system for VoxelisX/Titania.
+This plan describes a simplified alien-entity aware voxel reader for VoxelisX automata.
 
-The intended gameplay rule is:
+The intended V1 is **per-entity**, not per-sector-link based:
 
-- Automata code works in **sector-local coordinates**.
 - Local voxels are authoritative.
 - Alien voxels are considered only when the queried local voxel space is empty.
 - Alien occupancy is point-sampled at the center of the queried voxel space: `.5, .5, .5`.
-- If multiple alien sectors could answer the same query, choose the first by deterministic ordering.
-- Allocation safety is exposed through an occupancy-query interface. V1 can use the same center-point rule, while later versions can test full voxel volume overlap.
+- If multiple alien entities occupy the same sample point, the first entity in deterministic order wins.
+- Automata code should stay sector-local and should not manually convert through sector, entity, world, and alien coordinate spaces.
+- Allocation safety is exposed as a query interface; V1 can use the same center-point rule, and later versions can replace it with full voxel-box overlap.
 
-The key implementation goal is to keep coordinate conversion and alien tracking out of gameplay automata code. Automata should create a reader and call `GetBlock`.
+The goal is a manageable rule-based sandbox, not physically perfect voxel contact semantics.
+
+This file is an implementation plan only. Treat `VoxelisX/` as the package to implement in later work; this revision changes only the root design document.
+
+## Current Baseline
+
+Before implementing this plan, the relevant existing engine shape is:
+
+- `VoxelisXWorld.BrickInfo` contains `EntityId`, `SectorPos`, `BrickOrigin`, `Sector`, and `Neighbors`.
+- `AutomataStageInputs` contains `VoxelEntities` and `BricksRequiredUpdate`.
+- Automata examples such as `WireWorld` construct `SectorNeighborhoodReaderHelper` manually from `brickInfo.Sector` and `brickInfo.Neighbors`.
+- `SectorNeighborhoodReaderHelper` reads local sector-neighborhood data only. It accepts center-sector-local coordinates and crosses same-entity sector boundaries.
+
+The V1 implementation should preserve the useful part of this model: automata jobs continue processing `BrickInfo` and continue passing sector-local coordinates to a reader.
 
 ## Coordinate Model
 
-The public automata-facing coordinate system is **sector-local block coordinates**.
-
-For a brick update inside sector `S`, automata code should continue to use:
+There are three coordinate spaces that matter:
 
 ```text
-blockPos = brickInfo.BrickOrigin + localOffset
-reader.GetBlock(blockPos + direction)
+sector-local voxel coordinate
+    Coordinate relative to the center sector currently being processed.
+    This is what existing automata code uses.
+
+entity-local voxel coordinate
+    Coordinate relative to the owning VoxelEntity's voxel space.
+    This is used by VoxelEntityData.GetBlock/SetBlock style APIs.
+
+world coordinate
+    Unity/world-space position after applying the VoxelEntity transform.
+    This is required to compare two independently transformed entities.
 ```
 
-The reader accepts sector-local coordinates. Coordinates may be outside `[0, 127]` when automata reads across sector boundaries, just like `SectorNeighborhoodReaderHelper` already supports.
-
-Internally, alien lookups need to relate one entity's sector space to another entity's sector space. The awkward full path is:
+Existing `WireWorld` style code works in sector-local coordinates:
 
 ```text
-self sector-local -> self entity-local -> world -> alien entity-local -> alien sector-local
+brickInfo.BrickOrigin       sector-local block coordinate
+blockPos                    sector-local block coordinate
+blockPos + direction        sector-local coordinate, possibly outside 0..127
 ```
 
-This math is unavoidable for independently transformed entities, especially with rotation. It should be hidden behind precomputed sector links.
-
-The preferred per-query transform is:
+Alien occupancy naturally requires entity/world conversion:
 
 ```text
-self sector-local point -> alien sector-local point
+self sector-local query
+-> self entity-local voxel
+-> self world sample point
+-> alien entity-local point
+-> alien voxel
 ```
 
-Each alien sector link should precompute:
+That chain is unavoidable if entities can move or rotate independently. The important design rule is that gameplay/automata code should not see it.
+
+For a query `p` passed to `VoxelNeighborhoodReader.GetBlock(p)`:
+
+```text
+selfEntityLocalVoxel =
+    centerSectorPos * Sector.SECTOR_SIZE_IN_BLOCKS + p
+
+selfLocalSamplePoint =
+    selfEntityLocalVoxel + float3(0.5, 0.5, 0.5)
+
+worldSamplePoint =
+    SelfLocalToWorld * selfLocalSamplePoint
+```
+
+Then for each alien entity in deterministic order:
+
+```text
+if worldSamplePoint outside alien world AABB:
+    skip
+
+alienLocalPoint =
+    AlienWorldToLocal * worldSamplePoint
+
+alienVoxel =
+    floor(alienLocalPoint)
+
+alienBlock =
+    alien.GetBlock(alienVoxel)
+```
+
+If `alienBlock` is non-empty, return it. Otherwise continue.
+
+Important: this plan intentionally does **not** use a precomputed per-sector transform link such as `OtherSectorLocalFromThisSectorLocal`. Keeping the query per-entity is simpler, less fragile at sector boundaries, and easier to evolve.
+
+## V1 Read Semantics
+
+`VoxelNeighborhoodReader.GetBlock(sectorLocalVoxel)` should behave as:
+
+1. Read local data through `SectorNeighborhoodReaderHelper`.
+2. If the local block is non-empty, return it.
+3. Convert the sector-local coordinate to self entity-local coordinates internally.
+4. Use `AlienOccupancyQuery` to apply the center-point alien rule.
+5. Return the first non-empty alien block found.
+6. If none is found, return `Block.Empty`.
+
+So an alien neighbor is a rule-based fallback answer to:
+
+```text
+If this local sector-space voxel is empty, does another entity occupy its center point?
+```
+
+It is not a real contact manifold, and it is not a full broadphase collision query.
+
+## Public API
+
+The exposed API should minimize boilerplate. Automata authors should not construct nested readers manually.
+
+### AlienEntityView
+
+Build once per tick from the current world entity list:
 
 ```csharp
-public struct AlienSectorLink
-{
-    public int OtherEntityId;
-    public int3 OtherSectorPos;
-    public SectorHandle OtherSector;
-
-    // Maps a point in this sector's local block space directly into
-    // the alien sector's local block space.
-    public float4x4 OtherSectorLocalFromThisSectorLocal;
-}
-```
-
-The matrix is built once per tick:
-
-```text
-thisSectorToWorld =
-    ThisEntityLocalToWorld * Translate(thisSectorPos * 128)
-
-otherSectorToWorld =
-    OtherEntityLocalToWorld * Translate(otherSectorPos * 128)
-
-OtherSectorLocalFromThisSectorLocal =
-    inverse(otherSectorToWorld) * thisSectorToWorld
-```
-
-Then the runtime point-sampled alien read is simple:
-
-```text
-p = sectorLocalVoxel + float3(0.5, 0.5, 0.5)
-q = OtherSectorLocalFromThisSectorLocal * p
-alienVoxel = floor(q)
-if alienVoxel is inside [0, 127], read OtherSector.GetBlock(alienVoxel)
-```
-
-This keeps the world-space and entity-center math out of automata systems.
-
-## Per-Sector Alien Cache
-
-Instead of exposing a cell broadphase to automata, cache alien candidates per sector.
-
-Use a directed graph:
-
-```text
-(self entity, self sector) -> ordered alien sector links
-```
-
-Suggested storage:
-
-```csharp
-public struct SectorKey : IEquatable<SectorKey>
+public struct AlienEntityView
 {
     public int EntityId;
-    public int3 SectorPos;
-}
+    public RigidTransform LocalToWorld;
+    public float4x4 WorldToLocal;
+    public NativeHashMap<int3, SectorHandle> Sectors;
+    public float3 WorldAabbMin;
+    public float3 WorldAabbMax;
 
-public struct AlienSectorLinkRange
-{
-    public int Start;
-    public int Length;
-}
-
-public struct AlienSectorLinkGraph
-{
-    [ReadOnly] public NativeHashMap<SectorKey, AlienSectorLinkRange> Ranges;
-    [ReadOnly] public NativeArray<AlienSectorLink> Links;
+    public bool ContainsWorldPoint(float3 worldPoint);
+    public Block GetBlockAtLocalVoxel(int3 localVoxel);
 }
 ```
 
-The graph is built before automata. Each sector gets a deterministic, contiguous range of links. Query code does not enumerate every alien entity; it only walks the current sector's candidate range.
+`Sectors` is a read-only tick view. It must not be treated as an owning container.
 
-Candidate ordering:
+### AlienOccupancyQuery
 
-```text
-OtherEntityId ascending
-OtherSectorPos.x ascending
-OtherSectorPos.y ascending
-OtherSectorPos.z ascending
-```
-
-This gives stable "first alien wins" behavior.
-
-## Building The Sector Graph
-
-V1 can build the graph directly from entity sectors with broad AABB pruning:
-
-1. Build a list of all entity sectors.
-2. For each sector, compute its world AABB.
-3. Expand the AABB by the maximum automata read margin.
-   - For Moore/von Neumann neighbor reads, `1 voxel` is enough.
-   - If future automata reads farther, this margin must become configurable.
-4. For every pair of sectors from different entities:
-   - skip if their expanded world AABBs do not overlap.
-   - otherwise add directed links both ways.
-5. Sort links by owner sector, then by deterministic alien order.
-6. Build `SectorKey -> range` metadata.
-
-Naive sector-pair construction can be expensive:
-
-```text
-O(total sectors^2)
-```
-
-That is acceptable for an initial implementation if sector counts are modest. Later, a sweep, temporary uniform grid, or entity-pair pruning can accelerate graph construction while keeping the automata-facing graph unchanged.
-
-Important: the graph is a candidate cache, not a proof of contact. False positives are allowed. Each query still transforms the sample point into the alien sector and verifies the voxel coordinate is inside `[0, 127]` and non-empty.
-
-## Exposed API
-
-Automata authors should not construct nested readers manually.
-
-The intended public-facing types are:
+The per-entity alien query:
 
 ```csharp
-public struct AutomataReadContext
+public struct AlienOccupancyQuery
 {
-    [ReadOnly] public AlienSectorLinkGraph AlienGraph;
+    [ReadOnly] public NativeArray<AlienEntityView> EntitiesInDeterministicOrder;
 
-    public VoxelNeighborhoodReader CreateReader(VoxelisXWorld.BrickInfo brickInfo)
-    {
-        return VoxelNeighborhoodReader.Create(brickInfo, AlienGraph);
-    }
+    public Block GetFirstOccupyingAlienBlock(
+        int selfEntityId,
+        RigidTransform selfLocalToWorld,
+        int3 selfEntityLocalVoxel);
+
+    public bool IsVoxelSpaceOccupied(
+        int selfEntityId,
+        RigidTransform selfLocalToWorld,
+        int3 selfEntityLocalVoxel);
 }
 ```
+
+`GetFirstOccupyingAlienBlock` owns the world-space conversion and alien iteration. It should not require callers to provide world coordinates.
+
+### VoxelNeighborhoodReader
+
+This is the main automata-facing reader. Prefer this name over `AlienAwareNeighborhoodReader`; automata should think in terms of voxel neighborhood reads, not alien plumbing.
 
 ```csharp
 public struct VoxelNeighborhoodReader
 {
-    private int selfEntityId;
-    private int3 selfSectorPos;
-    private SectorNeighborhoodReaderHelper localReader;
-    private AlienSectorLinkGraph alienGraph;
-
     public static VoxelNeighborhoodReader Create(
         VoxelisXWorld.BrickInfo brickInfo,
-        AlienSectorLinkGraph alienGraph)
+        AlienOccupancyQuery alienQuery);
+
+    public Block GetBlock(int3 sectorLocalVoxel);
+
+    public bool IsVoxelSpaceOccupied(int3 sectorLocalVoxel);
+}
+```
+
+Internally, it may contain:
+
+```csharp
+private int selfEntityId;
+private int3 centerSectorPos;
+private RigidTransform selfLocalToWorld;
+private SectorNeighborhoodReaderHelper localReader;
+private AlienOccupancyQuery alienQuery;
+```
+
+Those fields should not appear at automata call sites.
+
+### AutomataReadContext
+
+Add a small factory context for jobs:
+
+```csharp
+public struct AutomataReadContext
+{
+    [ReadOnly] public AlienOccupancyQuery AlienQuery;
+
+    public VoxelNeighborhoodReader CreateReader(VoxelisXWorld.BrickInfo brickInfo)
     {
-        return new VoxelNeighborhoodReader
-        {
-            selfEntityId = brickInfo.EntityId,
-            selfSectorPos = brickInfo.SectorPos,
-            localReader = new SectorNeighborhoodReaderHelper(
-                brickInfo.Sector,
-                brickInfo.Neighbors),
-            alienGraph = alienGraph
-        };
-    }
-
-    public Block GetBlock(int3 sectorLocalVoxel)
-    {
-        Block local = localReader.GetBlock(sectorLocalVoxel);
-        if (!local.isEmpty)
-            return local;
-
-        return GetAlienBlock(sectorLocalVoxel);
-    }
-
-    public Block GetLocalBlockOnly(int3 sectorLocalVoxel)
-    {
-        return localReader.GetBlock(sectorLocalVoxel);
-    }
-
-    public bool IsVoxelSpaceOccupied(int3 sectorLocalVoxel)
-    {
-        if (!localReader.GetBlock(sectorLocalVoxel).isEmpty)
-            return true;
-
-        return !GetAlienBlock(sectorLocalVoxel).isEmpty;
-    }
-
-    private Block GetAlienBlock(int3 sectorLocalVoxel)
-    {
-        // Implementation looks up SectorKey(selfEntityId, selfSectorPos),
-        // walks that sector's AlienSectorLink range,
-        // maps the sample point into each alien sector,
-        // and returns the first non-empty alien block.
+        return VoxelNeighborhoodReader.Create(brickInfo, AlienQuery);
     }
 }
 ```
 
-`AutomataStageInputs` should expose a read context:
+Then extend stage inputs:
 
 ```csharp
 public struct AutomataStageInputs
@@ -235,227 +222,262 @@ public struct AutomataStageInputs
 }
 ```
 
-Jobs should receive `AutomataReadContext`, not `AlienSectorLinkGraph` internals directly.
-
-## Example Usage In Automata
-
-This example mirrors the current `WireWorld` style, but it is self-contained for a worker who only sees `VoxelisX/`.
+If implementation simplicity requires keeping `AlienOccupancyQuery AlienQuery` directly in `AutomataStageInputs`, that is acceptable, but automata jobs should still use a single factory method. Avoid this pattern in gameplay code:
 
 ```csharp
-using Unity.Burst;
-using Unity.Collections;
-using Unity.Jobs;
-using Unity.Mathematics;
-using Voxelis;
-using Voxelis.Tick;
-
-namespace Dynamics
+new AlienAwareNeighborhoodReader
 {
-    [BurstCompile]
-    public struct WireWorldJob : IJobParallelForDefer
+    LocalReader = new SectorNeighborhoodReaderHelper(...),
+    ...
+}
+```
+
+Nested construction is engine wiring and should be hidden by the library.
+
+## Example Usage: WireWorld
+
+This example is included so a worker implementing only inside `VoxelisX/` can understand the desired API usage, even though the sample gameplay file may live outside the package.
+
+Existing style:
+
+```csharp
+SectorNeighborhoodReaderHelper readerHelper =
+    new SectorNeighborhoodReaderHelper(
+        brickInfo.Sector,
+        brickInfo.Neighbors);
+```
+
+Desired style:
+
+```csharp
+VoxelNeighborhoodReader reader = ReadContext.CreateReader(brickInfo);
+```
+
+Full job example:
+
+```csharp
+[BurstCompile]
+public struct WireWorldJob : IJobParallelForDefer
+{
+    public NativeArray<VoxelisXWorld.BrickInfo> brickInfos;
+    [ReadOnly] public AutomataReadContext ReadContext;
+
+    public void Execute(int index)
     {
-        public NativeArray<VoxelisXWorld.BrickInfo> BrickInfos;
+        VoxelisXWorld.BrickInfo brickInfo = brickInfos[index];
+        SectorHandle workingSector = brickInfo.Sector;
+        VoxelNeighborhoodReader reader = ReadContext.CreateReader(brickInfo);
 
-        [ReadOnly]
-        public AutomataReadContext ReadContext;
-
-        public void Execute(int index)
+        for (int x = 0; x < 8; x++)
         {
-            VoxelisXWorld.BrickInfo brickInfo = BrickInfos[index];
-            SectorHandle workingSector = brickInfo.Sector;
-            VoxelNeighborhoodReader reader = ReadContext.CreateReader(brickInfo);
-
-            for (int x = 0; x < Sector.SIZE_IN_BLOCKS; x++)
+            for (int y = 0; y < 8; y++)
             {
-                for (int y = 0; y < Sector.SIZE_IN_BLOCKS; y++)
+                for (int z = 0; z < 8; z++)
                 {
-                    for (int z = 0; z < Sector.SIZE_IN_BLOCKS; z++)
+                    int3 blockPos = brickInfo.BrickOrigin + new int3(x, y, z);
+
+                    byte solid = 0;
+                    foreach (int3 direction in NeighborhoodSettings.Directions)
                     {
-                        int3 blockPos = brickInfo.BrickOrigin + new int3(x, y, z);
-
-                        byte solid = 0;
-                        foreach (int3 d in NeighborhoodSettings.Directions)
-                        {
-                            solid += (byte)(reader.GetBlock(blockPos + d).id > 0 ? 1 : 0);
-                        }
-
-                        Block next = solid == 4
-                            ? new Block(15, 15, 15, false)
-                            : Block.Empty;
-
-                        workingSector.SetBlock(blockPos.x, blockPos.y, blockPos.z, next);
+                        solid += (byte)(reader.GetBlock(blockPos + direction).id > 0 ? 1 : 0);
                     }
+
+                    workingSector.SetBlock(
+                        blockPos.x, blockPos.y, blockPos.z,
+                        solid == 4 ? new Block(15, 15, 15, false) : default);
                 }
             }
         }
     }
-
-    public class WireWorld : ITickHook<VoxelisXWorld.AutomataStageInputs>
-    {
-        public bool Execute(
-            VoxelisXWorld.AutomataStageInputs inputs,
-            JobHandle stageStart,
-            JobHandle chained,
-            out JobHandle handle)
-        {
-            var job = new WireWorldJob
-            {
-                BrickInfos = inputs.BricksRequiredUpdate.AsDeferredJobArray(),
-                ReadContext = inputs.ReadContext,
-            };
-
-            handle = job.Schedule(inputs.BricksRequiredUpdate, 32, chained);
-            return true;
-        }
-    }
 }
 ```
 
-The important usage contract is:
-
-```text
-var reader = ReadContext.CreateReader(brickInfo);
-reader.GetBlock(sectorLocalVoxel);
-reader.IsVoxelSpaceOccupied(sectorLocalVoxel);
-```
-
-Automata systems should not directly know about:
-
-- `SectorNeighborHandles`
-- `SectorNeighborhoodReaderHelper`
-- entity transforms
-- world-space transforms
-- alien sector link ranges
-
-Those are engine internals.
-
-## Allocation Interface
-
-Allocation checks should not be baked into `Sector.SetBlock`.
-
-`Sector.SetBlock` is a storage primitive. It currently allocates bricks and records dirty state. Alien overlap policy belongs above it, in a write helper or write resolver.
-
-V1 can expose:
+Scheduling example:
 
 ```csharp
-public bool TrySetBlock(
-    ref SectorHandle sector,
-    VoxelNeighborhoodReader reader,
-    int3 sectorLocalVoxel,
-    Block next)
+public bool Execute(
+    VoxelisXWorld.AutomataStageInputs inputs,
+    JobHandle stageStart,
+    JobHandle chained,
+    out JobHandle handle)
 {
-    Block current = reader.GetLocalBlockOnly(sectorLocalVoxel);
+    var job = new WireWorldJob
+    {
+        brickInfos = inputs.BricksRequiredUpdate.AsDeferredJobArray(),
+        ReadContext = inputs.ReadContext,
+    };
 
-    bool allocatesVoxel = current.isEmpty && !next.isEmpty;
-    if (allocatesVoxel && reader.IsVoxelSpaceOccupied(sectorLocalVoxel))
-        return false;
-
-    sector.SetBlock(
-        sectorLocalVoxel.x,
-        sectorLocalVoxel.y,
-        sectorLocalVoxel.z,
-        next);
-
+    handle = job.Schedule(inputs.BricksRequiredUpdate, 32, chained);
     return true;
 }
 ```
 
-The exact helper shape can vary, but the policy should be:
+Automata authors should only need to know:
+
+```text
+BrickInfo identifies the brick being processed.
+ReadContext creates a neighborhood reader for that brick's sector.
+reader.GetBlock(...) performs local-first, alien-second reads.
+```
+
+They should not need to know:
+
+```text
+SectorNeighborhoodReaderHelper construction
+SectorNeighborHandles
+center sector origin conversion
+self entity transform
+alien entity transform
+world-space AABB rejection
+alien local voxel lookup
+```
+
+## Tick Integration
+
+Integrate into `VoxelisXWorld.Tick()` before scheduling automata:
+
+1. Sync `VoxelEntity` transforms into `VoxelEntityData`.
+2. Build `AlienEntityView` records from the current entity list.
+3. Emit views in deterministic entity order.
+4. Store the query in `AutomataReadContext`.
+5. Put `AutomataReadContext` in `AutomataStageInputs`.
+6. Continue collecting `BricksRequiredUpdate` with the existing `BrickCollector`.
+7. Automata jobs create `VoxelNeighborhoodReader` from `ReadContext.CreateReader(brickInfo)`.
+8. Automata reads use `reader.GetBlock(...)`.
+9. Allocation-sensitive writes use `reader.IsVoxelSpaceOccupied(...)` or a write resolver before creating a non-empty block in empty local space.
+10. Apply sector snapshots after automata jobs complete.
+11. Refresh physics/collider state after accepted writes.
+12. Run physics.
+13. Rendering and dirty propagation continue afterward according to the world tick policy.
+
+`SectorNeighborhoodReaderHelper` remains local-sector focused. `VoxelNeighborhoodReader` composes local sector reading with alien occupancy.
+
+## Allocation Query
+
+Allocation policy should not be baked into `Sector.SetBlock`.
+
+`Sector.SetBlock` is storage-level mutation. Alien overlap policy belongs in an automata helper or write resolver.
+
+V1 rule:
 
 ```text
 if old local block is empty
 and new block is non-empty
-and alien query says occupied
+and reader.IsVoxelSpaceOccupied(target) is true
 then reject the write
 ```
 
-Replacing or clearing an already-owned local block should not require alien occupancy approval.
+Clearing or replacing a voxel already owned by the same entity should not require alien approval.
 
-Later, `IsVoxelSpaceOccupied` can switch from center-point occupancy to full voxel-box overlap without changing automata code.
+The automata-facing allocation check can stay minimal:
 
-## Integration Into VoxelisXWorld
+```csharp
+public bool IsVoxelSpaceOccupied(int3 sectorLocalVoxel);
+```
 
-The tick should build and pass read context before automata:
+Behind the reader:
 
-1. Sync `VoxelEntity` transforms into `VoxelEntityData`.
-2. Build or refresh sector metadata for all entities.
-3. Build `AlienSectorLinkGraph`.
-4. Assign `automataTickBuf.ReadContext`.
-5. Collect `BricksRequiredUpdate`.
-6. Schedule automata hooks.
-7. Complete automata jobs.
-8. Apply sector snapshots.
-9. Refresh physics/colliders.
-10. Simulate physics.
-11. Render and propagate dirty state according to the world tick policy.
+```text
+local non-empty block -> occupied
+local empty block but alien center-point hit -> occupied
+otherwise -> free
+```
 
-The alien graph should be treated as a read-only tick view. It does not own sectors; it references existing sector handles.
+Later, a stricter implementation can test full voxel-box overlap behind the same API.
 
-## Pros And Cons Of Per-Sector Tracking
+## Determinism
+
+Do not rely on hash map iteration order.
+
+V1 should build `AlienEntityView` in deterministic order. Temporary tick index order is acceptable for experiments if `BrickInfo.EntityId` matches the view index, but a stable persistent `VoxelEntity` id is better for spawning, saving, replay, and networking.
+
+Tie behavior:
+
+```text
+first alien entity in deterministic order whose non-empty block contains the sample point wins
+```
+
+This is arbitrary, but stable.
+
+If entity ids become sparse or persistent, add an entity-id-to-view-index lookup. Do not assume forever:
+
+```text
+EntityId == index in EntitiesInDeterministicOrder
+```
+
+## Per-Entity V1 And Later Pruning
+
+Keep V1 per-entity:
+
+```text
+for each alien entity in deterministic order:
+    AABB reject
+    transform point into alien local space
+    read alien voxel
+```
+
+This is simple, testable, and avoids a precomputed per-sector transform/link model.
+
+Possible later evolution:
+
+### Entity AABB List
+
+This is V1. It is good when entity count is modest and automata only processes dirty/update bricks.
+
+### Sector Candidate Cache
+
+If entity-level AABBs become too broad, the world can build a per-sector candidate cache:
+
+```text
+self SectorKey -> candidate alien entity ids or alien sector handles
+```
+
+This cache is only a pruning structure. Query semantics stay the same:
+
+```text
+self sector-local query
+-> self entity-local sample point
+-> alien entity-local lookup
+```
 
 Pros:
 
-- Matches the current update unit: `BrickInfo` already carries `EntityId`, `SectorPos`, `Sector`, and neighbor handles.
-- Keeps automata code in sector-local coordinates.
-- Reuses the same candidate list for many voxel reads in one sector.
-- Handles sparse entities better than whole-entity AABBs.
-- Gives deterministic ordering with a sorted sector link range.
-- Is easier to debug visually: sector A has candidate links to these alien sectors.
+- Matches the current `BrickInfo` sector processing unit.
+- Reduces alien entity scans for sparse worlds.
+- Candidate lists can be sorted deterministically.
+- Easier to debug than a global cell hash.
 
 Cons:
 
-- Naive graph construction is `O(total sectors^2)`.
-- Rotated sector world AABBs can be loose and produce false positives.
-- Candidate links must be rebuilt or invalidated when entities move, rotate, load/unload sectors, or allocate new sectors.
-- A fixed read margin must match automata behavior. If automata reads farther than the margin, alien candidates can be missed.
-- Memory can grow quickly if many sectors overlap many alien sectors.
+- Needs rebuild or invalidation when entities move, rotate, or sectors load/unload.
+- Naive building can be expensive with many sectors.
+- Rotated sector AABBs create false positives, so exact point queries are still required.
+- Boundary queries may target a neighboring self sector; the reader must compute the target entity-local voxel and choose candidates accordingly if the cache becomes sector-keyed.
 
-## V3: Faster Sector Graph Construction
+Do not expose this cache to automata code. It should sit behind `AlienOccupancyQuery`.
 
-If naive sector-pair graph building becomes too slow, keep the same automata-facing `AlienSectorLinkGraph` and only optimize how it is built.
+### Internal Cell Broadphase
 
-Possible builders:
+A world-cell broadphase can still be useful, but only as an internal way to build entity or sector candidates faster. It should not become the automata-facing API.
 
-- Entity-pair pruning: skip sector comparisons when entity AABBs do not overlap.
-- Sweep and prune over sector world AABB min/max on one axis.
-- Temporary uniform grid: insert sector AABBs into world cells, then compare only sectors sharing a cell.
+### Brick-Level Cache
 
-The uniform grid should be internal to graph construction. Automata should still read from per-sector link ranges.
-
-## V4: Brick-Level Candidate Links
-
-If sector candidates are too broad, especially for large rotated sparse sectors, introduce brick-level links.
-
-Possible shape:
-
-```csharp
-public struct AlienBrickLink
-{
-    public int OtherEntityId;
-    public int3 OtherSectorPos;
-    public short OtherBrickIndex;
-    public SectorHandle OtherSector;
-    public float4x4 OtherBrickLocalFromThisSectorLocal;
-}
-```
-
-This reduces false positives but increases build cost and memory pressure. It also depends on current non-empty-brick data being accurate before graph construction.
-
-V4 should be introduced only after profiling shows sector-level false positives dominate query cost.
+If sector candidates are still too broad, cache non-empty alien bricks. This is the most precise broadphase but has the highest rebuild cost. Defer it until profiling proves sector or entity candidates are too expensive.
 
 ## Recommended Milestones
 
-1. Add `AlienSectorLink`, `AlienSectorLinkGraph`, `AutomataReadContext`, and `VoxelNeighborhoodReader`.
-2. Build a naive per-sector candidate graph before automata.
-3. Replace direct `SectorNeighborhoodReaderHelper` construction in sample automata with `ReadContext.CreateReader(brickInfo)`.
-4. Add center-point allocation rejection through a helper or write resolver.
-5. Add tests for local-first behavior, alien fallback, deterministic link ordering, sector-local boundary reads, and allocation rejection.
-6. Profile graph build cost and query cost before implementing V3 or V4.
+1. Add `AlienEntityView` and `AlienOccupancyQuery`.
+2. Add `VoxelNeighborhoodReader.Create(brickInfo, alienQuery)`.
+3. Add `AutomataReadContext.CreateReader(brickInfo)`.
+4. Extend `AutomataStageInputs` with `ReadContext`.
+5. Convert one sample automata to the compact API shown above.
+6. Add tests for local-first behavior, alien fallback, sector-local coordinate conversion, deterministic tie behavior, and allocation rejection.
+7. Profile the per-entity AABB query before adding any sector candidate cache.
 
 ## Open Implementation Notes
 
-- A persistent `VoxelEntity` id is preferred. Tick index is acceptable only for experiments.
-- `VoxelEntityData` currently has shallow-copy ownership hazards; the graph must be a read-only view and must not own native containers or sectors.
-- If automata writes directly call `Sector.SetBlock`, allocation rejection must be done by convention through a helper. A command-buffered write resolver would be cleaner long-term.
-- The sector graph should be rebuilt after entity transforms are synced and before automata reads.
-- If automata creates new sectors during a tick, those sectors will not have alien links until the next graph rebuild unless the mutation pipeline explicitly patches the graph.
+- `VoxelEntityData` currently has shallow-copy semantics in the tick path. Query views should be read-only tick views and should not own native containers.
+- Reader construction must correctly account for sector-local versus entity-local coordinates. This is the main correctness risk.
+- `SectorNeighborhoodReaderHelper.GetBlock` handles same-entity sector-neighborhood reads. Alien queries should only run after that local read returns empty.
+- Automata writes currently call `Sector.SetBlock` directly in jobs. Allocation rejection is cleaner with buffered write commands, but V1 can start with helper-guarded direct writes.
+- Full voxel-box overlap can replace center-point occupancy later behind the same `IsVoxelSpaceOccupied` API.
