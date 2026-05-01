@@ -31,21 +31,6 @@ namespace Voxelis
         {
             public NativeList<VoxelEntityData> VoxelEntities;
         }
-
-        public struct BrickInfo
-        {
-            public int EntityId;
-            public int3 SectorPos;
-            public int3 BrickOrigin;
-            public short BrickId;
-            public RigidTransform LocalToWorld;
-
-            public SectorHandle Sector;
-            public SectorNeighborHandles Neighbors;
-            
-            public ushort BrickDirtyFlag;
-            public ushort BrickRequireUpdateFlag;
-        }
         
         public struct AutomataStageInputs
         {

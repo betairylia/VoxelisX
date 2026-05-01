@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using Unity.Collections;
+using Unity.Mathematics;
 using UnityEngine;
 using Voxelis.Tick;
 
@@ -8,6 +9,21 @@ namespace Voxelis
 {
     public class VoxelisXCoreWorld : MonoSingleton<VoxelisXCoreWorld>
     {
+        public struct BrickInfo
+        {
+            public int EntityId;
+            public int3 SectorPos;
+            public int3 BrickOrigin;
+            public short BrickId;
+            public RigidTransform LocalToWorld;
+
+            public SectorHandle Sector;
+            public SectorNeighborHandles Neighbors;
+            
+            public ushort BrickDirtyFlag;
+            public ushort BrickRequireUpdateFlag;
+        }
+        
         public List<VoxelEntity> entities = new();
 
         /// <summary>

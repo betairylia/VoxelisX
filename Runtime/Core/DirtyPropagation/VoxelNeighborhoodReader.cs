@@ -73,7 +73,7 @@ namespace Voxelis
         private SectorNeighborhoodReaderHelper localReader;
         private AlienOccupancyQuery alienQuery;
 
-        public static VoxelNeighborhoodReader Create(VoxelisXWorld.BrickInfo brickInfo, AlienOccupancyQuery alienQuery)
+        public static VoxelNeighborhoodReader Create(VoxelisXCoreWorld.BrickInfo brickInfo, AlienOccupancyQuery alienQuery)
         {
             return new VoxelNeighborhoodReader
             {
@@ -113,7 +113,7 @@ namespace Voxelis
     {
         [ReadOnly] public AlienOccupancyQuery AlienQuery;
 
-        public VoxelNeighborhoodReader CreateReader(VoxelisXWorld.BrickInfo brickInfo)
+        public VoxelNeighborhoodReader CreateReader(VoxelisXCoreWorld.BrickInfo brickInfo)
         {
             return VoxelNeighborhoodReader.Create(brickInfo, AlienQuery);
         }
