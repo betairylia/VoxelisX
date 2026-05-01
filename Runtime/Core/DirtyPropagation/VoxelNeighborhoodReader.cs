@@ -8,7 +8,7 @@ namespace Voxelis
         public int EntityId;
         public RigidTransform LocalToWorld;
         public float4x4 WorldToLocal;
-        [ReadOnly] public NativeHashMap<int3, SectorHandle> Sectors;
+        [ReadOnly] public LockableUnsafeHashMap<int3, SectorHandle> Sectors;
         public float3 WorldAabbMin;
         public float3 WorldAabbMax;
 

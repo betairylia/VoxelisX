@@ -84,7 +84,7 @@ namespace VoxelisX.Tests.Editor
                 EntityId = id,
                 LocalToWorld = RigidTransform.identity,
                 WorldToLocal = float4x4.identity,
-                Sectors = data.sectors,
+                Sectors = data.sectors.AsReadOnly(),
                 WorldAabbMin = new float3(-512f),
                 WorldAabbMax = new float3(512f)
             };

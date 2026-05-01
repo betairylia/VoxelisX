@@ -213,7 +213,7 @@ namespace Voxelis
                     EntityId = i,
                     LocalToWorld = entity.transform,
                     WorldToLocal = worldToLocal,
-                    Sectors = entity.sectors,
+                    Sectors = entity.sectors.AsReadOnly(),
                     WorldAabbMin = worldAabbMin,
                     WorldAabbMax = worldAabbMax
                 });

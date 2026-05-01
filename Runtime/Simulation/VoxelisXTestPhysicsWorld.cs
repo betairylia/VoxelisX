@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using Unity.Collections;
 using Unity.Entities;
 using Unity.Mathematics;
 using Unity.Physics;
@@ -125,7 +126,8 @@ namespace Voxelis.Simulation
             var massProps = vb.ComputeMassProperties();
 
             VoxelCollider* vc = (VoxelCollider*)physicsWorld.Bodies[bodyIndex].Collider.GetUnsafePtr();
-            vc->ReloadSectors(vb.entity.Sectors);
+            using var sectors = vb.entity.Sectors.ToNativeHashMap(Allocator.Temp);
+            vc->ReloadSectors(sectors);
 
             if (vb.isStatic) return;
             
