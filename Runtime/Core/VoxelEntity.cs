@@ -22,8 +22,8 @@ namespace Voxelis
         /// Key is the sector position in sector-space coordinates.
         /// </summary>
         // public Dictionary<Vector3Int, Sector> sectors = new Dictionary<Vector3Int, Sector>();
-        public NativeHashMap<int3, SectorHandle> sectors;
-        public NativeHashMap<int3, SectorNeighborHandles> sectorNeighbors;
+        public LockableUnsafeHashMap<int3, SectorHandle> sectors;
+        public LockableUnsafeHashMap<int3, SectorNeighborHandles> sectorNeighbors;
         public NativeQueue<int3> sectorsToRemove;
 
         /// <summary>
@@ -225,8 +225,8 @@ namespace Voxelis
             var job = new DirtyPropagationJob
             {
                 allSectorPositions = allPositions,
-                sectors = sectors,
-                sectorNeighbors = sectorNeighbors,
+                sectors = sectors.AsReadOnly(),
+                sectorNeighbors = sectorNeighbors.AsReadOnly(),
                 neighborhoodType = NeighborhoodSettings.neighborhoodType,
                 flagsToPropagate = flagsToPropagate
             };
@@ -385,7 +385,7 @@ namespace Voxelis
             data = srcData;
         }
         
-        public NativeHashMap<int3, SectorHandle> Sectors => data.sectors;
+        public LockableUnsafeHashMap<int3, SectorHandle> Sectors => data.sectors;
 
         /// <summary>
         /// Adds an empty sector at the specified position.

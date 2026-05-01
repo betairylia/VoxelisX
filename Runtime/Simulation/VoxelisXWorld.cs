@@ -31,30 +31,18 @@ namespace Voxelis
         {
             public NativeList<VoxelEntityData> VoxelEntities;
         }
-
-        public struct BrickInfo
-        {
-            public int EntityId;
-            public int3 SectorPos;
-            public int3 BrickOrigin;
-            public short BrickId;
-
-            public SectorHandle Sector;
-            public SectorNeighborHandles Neighbors;
-            
-            public ushort BrickDirtyFlag;
-            public ushort BrickRequireUpdateFlag;
-        }
         
         public struct AutomataStageInputs
         {
             public NativeList<VoxelEntityData> VoxelEntities;
             public NativeList<BrickInfo> BricksRequiredUpdate;
+            public AutomataReadContext ReadContext;
         }
         
         // Ticking
         private WorldStageInputs tickBuf;
         private AutomataStageInputs automataTickBuf;
+        private NativeList<AlienEntityView> alienEntityViews;
         
         public override void Init()
         {
@@ -65,12 +53,14 @@ namespace Voxelis
             
             tickBuf.VoxelEntities = new NativeList<VoxelEntityData>(Allocator.Persistent);
             automataTickBuf.BricksRequiredUpdate = new NativeList<BrickInfo>(Allocator.Persistent);
+            alienEntityViews = new NativeList<AlienEntityView>(Allocator.Persistent);
         }
 
         protected override void ReleaseResources()
         {
             tickBuf.VoxelEntities.Dispose();
             automataTickBuf.BricksRequiredUpdate.Dispose();
+            alienEntityViews.Dispose();
             base.ReleaseResources();
         }
 
@@ -117,6 +107,7 @@ namespace Voxelis
             // Collect bricks to update
             automataTickBuf.BricksRequiredUpdate.Clear();
             BrickCollector.Collect(ref tickBuf.VoxelEntities, ref automataTickBuf.BricksRequiredUpdate);
+            BuildAlienReadContext();
             
             tickHandle = automataStage.Schedule(automataTickBuf, tickHandle);
             
@@ -176,5 +167,65 @@ namespace Voxelis
         
         public virtual void DoTick(
             WorldStageInputs world) { }
+
+        private void BuildAlienReadContext()
+        {
+            alienEntityViews.Clear();
+
+            for (int i = 0; i < tickBuf.VoxelEntities.Length; i++)
+            {
+                VoxelEntityData entity = tickBuf.VoxelEntities[i];
+                float4x4 localToWorldMatrix = float4x4.TRS(entity.transform.pos, entity.transform.rot, 1f);
+                float4x4 worldToLocal = math.inverse(localToWorldMatrix);
+                float3 worldAabbMin = entity.transform.pos;
+                float3 worldAabbMax = entity.transform.pos;
+
+                if (entity.sectors.Count > 0)
+                {
+                    NativeArray<int3> sectorKeys = entity.sectors.GetKeyArray(Allocator.Temp);
+                    int3 minSector = sectorKeys[0];
+                    int3 maxSector = sectorKeys[0];
+
+                    for (int k = 1; k < sectorKeys.Length; k++)
+                    {
+                        minSector = math.min(minSector, sectorKeys[k]);
+                        maxSector = math.max(maxSector, sectorKeys[k]);
+                    }
+
+                    sectorKeys.Dispose();
+
+                    float3 localMin = minSector * Sector.SECTOR_SIZE_IN_BLOCKS;
+                    float3 localMax = (maxSector + 1) * Sector.SECTOR_SIZE_IN_BLOCKS;
+                    for (int mask = 0; mask < 8; mask++)
+                    {
+                        float3 localCorner = new float3(
+                            (mask & 1) == 0 ? localMin.x : localMax.x,
+                            (mask & 2) == 0 ? localMin.y : localMax.y,
+                            (mask & 4) == 0 ? localMin.z : localMax.z);
+                        float3 worldCorner = math.transform(entity.transform, localCorner);
+                        worldAabbMin = math.min(worldAabbMin, worldCorner);
+                        worldAabbMax = math.max(worldAabbMax, worldCorner);
+                    }
+                }
+
+                alienEntityViews.Add(new AlienEntityView
+                {
+                    EntityId = i,
+                    LocalToWorld = entity.transform,
+                    WorldToLocal = worldToLocal,
+                    Sectors = entity.sectors.AsReadOnly(),
+                    WorldAabbMin = worldAabbMin,
+                    WorldAabbMax = worldAabbMax
+                });
+            }
+
+            automataTickBuf.ReadContext = new AutomataReadContext
+            {
+                AlienQuery = new AlienOccupancyQuery
+                {
+                    EntitiesInDeterministicOrder = alienEntityViews.AsArray()
+                }
+            };
+        }
     }
 }

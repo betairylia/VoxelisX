@@ -42,8 +42,8 @@ namespace Voxelis
     public unsafe struct DirtyPropagationJob : IJobParallelFor
     {
         [ReadOnly] public NativeArray<int3> allSectorPositions;
-        [ReadOnly] public NativeHashMap<int3, SectorHandle> sectors;
-        [ReadOnly] public NativeHashMap<int3, SectorNeighborHandles> sectorNeighbors;
+        [ReadOnly] public LockableUnsafeHashMap<int3, SectorHandle> sectors;
+        [ReadOnly] public LockableUnsafeHashMap<int3, SectorNeighborHandles> sectorNeighbors;
         [ReadOnly] public NeighborhoodType neighborhoodType;
         [ReadOnly] public DirtyFlags flagsToPropagate;
 
