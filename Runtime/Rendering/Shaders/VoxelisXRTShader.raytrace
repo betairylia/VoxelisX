@@ -200,7 +200,7 @@ void MainRayGenShader()
 
     float3 prevRadiance = RenderTarget[launchIndex].xyz;
     // isSky = (g_ConvergenceStep < 1) * isSky + (g_ConvergenceStep >= 1) * (isSky | (!RenderTarget[launchIndex].a));
-    isSky = false;
+    // isSky = false;
 
     float3 result = lerp(prevRadiance, radiance, 1 / float(g_ConvergenceStep + 1));
     // float3 result = radiance;

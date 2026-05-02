@@ -85,6 +85,8 @@ namespace Voxelis
             };
         }
 
+        public Block GetLocalBlock(int3 sectorLocalVoxel) => localReader.GetBlock(sectorLocalVoxel);
+
         public Block GetBlock(int3 sectorLocalVoxel)
         {
             Block localBlock = localReader.GetBlock(sectorLocalVoxel);

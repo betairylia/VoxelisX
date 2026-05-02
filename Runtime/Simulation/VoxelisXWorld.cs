@@ -24,8 +24,10 @@ namespace Voxelis
         [SerializeField] protected VoxelMeshRendererComponent meshingRenderer;
         
         [Header("Performance")] public float targetTPS = 100.0f;
+        public float slowmo = 1.0f;
         [Header("Debug")] public bool freeze = true;
         public bool isFirst = true;
+        private float timer = 0.0f;
         
         public struct WorldStageInputs
         {
@@ -68,30 +70,40 @@ namespace Voxelis
         {
             if ((!isFirst) && freeze) return;
             isFirst = false;
-            
+
+            // timer -= Time.deltaTime;
+            // if (timer > 0)
+            // {
+            //     return;
+            // }
+            // else
+            // {
+            //     timer = slowmo * 1.0f / targetTPS;
+            // }
+
             // TEMP CODE -- Tick logic
             rayCaster?.Tick();
-            
+
             // Ticking
-            
+
             // Fill native list by copying
             // TODO: Keep the unique instance in world and let VoxelEntity ref it?
             tickBuf.VoxelEntities.Clear();
             for (int i = 0; i < entities.Count; i++)
             {
                 VoxelEntity e = entities[i];
-                
+
                 e.SyncTransformToData();
                 tickBuf.VoxelEntities.Add(e.GetDataCopy());
             }
-            
+
             DoTick(tickBuf);
             // Tick
             JobHandle tickHandle = new JobHandle();
-            
+
             /////// Voxel update stage
             // Random tick stage
-            
+
             // Automata stage
             // TODO: Wrap this up and handle this properly
             // Activate sector snapshotting for modifications
@@ -99,34 +111,34 @@ namespace Voxelis
             {
                 foreach (var kvp in entities[i].Sectors)
                 {
-                    if(kvp.Value.Get().sectorRequireUpdateFlags > 0)
+                    if (kvp.Value.Get().sectorRequireUpdateFlags > 0)
                         kvp.Value.ActivateSnapshot();
                 }
             }
-            
+
             // Collect bricks to update
             automataTickBuf.BricksRequiredUpdate.Clear();
             BrickCollector.Collect(ref tickBuf.VoxelEntities, ref automataTickBuf.BricksRequiredUpdate);
             BuildAlienReadContext();
-            
+
             tickHandle = automataStage.Schedule(automataTickBuf, tickHandle);
-            
+
             // Random access updating stage
-            
+
             // Propagate dirtiness up, from brick(sector) to VoxelEntityData
             // Update physics info (MassProperties, VoxelType (Corner/Edge/Surface))
-            
+
             /////// Physics update stage
-            
+
             // Resolve voxel contact events into Sectors (AlienVoxelPairs)
-            
+
             /////// Rendering update stage
-            
+
             /////// End Tick stage
             // Clear dirtiness and propagate RequireBrickUpdate to self & neighbors
-            
+
             tickHandle.Complete();
-            
+
             // TODO: Wrap this up and handle this properly
             // Apply sector modifications
             for (int i = 0; i < entities.Count; i++)
@@ -136,22 +148,22 @@ namespace Voxelis
                     kvp.Value.ApplySnapshot();
                 }
             }
-            
+
             // Copy data back to VoxelEntities
             for (int i = 0; i < entities.Count; i++)
             {
                 VoxelEntity e = entities[i];
-                
+
                 e.CopyDataFrom(tickBuf.VoxelEntities[i]);
                 e.SyncTransformFromData();
             }
-            
+
             physicsWorld.SimulateStep(1.0f / targetTPS);
-            
+
             // Tick renderer
-            if(rayTracedRenderer?.enabled ?? false) rayTracedRenderer?.Tick();
-            if(meshingRenderer?.enabled ?? false) meshingRenderer?.Tick();
-            
+            if (rayTracedRenderer?.enabled ?? false) rayTracedRenderer?.Tick();
+            if (meshingRenderer?.enabled ?? false) meshingRenderer?.Tick();
+
             // Dirty propagation
             entities.ForEach(e => e.ClearRequireUpdates());
 
@@ -160,11 +172,12 @@ namespace Voxelis
             {
                 handle = JobHandle.CombineDependencies(handle, entities[i].PropagateDirtyFlags(DirtyFlags.All, true));
             }
+
             handle.Complete();
-            
+
             entities.ForEach(e => e.ClearDirtyFlags());
         }
-        
+
         public virtual void DoTick(
             WorldStageInputs world) { }
 
