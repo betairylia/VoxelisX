@@ -25,6 +25,11 @@ namespace Voxelis
         
         [Header("Performance")] public float targetTPS = 100.0f;
         public float slowmo = 1.0f;
+        [Header("Alien Dirty Propagation")]
+        [SerializeField] private int alienSpatialCellSize = 64;
+        [SerializeField] private DirtyFlags alienMotionDirtyMask = DirtyFlags.Reserved0;
+        [SerializeField] private int alienDirtyHaloVoxels = 1;
+        [SerializeField] private float alienMotionDirtyThreshold = 0f;
         [Header("Debug")] public bool freeze = true;
         public bool isFirst = true;
         private float timer = 0.0f;
@@ -165,6 +170,12 @@ namespace Voxelis
             if (meshingRenderer?.enabled ?? false) meshingRenderer?.Tick();
 
             // Dirty propagation
+            float dirtyPropagationDeltaTime = targetTPS > 0f ? 1.0f / targetTPS : Time.deltaTime;
+            for (int i = 0; i < entities.Count; i++)
+            {
+                entities[i].SyncCurrentTransformToData(dirtyPropagationDeltaTime);
+            }
+
             entities.ForEach(e => e.ClearRequireUpdates());
 
             JobHandle handle = new JobHandle();
@@ -174,6 +185,29 @@ namespace Voxelis
             }
 
             handle.Complete();
+
+            var dirtyPropagationEntities = new NativeArray<VoxelEntityData>(entities.Count, Allocator.TempJob);
+            try
+            {
+                for (int i = 0; i < entities.Count; i++)
+                {
+                    dirtyPropagationEntities[i] = entities[i].GetDataCopy();
+                }
+
+                AlienDirtyPropagation.Propagate(dirtyPropagationEntities, new AlienDirtyPropagationSettings
+                {
+                    FlagsToPropagate = DirtyFlags.All,
+                    AlienMotionDirtyMask = alienMotionDirtyMask,
+                    SpatialCellSize = alienSpatialCellSize,
+                    DirtyHaloVoxels = alienDirtyHaloVoxels,
+                    MotionThreshold = alienMotionDirtyThreshold,
+                    DeltaTime = dirtyPropagationDeltaTime
+                });
+            }
+            finally
+            {
+                dirtyPropagationEntities.Dispose();
+            }
 
             entities.ForEach(e => e.ClearDirtyFlags());
         }

@@ -31,6 +31,9 @@ namespace Voxelis
         /// Synced with Unity Transform via SyncTransformToData/SyncTransformFromData.
         /// </summary>
         public RigidTransform transform;
+        public RigidTransform previousTransform;
+        public float3 linearVelocity;
+        public float3 angularVelocity;
 
         // Dirty propagation
         public ushort entityDirtyFlags;
@@ -42,6 +45,9 @@ namespace Voxelis
             sectorNeighbors = new(1, allocator);
             sectorsToRemove = new(allocator);
             transform = RigidTransform.identity;
+            previousTransform = RigidTransform.identity;
+            linearVelocity = float3.zero;
+            angularVelocity = float3.zero;
             entityDirtyFlags = 0;
             entityRequireUpdateFlags = 0;
         }
@@ -52,6 +58,9 @@ namespace Voxelis
             sectorNeighbors = new(1, allocator);
             sectorsToRemove = new(allocator);
             this.transform = new RigidTransform(transform.rotation, transform.position);
+            previousTransform = this.transform;
+            linearVelocity = float3.zero;
+            angularVelocity = float3.zero;
             entityDirtyFlags = 0;
             entityRequireUpdateFlags = 0;
         }
@@ -314,6 +323,50 @@ namespace Voxelis
             }
         }
 
+        public void RefreshAllocatedBrickLists()
+        {
+            foreach (var kvp in sectors)
+            {
+                kvp.Value.Ptr->UpdateNonEmptyBricks();
+            }
+        }
+
+        public void SetTransformForDirtyPropagation(RigidTransform nextTransform, float deltaTime)
+        {
+            previousTransform = transform;
+            UpdateCurrentTransformForDirtyPropagation(nextTransform, deltaTime);
+        }
+
+        public void UpdateCurrentTransformForDirtyPropagation(RigidTransform nextTransform, float deltaTime)
+        {
+            transform = nextTransform;
+
+            if (deltaTime <= 0f)
+            {
+                linearVelocity = float3.zero;
+                angularVelocity = float3.zero;
+                return;
+            }
+
+            linearVelocity = (transform.pos - previousTransform.pos) / deltaTime;
+            quaternion deltaRotation = math.mul(transform.rot, math.inverse(previousTransform.rot));
+            float4 deltaValue = deltaRotation.value;
+            if (deltaValue.w < 0f)
+            {
+                deltaValue = -deltaValue;
+            }
+
+            float sinHalfAngle = math.length(deltaValue.xyz);
+            if (sinHalfAngle < 1e-6f)
+            {
+                angularVelocity = float3.zero;
+                return;
+            }
+
+            float angle = 2f * math.atan2(sinHalfAngle, deltaValue.w);
+            angularVelocity = deltaValue.xyz / sinHalfAngle * (angle / deltaTime);
+        }
+
         /// <summary>
         /// Disposes all resources used by this voxel entity data, including all sectors and the native collections.
         /// </summary>
@@ -427,7 +480,18 @@ namespace Voxelis
         /// </summary>
         public void SyncTransformToData()
         {
-            data.transform = new RigidTransform(transform.rotation, transform.position);
+            float deltaTime = Time.deltaTime > 0f ? Time.deltaTime : Time.fixedDeltaTime;
+            SyncTransformToData(deltaTime);
+        }
+
+        public void SyncTransformToData(float deltaTime)
+        {
+            data.SetTransformForDirtyPropagation(new RigidTransform(transform.rotation, transform.position), deltaTime);
+        }
+
+        public void SyncCurrentTransformToData(float deltaTime)
+        {
+            data.UpdateCurrentTransformForDirtyPropagation(new RigidTransform(transform.rotation, transform.position), deltaTime);
         }
 
         /// <summary>
@@ -527,6 +591,8 @@ namespace Voxelis
         /// Clears dirty flags for all sectors (call before propagation completes).
         /// </summary>
         public void ClearRequireUpdates() => data.ClearRequireUpdates();
+
+        public void RefreshAllocatedBrickLists() => data.RefreshAllocatedBrickLists();
 
         /// <summary>
         /// Gets the object-to-world transformation matrix for this entity.
