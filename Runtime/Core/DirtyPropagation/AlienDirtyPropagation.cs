@@ -874,7 +874,8 @@ namespace Voxelis
         {
             float linear = math.length(a.LinearVelocity - b.LinearVelocity) * deltaTime;
             float influenceRadius = Sector.SECTOR_SIZE_IN_BLOCKS;
-            float angular = math.length(a.AngularVelocity - b.AngularVelocity) * influenceRadius * deltaTime;
+            // TODO: Tighten this with pair-local lever-arm displacement instead of waking on any angular motion.
+            float angular = (math.length(a.AngularVelocity) + math.length(b.AngularVelocity)) * influenceRadius * deltaTime;
             return linear + angular > threshold;
         }
 
