@@ -26,14 +26,37 @@ public class VoxelisXDebugGUI : MonoBehaviour
     [SerializeField] private Color brickBorderColor = new Color(0f, 1f, 0f, 1.0f);
     [SerializeField] private Color brickBorderColorDirty = new Color(0f, 1f, 1f, 1.0f);
 
+    private const float FpsWindowSeconds = 30f;
+    private const float PerformanceUpdateIntervalSeconds = 0.1f;
+    private const int CurrentSamplesPerPixel = 1;
+    private const int FpsGraphWidth = 320;
+    private const int FpsGraphHeight = 76;
+
     private bool isVisible;
     private GUIStyle boxStyle;
     private GUIStyle buttonStyle;
     private GUIStyle labelStyle;
+    private GUIStyle graphLabelStyle;
     private bool stylesInitialized = false;
 
     // Runtime line rendering
     private Material lineMaterial;
+    private Texture2D graphTexture;
+    private Color[] graphPixels;
+    private bool graphTextureDirty = true;
+
+    private readonly Queue<FpsSample> fpsSamples = new Queue<FpsSample>();
+    private float currentFps;
+    private float currentFrameTimeMs;
+    private float currentMraysPerSecond;
+    private float fpsEma;
+    private float fpsWindowMin;
+    private float fpsWindowMax;
+    private float performanceSampleElapsed;
+    private int performanceSampleFrameCount;
+    private float performanceSampleMinFps;
+    private float performanceSampleMaxFps;
+    private bool hasFpsStats;
 
     // Rendering mode detection
     private enum RenderingMode
@@ -42,6 +65,22 @@ public class VoxelisXDebugGUI : MonoBehaviour
         RayTraced,
         MeshingFallback,
         Hybrid
+    }
+
+    private struct FpsSample
+    {
+        public readonly float Time;
+        public readonly float Fps;
+        public readonly float MinFps;
+        public readonly float MaxFps;
+
+        public FpsSample(float time, float fps, float minFps, float maxFps)
+        {
+            Time = time;
+            Fps = fps;
+            MinFps = minFps;
+            MaxFps = maxFps;
+        }
     }
 
     private void Start()
@@ -77,6 +116,8 @@ public class VoxelisXDebugGUI : MonoBehaviour
 
     private void Update()
     {
+        UpdatePerformanceStats();
+
         // Toggle visibility with P key
         if (Input.GetKeyDown(toggleKey))
         {
@@ -89,6 +130,11 @@ public class VoxelisXDebugGUI : MonoBehaviour
         if (lineMaterial != null)
         {
             DestroyImmediate(lineMaterial);
+        }
+
+        if (graphTexture != null)
+        {
+            DestroyImmediate(graphTexture);
         }
     }
 
@@ -113,6 +159,11 @@ public class VoxelisXDebugGUI : MonoBehaviour
         labelStyle.normal.textColor = Color.white;
         labelStyle.fontSize = 12;
         labelStyle.padding = new RectOffset(5, 5, 2, 2);
+        labelStyle.richText = true;
+
+        graphLabelStyle = new GUIStyle(labelStyle);
+        graphLabelStyle.fontSize = 10;
+        graphLabelStyle.padding = new RectOffset(2, 2, 0, 0);
 
         stylesInitialized = true;
     }
@@ -126,9 +177,78 @@ public class VoxelisXDebugGUI : MonoBehaviour
         }
 
         Texture2D texture = new Texture2D(width, height);
+        texture.hideFlags = HideFlags.HideAndDontSave;
         texture.SetPixels(pixels);
         texture.Apply();
         return texture;
+    }
+
+    private void UpdatePerformanceStats()
+    {
+        float deltaTime = Time.unscaledDeltaTime;
+        if (deltaTime <= 0f)
+        {
+            return;
+        }
+
+        float instantFps = 1f / deltaTime;
+        performanceSampleElapsed += deltaTime;
+        performanceSampleFrameCount++;
+
+        if (performanceSampleFrameCount == 1)
+        {
+            performanceSampleMinFps = instantFps;
+            performanceSampleMaxFps = instantFps;
+        }
+        else
+        {
+            performanceSampleMinFps = Mathf.Min(performanceSampleMinFps, instantFps);
+            performanceSampleMaxFps = Mathf.Max(performanceSampleMaxFps, instantFps);
+        }
+
+        float now = Time.unscaledTime;
+        if (!hasFpsStats)
+        {
+            currentFps = instantFps;
+            currentFrameTimeMs = deltaTime * 1000f;
+            fpsEma = instantFps;
+            fpsWindowMin = instantFps;
+            fpsWindowMax = instantFps;
+            currentMraysPerSecond = CalculateMraysPerSecond(currentFps);
+            hasFpsStats = true;
+        }
+        else
+        {
+            float alpha = 1f - Mathf.Exp(-deltaTime / FpsWindowSeconds);
+            fpsEma = Mathf.Lerp(fpsEma, instantFps, alpha);
+        }
+
+        if (performanceSampleElapsed < PerformanceUpdateIntervalSeconds)
+        {
+            return;
+        }
+
+        currentFps = performanceSampleFrameCount / performanceSampleElapsed;
+        currentFrameTimeMs = 1000f / currentFps;
+        currentMraysPerSecond = CalculateMraysPerSecond(currentFps);
+
+        fpsSamples.Enqueue(new FpsSample(now, currentFps, performanceSampleMinFps, performanceSampleMaxFps));
+        while (fpsSamples.Count > 0 && now - fpsSamples.Peek().Time > FpsWindowSeconds)
+        {
+            fpsSamples.Dequeue();
+        }
+
+        fpsWindowMin = performanceSampleMinFps;
+        fpsWindowMax = performanceSampleMaxFps;
+        foreach (FpsSample sample in fpsSamples)
+        {
+            fpsWindowMin = Mathf.Min(fpsWindowMin, sample.MinFps);
+            fpsWindowMax = Mathf.Max(fpsWindowMax, sample.MaxFps);
+        }
+
+        performanceSampleElapsed = 0f;
+        performanceSampleFrameCount = 0;
+        graphTextureDirty = true;
     }
 
     private void OnGUI()
@@ -228,8 +348,13 @@ public class VoxelisXDebugGUI : MonoBehaviour
 
         // Performance info
         GUILayout.Label("<b>Performance:</b>", labelStyle);
-        GUILayout.Label($"  FPS: {(1.0f / Time.deltaTime):F1}", labelStyle);
-        GUILayout.Label($"  Frame Time: {(Time.deltaTime * 1000f):F2} ms", labelStyle);
+        GUILayout.Label($"  FPS: {currentFps:F1}", labelStyle);
+        GUILayout.Label($"  FPS ~30s Avg (EMA): {fpsEma:F1}", labelStyle);
+        GUILayout.Label($"  FPS 30s [min,max]: [{fpsWindowMin:F1}, {fpsWindowMax:F1}]", labelStyle);
+        GUILayout.Label($"  Frame Time: {currentFrameTimeMs:F2} ms", labelStyle);
+        GUILayout.Label($"  Resolution: {Screen.width} x {Screen.height}", labelStyle);
+        GUILayout.Label($"  MRays/sec: {currentMraysPerSecond:F2} (SPP {CurrentSamplesPerPixel})", labelStyle);
+        DrawFpsGraph();
 
         GUILayout.Space(5);
         GUILayout.Label($"<i>Press {toggleKey} to toggle</i>", labelStyle);
@@ -252,6 +377,146 @@ public class VoxelisXDebugGUI : MonoBehaviour
             return RenderingMode.MeshingFallback;
         else
             return RenderingMode.Unknown;
+    }
+
+    private float CalculateMraysPerSecond(float fps)
+    {
+        long pixelCount = (long)Screen.width * Screen.height;
+        return fps * pixelCount * CurrentSamplesPerPixel / 1000000f;
+    }
+
+    private void DrawFpsGraph()
+    {
+        Rect graphRect = GUILayoutUtility.GetRect(FpsGraphWidth, FpsGraphHeight, GUILayout.ExpandWidth(true));
+        if (Event.current.type != EventType.Repaint || fpsSamples.Count == 0)
+        {
+            return;
+        }
+
+        if (graphTexture == null)
+        {
+            graphTexture = new Texture2D(FpsGraphWidth, FpsGraphHeight, TextureFormat.RGBA32, false);
+            graphTexture.hideFlags = HideFlags.HideAndDontSave;
+            graphTexture.wrapMode = TextureWrapMode.Clamp;
+            graphTexture.filterMode = FilterMode.Bilinear;
+            graphPixels = new Color[FpsGraphWidth * FpsGraphHeight];
+            graphTextureDirty = true;
+        }
+
+        float graphMaxFps = Mathf.Max(30f, Mathf.Ceil(fpsWindowMax / 30f) * 30f);
+        if (graphTextureDirty)
+        {
+            RebuildFpsGraphTexture(graphMaxFps);
+            graphTextureDirty = false;
+        }
+
+        GUI.DrawTexture(graphRect, graphTexture);
+
+        GUI.Label(new Rect(graphRect.x + 4f, graphRect.y + 2f, graphRect.width - 8f, 16f),
+            $"FPS over {FpsWindowSeconds:F0}s", graphLabelStyle);
+
+        TextAnchor previousAlignment = graphLabelStyle.alignment;
+        graphLabelStyle.alignment = TextAnchor.UpperRight;
+        GUI.Label(new Rect(graphRect.x + 4f, graphRect.y + 2f, graphRect.width - 8f, 16f),
+            $"{graphMaxFps:F0}", graphLabelStyle);
+        GUI.Label(new Rect(graphRect.x + 4f, graphRect.yMax - 16f, graphRect.width - 8f, 16f),
+            "0", graphLabelStyle);
+        graphLabelStyle.alignment = previousAlignment;
+    }
+
+    private void RebuildFpsGraphTexture(float graphMaxFps)
+    {
+        Color background = new Color(0.04f, 0.04f, 0.04f, 0.85f);
+        Color grid = new Color(1f, 1f, 1f, 0.12f);
+        Color line = new Color(0.2f, 0.85f, 1f, 1f);
+
+        for (int i = 0; i < graphPixels.Length; i++)
+        {
+            graphPixels[i] = background;
+        }
+
+        DrawGraphGridLine(0.25f, grid);
+        DrawGraphGridLine(0.5f, grid);
+        DrawGraphGridLine(0.75f, grid);
+
+        float now = Time.unscaledTime;
+        bool hasPrevious = false;
+        Vector2Int previous = Vector2Int.zero;
+
+        foreach (FpsSample sample in fpsSamples)
+        {
+            float age = now - sample.Time;
+            int x = FpsGraphWidth - 1 - Mathf.RoundToInt(Mathf.Clamp01(age / FpsWindowSeconds) * (FpsGraphWidth - 1));
+            int y = Mathf.RoundToInt(Mathf.Clamp01(sample.Fps / graphMaxFps) * (FpsGraphHeight - 1));
+            Vector2Int point = new Vector2Int(x, y);
+
+            if (hasPrevious)
+            {
+                DrawGraphLine(previous, point, line);
+            }
+
+            previous = point;
+            hasPrevious = true;
+        }
+
+        graphTexture.SetPixels(graphPixels);
+        graphTexture.Apply(false);
+    }
+
+    private void DrawGraphGridLine(float normalizedHeight, Color color)
+    {
+        int y = Mathf.RoundToInt(Mathf.Clamp01(normalizedHeight) * (FpsGraphHeight - 1));
+        for (int x = 0; x < FpsGraphWidth; x++)
+        {
+            graphPixels[y * FpsGraphWidth + x] = color;
+        }
+    }
+
+    private void DrawGraphLine(Vector2Int from, Vector2Int to, Color color)
+    {
+        int x0 = from.x;
+        int y0 = from.y;
+        int x1 = to.x;
+        int y1 = to.y;
+        int dx = Mathf.Abs(x1 - x0);
+        int sx = x0 < x1 ? 1 : -1;
+        int dy = -Mathf.Abs(y1 - y0);
+        int sy = y0 < y1 ? 1 : -1;
+        int error = dx + dy;
+
+        while (true)
+        {
+            DrawGraphPoint(x0, y0, color);
+            DrawGraphPoint(x0, y0 - 1, color);
+
+            if (x0 == x1 && y0 == y1)
+            {
+                break;
+            }
+
+            int error2 = 2 * error;
+            if (error2 >= dy)
+            {
+                error += dy;
+                x0 += sx;
+            }
+
+            if (error2 <= dx)
+            {
+                error += dx;
+                y0 += sy;
+            }
+        }
+    }
+
+    private void DrawGraphPoint(int x, int y, Color color)
+    {
+        if (x < 0 || x >= FpsGraphWidth || y < 0 || y >= FpsGraphHeight)
+        {
+            return;
+        }
+
+        graphPixels[y * FpsGraphWidth + x] = color;
     }
 
     private unsafe void OnRenderObject()
