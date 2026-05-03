@@ -22,6 +22,7 @@ Shader "VoxelisX/BrickRTTest"
             #define SIZE_IN_BRICKS_SQUARED 256
             #define BRICK_DDA_MAX_STEPS 36
 
+            #include "DDA.hlsl"
             #include "RayPayload.hlsl"
             #include "Utils.hlsl"
             #include "Assets/VoxelisX/VoxelMaterials.hlsl"
