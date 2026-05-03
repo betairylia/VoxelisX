@@ -20,6 +20,7 @@ Shader "VoxelisX/BrickRTTest"
             #define SIZE_IN_BLOCKS 8
             #define SIZE_IN_BRICKS 16
             #define SIZE_IN_BRICKS_SQUARED 256
+            #define BRICK_DDA_MAX_STEPS 36
 
             #include "RayPayload.hlsl"
             #include "Utils.hlsl"
@@ -92,11 +93,48 @@ Shader "VoxelisX/BrickRTTest"
                 // return 1;
             }
 
-            int ReadBrickBuf(int bid, int3 pos)
+            inline int ReadBrickBuf(int bid, int3 pos)
             {
                 return (g_bricks[bid * 257 + 1 + (pos.x/2 + pos.y*4 + pos.z*32)] >> ((~(pos.x & 0b01)) << 4)) & 0xFFFF;
             }
-            
+
+            inline bool ShouldTerminateBrickDDA(int blk, int previousTransparentBlock)
+            {
+                bool shouldTerminate = IsOpaque(blk);
+                shouldTerminate |= (previousTransparentBlock != -1) && (blk != previousTransparentBlock);
+                return shouldTerminate;
+            }
+
+            inline bool TraceBrickDDA(int bid, float3 entryPositionInBrick, float3 rayDir, float entryT, int3 entryNormal, out DDAHit hit, out int materialID)
+            {
+                DDAClearHit(hit);
+                materialID = 0;
+
+                int3 brickGridSize = int3(SIZE_IN_BLOCKS, SIZE_IN_BLOCKS, SIZE_IN_BLOCKS);
+                DDACursor cursor = DDACreateCursor(entryPositionInBrick, rayDir, brickGridSize);
+                int prevTransparentBlock = -1;
+
+                [unroll]for(int i = 0; i < BRICK_DDA_MAX_STEPS; i++)
+                {
+                    if(!DDAIsInside(cursor, brickGridSize)) break;
+
+                    int blk = ReadBrickBuf(bid, cursor.cell);
+                    bool shouldTerminate = ShouldTerminateBrickDDA(blk, prevTransparentBlock);
+                    prevTransparentBlock = blk;
+
+                    if(shouldTerminate)
+                    {
+                        materialID = blk;
+                        DDAMakeHit(cursor, entryT, entryNormal, hit);
+                        return true;
+                    }
+
+                    DDAStep(cursor);
+                }
+
+                return false;
+            }
+
             [shader("intersection")]
             void IntersectionMain()
             {
@@ -162,52 +200,10 @@ Shader "VoxelisX/BrickRTTest"
                     // ReportHit(hitT, 0, attrib);
                     // return;
                     
-                    // DDA Tracing
-                    // Get the BLAS transformation matrix (object-to-world)
-                    float3x4 objectToWorld = ObjectToWorld3x4();
-                    int3 sectorPos = floor(float3(objectToWorld[0][3], objectToWorld[1][3], objectToWorld[2][3]));
-                    
-                    int3 brickPos = (int3(bX, bY, bZ) + sectorPos);
-                    // int3 brickPos = (int3(bX, bY, bZ)) * SIZE_IN_BLOCKS;
-                    // float3 newRayPos = frac(rayOrigin + rayDir * (hitT + 0.0001f)) * SIZE_IN_BLOCKS;
-                    float3 newRayPos = clamp(rayOrigin + rayDir * hitT - float3(bX, bY, bZ), 0.0f, SIZE_IN_BLOCKS - 0.0001f);
-                    int3 blockPos = floor(newRayPos + 0.);
-                    int3 rayStep = int3(sign(rayDir));
-                    float3 deltaDist = abs(length(rayDir) / rayDir);
-                    float3 sideDist = (sign(rayDir) * (float3(blockPos) - newRayPos) + (sign(rayDir) * 0.5) + 0.5) * deltaDist;
-
-                    bool3 mask = bool3(false, false, false);
-
-                    int prevTransparentBlock = -1;
-
-                    // bool hit = true;
-                    bool hit = false;
-                    [unroll]for(int i = 0; i < 36; i++)
-                    // for(int i = 0; i < 0; i++)
-                    {
-                        if(any(blockPos < 0) || any(blockPos >= SIZE_IN_BLOCKS)) break;
-                        // if(hit || map(blockPos + brickPos))
-                        // if(hit || ReadBrickBuf(brick, blockPos))
-                        int blk = ReadBrickBuf(bid, blockPos);
-
-                        // Should Terminate?
-                        bool shouldTerminate = IsOpaque(blk);
-                        shouldTerminate |= (prevTransparentBlock != -1) && (blk != prevTransparentBlock);
-                        
-                        prevTransparentBlock = blk;
-                        
-                        if(hit || shouldTerminate)
-                        {
-                            attrib.normal = (i == 0) * attrib.normal + (i > 0) * half3(mask) * (-rayStep);
-                            // attrib.color = half4(((blk >> 11) & 0x1F) / 31.0, ((blk >> 6) & 0x1F) / 31.0, ((blk >> 1) & 0x1F) / 31.0, blk & 0b01);
-                            attrib.matID = blk;
-                            hitT += dot(mask, sideDist - deltaDist);// / 8.0;
-                            hit = true; break;
-                        }
-                        mask = (sideDist.xyz <= min(sideDist.yzx, sideDist.zxy));
-                        sideDist += float3(mask) * deltaDist;
-                        blockPos += int3(mask) * rayStep;
-                    }
+                    float3 entryPositionInBrick = rayOrigin + rayDir * hitT - float3(bX, bY, bZ);
+                    DDAHit ddaHit;
+                    int materialID;
+                    bool hit = TraceBrickDDA(bid, entryPositionInBrick, rayDir, hitT, hitNormal, ddaHit, materialID);
 
                     // attrib.color = half3(blockPos / 8.0);
                     // attrib.color = half4(0.4, 0.8, 0.5, 0.2 * (blockPos.y == 0));
@@ -217,7 +213,9 @@ Shader "VoxelisX/BrickRTTest"
                     // Report the hit with the computed distance
                     if(hit)
                     {
-                        ReportHit(hitT, 0, attrib);
+                        attrib.normal = ddaHit.normal;
+                        attrib.matID = materialID;
+                        ReportHit(ddaHit.t, 0, attrib);
                     }
                 }
             }
