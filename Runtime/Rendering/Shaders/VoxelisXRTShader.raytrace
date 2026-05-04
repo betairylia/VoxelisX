@@ -45,6 +45,95 @@ uint g_IndirectRadianceHistoryValid = 0;
 uint g_BounceCountOpaque;
 uint g_BounceCountTransparent;
 uint g_spp;
+uint g_TemporalRadianceEnabled = 1;
+uint g_TemporalRadianceBilinearHistory = 1;
+uint g_TemporalRadianceDepthRejectionEnabled = 1;
+uint g_TemporalRadianceNormalRejectionEnabled = 1;
+float g_TemporalRadianceCurrentFrameMinWeight = 0.0f;
+float g_TemporalRadianceDepthTolerance = 0.05f;
+float g_TemporalRadianceRelativeDepthTolerance = 0.01f;
+float g_TemporalRadianceNormalThreshold = 0.85f;
+
+float4 LoadIndirectRadianceHistoryPoint(float2 uv, uint2 launchDim)
+{
+    float2 historyCoord = uv * float2(launchDim.x - 1, launchDim.y - 1) - float2(0.5f, 0.5f);
+    int2 historyIndex = clamp((int2)round(historyCoord), int2(0, 0), int2(launchDim) - int2(1, 1));
+    return g_PreviousIndirectRadianceHistory.Load(int3(historyIndex.x, historyIndex.y, 0));
+}
+
+float4 LoadIndirectRadianceHistoryBilinear(float2 uv, uint2 launchDim)
+{
+    float2 historyCoord = uv * float2(launchDim.x - 1, launchDim.y - 1) - float2(0.5f, 0.5f);
+    int2 baseCoord = (int2)floor(historyCoord);
+    float2 blend = frac(historyCoord);
+    int2 maxCoord = int2(launchDim) - int2(1, 1);
+
+    int2 coord00 = clamp(baseCoord, int2(0, 0), maxCoord);
+    int2 coord10 = clamp(baseCoord + int2(1, 0), int2(0, 0), maxCoord);
+    int2 coord01 = clamp(baseCoord + int2(0, 1), int2(0, 0), maxCoord);
+    int2 coord11 = clamp(baseCoord + int2(1, 1), int2(0, 0), maxCoord);
+
+    float4 h00 = g_PreviousIndirectRadianceHistory.Load(int3(coord00.x, coord00.y, 0));
+    float4 h10 = g_PreviousIndirectRadianceHistory.Load(int3(coord10.x, coord10.y, 0));
+    float4 h01 = g_PreviousIndirectRadianceHistory.Load(int3(coord01.x, coord01.y, 0));
+    float4 h11 = g_PreviousIndirectRadianceHistory.Load(int3(coord11.x, coord11.y, 0));
+
+    return lerp(lerp(h00, h10, blend.x), lerp(h01, h11, blend.x), blend.y);
+}
+
+float LoadDepthHistoryPoint(float2 uv, uint2 launchDim)
+{
+    float2 historyCoord = uv * float2(launchDim.x - 1, launchDim.y - 1) - float2(0.5f, 0.5f);
+    int2 historyIndex = clamp((int2)round(historyCoord), int2(0, 0), int2(launchDim) - int2(1, 1));
+    return g_PreviousDepthHistory.Load(int3(historyIndex.x, historyIndex.y, 0));
+}
+
+float LoadDepthHistoryBilinear(float2 uv, uint2 launchDim)
+{
+    float2 historyCoord = uv * float2(launchDim.x - 1, launchDim.y - 1) - float2(0.5f, 0.5f);
+    int2 baseCoord = (int2)floor(historyCoord);
+    float2 blend = frac(historyCoord);
+    int2 maxCoord = int2(launchDim) - int2(1, 1);
+
+    int2 coord00 = clamp(baseCoord, int2(0, 0), maxCoord);
+    int2 coord10 = clamp(baseCoord + int2(1, 0), int2(0, 0), maxCoord);
+    int2 coord01 = clamp(baseCoord + int2(0, 1), int2(0, 0), maxCoord);
+    int2 coord11 = clamp(baseCoord + int2(1, 1), int2(0, 0), maxCoord);
+
+    float h00 = g_PreviousDepthHistory.Load(int3(coord00.x, coord00.y, 0));
+    float h10 = g_PreviousDepthHistory.Load(int3(coord10.x, coord10.y, 0));
+    float h01 = g_PreviousDepthHistory.Load(int3(coord01.x, coord01.y, 0));
+    float h11 = g_PreviousDepthHistory.Load(int3(coord11.x, coord11.y, 0));
+
+    return lerp(lerp(h00, h10, blend.x), lerp(h01, h11, blend.x), blend.y);
+}
+
+float4 LoadNormalHistoryPoint(float2 uv, uint2 launchDim)
+{
+    float2 historyCoord = uv * float2(launchDim.x - 1, launchDim.y - 1) - float2(0.5f, 0.5f);
+    int2 historyIndex = clamp((int2)round(historyCoord), int2(0, 0), int2(launchDim) - int2(1, 1));
+    return g_PreviousNormalHistory.Load(int3(historyIndex.x, historyIndex.y, 0));
+}
+
+float4 LoadNormalHistoryBilinear(float2 uv, uint2 launchDim)
+{
+    float2 historyCoord = uv * float2(launchDim.x - 1, launchDim.y - 1) - float2(0.5f, 0.5f);
+    int2 baseCoord = (int2)floor(historyCoord);
+    float2 blend = frac(historyCoord);
+    int2 maxCoord = int2(launchDim) - int2(1, 1);
+
+    int2 coord00 = clamp(baseCoord, int2(0, 0), maxCoord);
+    int2 coord10 = clamp(baseCoord + int2(1, 0), int2(0, 0), maxCoord);
+    int2 coord01 = clamp(baseCoord + int2(0, 1), int2(0, 0), maxCoord);
+    int2 coord11 = clamp(baseCoord + int2(1, 1), int2(0, 0), maxCoord);
+
+    float4 h00 = g_PreviousNormalHistory.Load(int3(coord00.x, coord00.y, 0));
+    float4 h10 = g_PreviousNormalHistory.Load(int3(coord10.x, coord10.y, 0));
+    float4 h01 = g_PreviousNormalHistory.Load(int3(coord01.x, coord01.y, 0));
+    float4 h11 = g_PreviousNormalHistory.Load(int3(coord11.x, coord11.y, 0));
+
+    return lerp(lerp(h00, h10, blend.x), lerp(h01, h11, blend.x), blend.y);
+}
 
 // Uncomment this pragma for debugging the HLSL code in PIX. GPU performance will be impacted.
 //#pragma enable_ray_tracing_shader_debug_symbols
@@ -72,8 +161,8 @@ void MainRayGenShader()
     // Initial random number generator seed for this pixel. The rngState will change every time we draw a random number.
     uint rngState = uint(uint(launchIndex.x) * uint(1973) + uint(launchIndex.y) * uint(9277) + uint(g_ConvergenceStep + g_FrameIndex) * uint(26699)) | uint(1);
 
-    float2 jitter = float2(RandomFloat01(rngState), RandomFloat01(rngState)) - float2(0.5, 0.5);
-    // float2 jitter = float2(0, 0);
+    // float2 jitter = float2(RandomFloat01(rngState), RandomFloat01(rngState)) - float2(0.5, 0.5);
+    float2 jitter = float2(0, 0);
 
     float2 ndcCoords = (frameCoord + jitter) / float2(launchDim.x - 1, launchDim.y - 1);
 
@@ -118,6 +207,7 @@ void MainRayGenShader()
     float3 normal = float3(0, 0, 0);
     float3 albedo = float3(0, 0, 0);
     float shadow = 1.0f;
+    float distanceFromCamera = K_T_MAX;
 
     bool isSky = false;
     
@@ -142,6 +232,8 @@ void MainRayGenShader()
         wpos = payload.bounceRayOrigin;
         normal = payload.worldNormal;
         albedo = payload.albedo;
+        float3 viewForward = -normalize(g_CurrentCameraToWorld._m02_m12_m22);
+        distanceFromCamera = dot(wpos - g_CameraWorldPosition, viewForward);
 
         //////////////////////////////////////////
         // Reprojection Data
@@ -208,7 +300,7 @@ void MainRayGenShader()
 
         do
         {
-            if(payload.bounceIndexOpaque==2) { ray.TMax = 20; }
+            // if(payload.bounceIndexOpaque==2) { ray.TMax = 20; }
             TraceRay(g_AccelStruct, 0 + (5 << 11), 0xFF, 0, 1, missShaderIndex, ray, payload);
 
             indirectIncidentRadiance += payload.emission * throughput;
@@ -251,6 +343,7 @@ void MainRayGenShader()
 
     bool canReprojectIndirect =
         !isSky &&
+        (g_TemporalRadianceEnabled != 0) &&
         (g_IndirectRadianceHistoryValid != 0) &&
         (previousSurfaceViewDepth > 0.00001f) &&
         all(previousUV >= float2(0.0f, 0.0f)) &&
@@ -259,8 +352,26 @@ void MainRayGenShader()
     float3 accumulatedIndirectRadiance = indirectIncidentRadiance;
     if (canReprojectIndirect)
     {
-        // History sampling and rejection will replace this no-op in the next step.
-        accumulatedIndirectRadiance = indirectIncidentRadiance;
+        float4 previousIndirectRadiance = (g_TemporalRadianceBilinearHistory != 0)
+            ? LoadIndirectRadianceHistoryBilinear(previousUV, launchDim)
+            : LoadIndirectRadianceHistoryPoint(previousUV, launchDim);
+        float previousDepth = (g_TemporalRadianceBilinearHistory != 0)
+            ? LoadDepthHistoryBilinear(previousUV, launchDim)
+            : LoadDepthHistoryPoint(previousUV, launchDim);
+        float4 previousNormal = (g_TemporalRadianceBilinearHistory != 0)
+            ? LoadNormalHistoryBilinear(previousUV, launchDim)
+            : LoadNormalHistoryPoint(previousUV, launchDim);
+
+        float depthTolerance = max(g_TemporalRadianceDepthTolerance, previousSurfaceViewDepth * g_TemporalRadianceRelativeDepthTolerance);
+        bool depthAccept = (g_TemporalRadianceDepthRejectionEnabled == 0) || (abs(previousDepth - previousSurfaceViewDepth) <= depthTolerance);
+        bool normalAccept = (g_TemporalRadianceNormalRejectionEnabled == 0) || (previousNormal.a > 0.001f && dot(normalize(previousNormal.xyz), normalize(normal)) > g_TemporalRadianceNormalThreshold);
+
+        if (previousIndirectRadiance.a > 0.001f && depthAccept && normalAccept)
+        {
+            float3 previousIndirectIncidentRadiance = previousIndirectRadiance.rgb / previousIndirectRadiance.a;
+            float currentFrameWeight = max(g_TemporalRadianceCurrentFrameMinWeight, 1.0f / float(g_ConvergenceStep + 1));
+            accumulatedIndirectRadiance = lerp(previousIndirectIncidentRadiance, indirectIncidentRadiance, currentFrameWeight);
+        }
     }
 
     //////////////////////////////////////////
@@ -275,12 +386,10 @@ void MainRayGenShader()
     // RenderTarget[launchIndex] = float4(payload.albedo, 1);
     
     // Calculate depth as distance along view direction (point-to-plane) from the near plane
-    float3 viewForward = -normalize(g_CurrentCameraToWorld._m02_m12_m22);
-    float distanceFromCamera = dot(wpos - g_CameraWorldPosition, viewForward);
     // float depthFromNearPlane = distanceFromCamera - _ProjectionParams.y; // _ProjectionParams.y is the near plane distance
     float depth = LinearEyeDepth(distanceFromCamera, _ZBufferParams);
     DepthTarget[launchIndex] = depth;
-    g_CurrentDepthHistory[launchIndex] = depth;
+    g_CurrentDepthHistory[launchIndex] = distanceFromCamera;
     NormalTarget[launchIndex] = float4(normal, 0);
     g_CurrentNormalHistory[launchIndex] = float4(normal, !isSky);
     AlbedoTarget[launchIndex] = float4(albedo, 1);

@@ -31,6 +31,14 @@ public class VoxelisXRenderPass : ScriptableRenderPass
     private int bounceCountTransparent = 5;
     private int samplesPerPixel = 1;
     private VoxelisXRendererFeature.DebugView debugView = VoxelisXRendererFeature.DebugView.Regular;
+    private bool enableTemporalRadiance = true;
+    private float temporalRadianceCurrentFrameMinWeight = 0.0f;
+    private bool temporalRadianceDepthRejection = true;
+    private float temporalRadianceDepthTolerance = 0.05f;
+    private float temporalRadianceRelativeDepthTolerance = 0.01f;
+    private bool temporalRadianceNormalRejection = true;
+    private float temporalRadianceNormalThreshold = 0.85f;
+    private bool temporalRadianceBilinearHistory = true;
 
     /// <summary>
     /// Post-process material for copying depth and flipping render targets if needed.
@@ -158,6 +166,14 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         internal int bounceCountTransparent;
         internal int samplesPerPixel;
         internal VoxelisXRendererFeature.DebugView debugView;
+        internal bool enableTemporalRadiance;
+        internal float temporalRadianceCurrentFrameMinWeight;
+        internal bool temporalRadianceDepthRejection;
+        internal float temporalRadianceDepthTolerance;
+        internal float temporalRadianceRelativeDepthTolerance;
+        internal bool temporalRadianceNormalRejection;
+        internal float temporalRadianceNormalThreshold;
+        internal bool temporalRadianceBilinearHistory;
 
         internal Light mainLight;
         
@@ -239,6 +255,26 @@ public class VoxelisXRenderPass : ScriptableRenderPass
     public void ConfigureDebugView(VoxelisXRendererFeature.DebugView debugView)
     {
         this.debugView = debugView;
+    }
+
+    public void ConfigureTemporalRadianceSettings(
+        bool enabled,
+        float currentFrameMinWeight,
+        bool depthRejection,
+        float depthTolerance,
+        float relativeDepthTolerance,
+        bool normalRejection,
+        float normalThreshold,
+        bool bilinearHistory)
+    {
+        enableTemporalRadiance = enabled;
+        temporalRadianceCurrentFrameMinWeight = Mathf.Clamp01(currentFrameMinWeight);
+        temporalRadianceDepthRejection = depthRejection;
+        temporalRadianceDepthTolerance = Mathf.Max(0.0f, depthTolerance);
+        temporalRadianceRelativeDepthTolerance = Mathf.Max(0.0f, relativeDepthTolerance);
+        temporalRadianceNormalRejection = normalRejection;
+        temporalRadianceNormalThreshold = Mathf.Clamp(normalThreshold, -1.0f, 1.0f);
+        temporalRadianceBilinearHistory = bilinearHistory;
     }
 
     /// <summary>
@@ -338,6 +374,14 @@ public class VoxelisXRenderPass : ScriptableRenderPass
             passData.bounceCountTransparent = bounceCountTransparent;
             passData.samplesPerPixel = samplesPerPixel;
             passData.debugView = debugView;
+            passData.enableTemporalRadiance = enableTemporalRadiance;
+            passData.temporalRadianceCurrentFrameMinWeight = temporalRadianceCurrentFrameMinWeight;
+            passData.temporalRadianceDepthRejection = temporalRadianceDepthRejection;
+            passData.temporalRadianceDepthTolerance = temporalRadianceDepthTolerance;
+            passData.temporalRadianceRelativeDepthTolerance = temporalRadianceRelativeDepthTolerance;
+            passData.temporalRadianceNormalRejection = temporalRadianceNormalRejection;
+            passData.temporalRadianceNormalThreshold = temporalRadianceNormalThreshold;
+            passData.temporalRadianceBilinearHistory = temporalRadianceBilinearHistory;
 
             passData.frameId = voxelisX.frameId;
 
@@ -422,15 +466,14 @@ public class VoxelisXRenderPass : ScriptableRenderPass
     static void RenderPass(PassData data, UnsafeGraphContext context)
     {
         var prevCameraView = data.cameraState.mat;
-        if (data.cameraMat != data.cameraState.mat)
+        data.cameraState.mat = data.cameraMat;
+        if (data.historyValid)
         {
-            data.cameraState.mat = data.cameraMat;
-            data.cameraState.frames = 0;
+            data.cameraState.frames = Mathf.Min(data.cameraState.frames + 1, data.avgFrames);
         }
         else
         {
-            data.cameraState.mat = data.cameraMat;
-            data.cameraState.frames = Mathf.Min(data.cameraState.frames + 1, data.avgFrames);
+            data.cameraState.frames = 0;
         }
         
         var natcmd = CommandBufferHelpers.GetNativeCommandBuffer(context.cmd);
@@ -471,6 +514,14 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_BounceCountOpaque", data.bounceCountOpaque);
         context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_BounceCountTransparent", data.bounceCountTransparent);
         context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_spp", data.samplesPerPixel);
+        context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_TemporalRadianceEnabled", data.enableTemporalRadiance ? 1 : 0);
+        context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_TemporalRadianceBilinearHistory", data.temporalRadianceBilinearHistory ? 1 : 0);
+        context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_TemporalRadianceDepthRejectionEnabled", data.temporalRadianceDepthRejection ? 1 : 0);
+        context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_TemporalRadianceNormalRejectionEnabled", data.temporalRadianceNormalRejection ? 1 : 0);
+        context.cmd.SetRayTracingFloatParam(data.voxShaderRT, "g_TemporalRadianceCurrentFrameMinWeight", data.temporalRadianceCurrentFrameMinWeight);
+        context.cmd.SetRayTracingFloatParam(data.voxShaderRT, "g_TemporalRadianceDepthTolerance", data.temporalRadianceDepthTolerance);
+        context.cmd.SetRayTracingFloatParam(data.voxShaderRT, "g_TemporalRadianceRelativeDepthTolerance", data.temporalRadianceRelativeDepthTolerance);
+        context.cmd.SetRayTracingFloatParam(data.voxShaderRT, "g_TemporalRadianceNormalThreshold", data.temporalRadianceNormalThreshold);
         context.cmd.SetRayTracingFloatParam(data.voxShaderRT, "g_Zoom", Mathf.Tan(Mathf.Deg2Rad * data.fov * 0.5f)); // TODO: Replace this to use camera projection matrix instead
         context.cmd.SetRayTracingFloatParam(data.voxShaderRT, "g_AspectRatio", data.width / (float)data.height);
         context.cmd.SetRayTracingVectorParam(data.voxShaderRT, "g_CameraWorldPosition", data.cameraWorldPosition);

@@ -41,6 +41,16 @@ public class VoxelisXRendererFeature : ScriptableRendererFeature
     [SerializeField, Min(0)] private int bounceCountTransparent = 5;
     [SerializeField, Min(1)] private int samplesPerPixel = 1;
 
+    [Header("Temporal Radiance")]
+    [SerializeField] private bool enableTemporalRadiance = true;
+    [SerializeField, Range(0.0f, 1.0f)] private float temporalRadianceCurrentFrameMinWeight = 0.0f;
+    [SerializeField] private bool temporalRadianceDepthRejection = true;
+    [SerializeField, Min(0.0f)] private float temporalRadianceDepthTolerance = 0.05f;
+    [SerializeField, Min(0.0f)] private float temporalRadianceRelativeDepthTolerance = 0.01f;
+    [SerializeField] private bool temporalRadianceNormalRejection = true;
+    [SerializeField, Range(-1.0f, 1.0f)] private float temporalRadianceNormalThreshold = 0.85f;
+    [SerializeField] private bool temporalRadianceBilinearHistory = true;
+
     [Header("Debug")]
     [SerializeField] private DebugView debugView = DebugView.Regular;
 
@@ -87,6 +97,15 @@ public class VoxelisXRendererFeature : ScriptableRendererFeature
         }
 
         _voxelisXRenderPass.ConfigureRayTracingSettings(bounceCountOpaque, bounceCountTransparent, samplesPerPixel);
+        _voxelisXRenderPass.ConfigureTemporalRadianceSettings(
+            enableTemporalRadiance,
+            temporalRadianceCurrentFrameMinWeight,
+            temporalRadianceDepthRejection,
+            temporalRadianceDepthTolerance,
+            temporalRadianceRelativeDepthTolerance,
+            temporalRadianceNormalRejection,
+            temporalRadianceNormalThreshold,
+            temporalRadianceBilinearHistory);
         _voxelisXRenderPass.ConfigureDebugView(debugView);
         renderer.EnqueuePass(_voxelisXRenderPass);
 
