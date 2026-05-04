@@ -1,0 +1,228 @@
+#ifndef VOXELISX_BRICK_TRACE_INCLUDED
+#define VOXELISX_BRICK_TRACE_INCLUDED
+
+#ifndef SIZE_IN_BLOCKS
+#define SIZE_IN_BLOCKS 8
+#endif
+
+#ifndef SIZE_IN_BRICKS
+#define SIZE_IN_BRICKS 16
+#endif
+
+#ifndef SIZE_IN_BRICKS_SQUARED
+#define SIZE_IN_BRICKS_SQUARED 256
+#endif
+
+#ifndef BRICK_DDA_MAX_STEPS
+#define BRICK_DDA_MAX_STEPS 36
+#endif
+
+struct VoxelisXBrickTraceContext
+{
+    float3 objectRayOrigin;
+    float3 objectRayDirection;
+    float currentRayT;
+    uint primitiveIndex;
+};
+
+struct VoxelisXBrickHit
+{
+    bool hit;
+    float t;
+    int materialID;
+    half3 objectNormal;
+};
+
+struct VoxelisXBrickAABBCandidate
+{
+    bool hit;
+    uint brickID;
+    int3 brickOrigin;
+    float t;
+    int3 normal;
+};
+
+StructuredBuffer<int> g_bricks;
+
+inline VoxelisXBrickHit VoxelisXMakeBrickMiss()
+{
+    VoxelisXBrickHit hit;
+    hit.hit = false;
+    hit.t = 0.0f;
+    hit.materialID = 0;
+    hit.objectNormal = half3(0, 0, 0);
+    return hit;
+}
+
+inline int VoxelisXReadBrick(uint brickID, int3 localBlockPos)
+{
+    return (g_bricks[brickID * 257 + 1 + (localBlockPos.x / 2 + localBlockPos.y * 4 + localBlockPos.z * 32)] >> ((~(localBlockPos.x & 0b01)) << 4)) & 0xFFFF;
+}
+
+inline bool VoxelisXShouldTerminateBrickDDA(int blockID, int previousTransparentBlock)
+{
+    bool shouldTerminate = IsOpaque(blockID);
+    shouldTerminate |= (previousTransparentBlock != -1) && (blockID != previousTransparentBlock);
+    return shouldTerminate;
+}
+
+inline bool VoxelisXIntersectBrickAABB(VoxelisXBrickTraceContext context, out VoxelisXBrickAABBCandidate candidate)
+{
+    candidate.hit = false;
+    candidate.brickID = context.primitiveIndex;
+    candidate.brickOrigin = int3(0, 0, 0);
+    candidate.t = 0.0f;
+    candidate.normal = int3(0, 0, 0);
+
+    int aabbIdx = g_bricks[candidate.brickID * 257];
+    if (aabbIdx == -1)
+    {
+        return false;
+    }
+
+    int bX = SIZE_IN_BLOCKS * (aabbIdx % SIZE_IN_BRICKS);
+    int bY = SIZE_IN_BLOCKS * ((aabbIdx / SIZE_IN_BRICKS) % SIZE_IN_BRICKS);
+    int bZ = SIZE_IN_BLOCKS * (aabbIdx / SIZE_IN_BRICKS_SQUARED);
+
+    float3 aabbMin = float3(bX, bY, bZ);
+    float3 aabbMax = float3(bX + SIZE_IN_BLOCKS, bY + SIZE_IN_BLOCKS, bZ + SIZE_IN_BLOCKS);
+
+    float3 invDir = 1.0f / context.objectRayDirection;
+    float3 t0 = (aabbMin - context.objectRayOrigin) * invDir;
+    float3 t1 = (aabbMax - context.objectRayOrigin) * invDir;
+
+    float3 tmin = min(t0, t1);
+    float3 tmax = max(t0, t1);
+
+    float largestTmin = max(max(tmin.x, tmin.y), tmin.z);
+    float smallestTmax = min(min(tmax.x, tmax.y), tmax.z);
+
+    if (largestTmin > smallestTmax || smallestTmax < 0 || largestTmin > context.currentRayT)
+    {
+        return false;
+    }
+
+    int3 hitNormal;
+    if (largestTmin == tmin.x)
+    {
+        hitNormal = int3(context.objectRayDirection.x > 0 ? -1 : 1, 0, 0);
+    }
+    else if (largestTmin == tmin.y)
+    {
+        hitNormal = int3(0, context.objectRayDirection.y > 0 ? -1 : 1, 0);
+    }
+    else
+    {
+        hitNormal = int3(0, 0, context.objectRayDirection.z > 0 ? -1 : 1);
+    }
+
+    candidate.hit = true;
+    candidate.brickOrigin = int3(bX, bY, bZ);
+    candidate.t = max(0, largestTmin);
+    candidate.normal = hitNormal;
+    return true;
+}
+
+inline bool VoxelisXTraceBrickDDA(uint brickID, float3 entryPositionInBrick, float3 rayDir, float entryT, int3 entryNormal, out DDAHit hit, out int materialID)
+{
+    DDAClearHit(hit);
+    materialID = 0;
+
+    int3 brickGridSize = int3(SIZE_IN_BLOCKS, SIZE_IN_BLOCKS, SIZE_IN_BLOCKS);
+    DDACursor cursor = DDACreateCursor(entryPositionInBrick, rayDir, brickGridSize);
+    int prevTransparentBlock = -1;
+
+    [unroll] for (int i = 0; i < BRICK_DDA_MAX_STEPS; i++)
+    {
+        if (!DDAIsInside(cursor, brickGridSize))
+        {
+            break;
+        }
+
+        int blockID = VoxelisXReadBrick(brickID, cursor.cell);
+        bool shouldTerminate = VoxelisXShouldTerminateBrickDDA(blockID, prevTransparentBlock);
+        prevTransparentBlock = blockID;
+
+        if (shouldTerminate)
+        {
+            materialID = blockID;
+            DDAMakeHit(cursor, entryT, entryNormal, hit);
+            return true;
+        }
+
+        DDAStep(cursor);
+    }
+
+    return false;
+}
+
+inline VoxelisXBrickHit VoxelisXTraceBrickPrimitive(VoxelisXBrickTraceContext context)
+{
+    VoxelisXBrickHit result = VoxelisXMakeBrickMiss();
+
+    VoxelisXBrickAABBCandidate candidate;
+    if (!VoxelisXIntersectBrickAABB(context, candidate))
+    {
+        return result;
+    }
+
+    float3 entryPositionInBrick = context.objectRayOrigin + context.objectRayDirection * candidate.t - float3(candidate.brickOrigin);
+
+    DDAHit ddaHit;
+    int materialID;
+    if (VoxelisXTraceBrickDDA(candidate.brickID, entryPositionInBrick, context.objectRayDirection, candidate.t, candidate.normal, ddaHit, materialID))
+    {
+        result.hit = true;
+        result.t = ddaHit.t;
+        result.materialID = materialID;
+        result.objectNormal = half3(ddaHit.normal);
+    }
+
+    return result;
+}
+
+inline void VoxelisXApplyVoxelClosestHit(inout RayPayload payload, VoxelisXBrickHit hit, float3 worldRayOrigin, float3 worldRayDirection, float currentRayT, float3x4 objectToWorld)
+{
+    int materialID = hit.materialID;
+    VoxelMaterial material = GET_MATERIAL(materialID);
+
+    float3 worldHitPosition = worldRayOrigin + worldRayDirection * currentRayT;
+    float3 worldNormal = mul((float3x3)objectToWorld, hit.objectNormal);
+
+    VoxelMaterial tMat = GET_MATERIAL(payload.previousTransparentMaterial);
+    float3 ext = payload.previousTransparentMaterial == 0 ? float3(1, 1, 1) : exp(-(1 - tMat.albedo) * currentRayT * tMat.extinction);
+
+    if (IsOpaque(materialID))
+    {
+        payload.albedo = material.albedo.rgb * ext;
+        payload.bounceIndexOpaque = payload.bounceIndexOpaque + 1;
+        payload.emission = material.emission.rgb;
+
+        float fresnelFactor = FresnelReflectAmountOpaque(1, material.IOR, worldRayDirection, worldNormal);
+        float specularChance = lerp(material.metallic, 1, fresnelFactor * material.smoothness);
+        float doSpecular = (RandomFloat01(payload.rngState) < specularChance) ? 1 : 0;
+
+        const float3 diffuseRayDir = normalize(worldNormal + RandomUnitVector(payload.rngState));
+        float3 specularRayDir = reflect(worldRayDirection, worldNormal);
+        specularRayDir = normalize(lerp(diffuseRayDir, specularRayDir, material.smoothness));
+        float3 reflectedRayDir = lerp(diffuseRayDir, specularRayDir, doSpecular);
+
+        payload.k = (doSpecular == 1) ? specularChance : 1 - specularChance;
+        payload.bounceRayOrigin = worldHitPosition + K_RAY_ORIGIN_PUSH_OFF * worldNormal;
+        payload.bounceRayDirection = reflectedRayDir;
+        payload.worldNormal = worldNormal;
+    }
+    else
+    {
+        payload.k = 1;
+        payload.albedo = float3(1, 1, 1);
+        payload.emission = float3(0, 0, 0);
+        payload.bounceRayOrigin = worldHitPosition - K_RAY_ORIGIN_PUSH_OFF * worldNormal;
+        payload.bounceRayDirection = worldRayDirection;
+        payload.worldNormal = worldNormal;
+        payload.previousTransparentMaterial = materialID;
+        payload.bounceIndexTransparent = payload.bounceIndexTransparent + 1;
+    }
+}
+
+#endif
