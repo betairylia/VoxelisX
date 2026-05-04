@@ -40,14 +40,101 @@ public class VoxelisXRenderPass : ScriptableRenderPass
     /// <summary>
     /// Stores previous camera state for temporal accumulation.
     /// </summary>
-    internal struct PrevCameraState
+    internal sealed class PrevCameraState
     {
         internal Matrix4x4 mat;
         internal int frames;
+        internal readonly HistoryBuffers history = new HistoryBuffers();
     }
 
     private static Dictionary<Camera, PrevCameraState> prevFrameState = new Dictionary<Camera, PrevCameraState>();
     private int EnvMapID = Shader.PropertyToID("_GlossyEnvironmentCubeMap");
+
+    internal sealed class HistoryBuffers
+    {
+        private RTHandle indirectRadianceA;
+        private RTHandle indirectRadianceB;
+        private RTHandle depthA;
+        private RTHandle depthB;
+        private RTHandle normalA;
+        private RTHandle normalB;
+        private bool useAAsPrevious = true;
+
+        internal bool IsValid { get; private set; }
+
+        internal RTHandle PreviousIndirectRadiance => useAAsPrevious ? indirectRadianceA : indirectRadianceB;
+        internal RTHandle CurrentIndirectRadiance => useAAsPrevious ? indirectRadianceB : indirectRadianceA;
+        internal RTHandle PreviousDepth => useAAsPrevious ? depthA : depthB;
+        internal RTHandle CurrentDepth => useAAsPrevious ? depthB : depthA;
+        internal RTHandle PreviousNormal => useAAsPrevious ? normalA : normalB;
+        internal RTHandle CurrentNormal => useAAsPrevious ? normalB : normalA;
+
+        internal void EnsureAllocated(int width, int height)
+        {
+            RenderTextureDescriptor indirectDesc = MakeHistoryDescriptor(width, height, RenderTextureFormat.ARGBHalf);
+            RenderTextureDescriptor depthDesc = MakeHistoryDescriptor(width, height, RenderTextureFormat.RFloat);
+            RenderTextureDescriptor normalDesc = MakeHistoryDescriptor(width, height, RenderTextureFormat.ARGBHalf);
+
+            bool reallocated = false;
+            reallocated |= RenderingUtils.ReAllocateIfNeeded(
+                ref indirectRadianceA, indirectDesc, FilterMode.Bilinear, TextureWrapMode.Clamp, name: "VoxelisX_HistoryIndirectRadiance_A");
+            reallocated |= RenderingUtils.ReAllocateIfNeeded(
+                ref indirectRadianceB, indirectDesc, FilterMode.Bilinear, TextureWrapMode.Clamp, name: "VoxelisX_HistoryIndirectRadiance_B");
+            reallocated |= RenderingUtils.ReAllocateIfNeeded(
+                ref depthA, depthDesc, FilterMode.Point, TextureWrapMode.Clamp, name: "VoxelisX_HistoryDepth_A");
+            reallocated |= RenderingUtils.ReAllocateIfNeeded(
+                ref depthB, depthDesc, FilterMode.Point, TextureWrapMode.Clamp, name: "VoxelisX_HistoryDepth_B");
+            reallocated |= RenderingUtils.ReAllocateIfNeeded(
+                ref normalA, normalDesc, FilterMode.Point, TextureWrapMode.Clamp, name: "VoxelisX_HistoryNormal_A");
+            reallocated |= RenderingUtils.ReAllocateIfNeeded(
+                ref normalB, normalDesc, FilterMode.Point, TextureWrapMode.Clamp, name: "VoxelisX_HistoryNormal_B");
+
+            if (reallocated)
+            {
+                IsValid = false;
+                useAAsPrevious = true;
+            }
+        }
+
+        internal void SwapAfterWrite()
+        {
+            useAAsPrevious = !useAAsPrevious;
+            IsValid = true;
+        }
+
+        internal void Dispose()
+        {
+            indirectRadianceA?.Release();
+            indirectRadianceB?.Release();
+            depthA?.Release();
+            depthB?.Release();
+            normalA?.Release();
+            normalB?.Release();
+
+            indirectRadianceA = null;
+            indirectRadianceB = null;
+            depthA = null;
+            depthB = null;
+            normalA = null;
+            normalB = null;
+            IsValid = false;
+        }
+
+        private static RenderTextureDescriptor MakeHistoryDescriptor(int width, int height, RenderTextureFormat format)
+        {
+            RenderTextureDescriptor desc = new RenderTextureDescriptor(width, height, format, 0)
+            {
+                enableRandomWrite = true,
+                msaaSamples = 1,
+                volumeDepth = 1,
+                useMipMap = false,
+                autoGenerateMips = false,
+                sRGB = false
+            };
+
+            return desc;
+        }
+    }
 
     /// <summary>
     /// Data passed to the render graph execution function.
@@ -80,6 +167,12 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         internal TextureHandle ShadowMask;
         internal TextureHandle Depth;
         internal TextureHandle MotionVector;
+        internal TextureHandle PreviousIndirectRadianceHistory;
+        internal TextureHandle CurrentIndirectRadianceHistory;
+        internal TextureHandle PreviousDepthHistory;
+        internal TextureHandle CurrentDepthHistory;
+        internal TextureHandle PreviousNormalHistory;
+        internal TextureHandle CurrentNormalHistory;
 
         internal TextureHandle Albedo_dest;
         internal TextureHandle Normal_dest;
@@ -90,6 +183,9 @@ public class VoxelisXRenderPass : ScriptableRenderPass
 
         internal RayTracingShader voxShaderRT;
         internal RayTracingAccelerationStructure voxAS;
+        internal PrevCameraState cameraState;
+        internal HistoryBuffers history;
+        internal bool historyValid;
     }
 
     public class VoxelisXPassData : ContextItem
@@ -174,15 +270,15 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         albedoDesc.colorFormat = RenderTextureFormat.Default;
         TextureHandle RT_Albedo = UniversalRenderer.CreateRenderGraphTexture(
             renderGraph, albedoDesc, "VoxelisX_outAlbedo", false);
-        
+
         RenderTextureDescriptor normalDesc = rtDesc;
-        albedoDesc.colorFormat = RenderTextureFormat.RGB111110Float;
+        normalDesc.colorFormat = RenderTextureFormat.ARGBHalf;
         TextureHandle RT_Normal = UniversalRenderer.CreateRenderGraphTexture(
             renderGraph, normalDesc, "VoxelisX_outNormal", false);
 
         RenderTextureDescriptor depthDesc = rtDesc;
-        depthDesc.colorFormat = RenderTextureFormat.RGFloat;
-        
+        depthDesc.colorFormat = RenderTextureFormat.RFloat;
+
         TextureHandle RT_Depth = UniversalRenderer.CreateRenderGraphTexture(
             renderGraph, depthDesc, "VoxelisX_NormalDepth", false);
 
@@ -193,6 +289,18 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         
         // TextureHandle RT_TAA = UniversalRenderer.CreateRenderGraphTexture(
         //     renderGraph, rtDesc, "VoxelisX_accumulateColor", false);
+
+        Matrix4x4 cameraMat = cameraData.GetViewMatrix();
+
+        PrevCameraState cameraState = GetOrCreateCameraState(cameraData.camera, cameraMat);
+        cameraState.history.EnsureAllocated(cameraData.scaledWidth, cameraData.scaledHeight);
+
+        TextureHandle RT_PreviousIndirectRadianceHistory = renderGraph.ImportTexture(cameraState.history.PreviousIndirectRadiance);
+        TextureHandle RT_CurrentIndirectRadianceHistory = renderGraph.ImportTexture(cameraState.history.CurrentIndirectRadiance);
+        TextureHandle RT_PreviousDepthHistory = renderGraph.ImportTexture(cameraState.history.PreviousDepth);
+        TextureHandle RT_CurrentDepthHistory = renderGraph.ImportTexture(cameraState.history.CurrentDepth);
+        TextureHandle RT_PreviousNormalHistory = renderGraph.ImportTexture(cameraState.history.PreviousNormal);
+        TextureHandle RT_CurrentNormalHistory = renderGraph.ImportTexture(cameraState.history.CurrentNormal);
 
         string passName = "VoxelisX DXR";
 
@@ -207,6 +315,12 @@ public class VoxelisXRenderPass : ScriptableRenderPass
             passData.Normal = RT_Normal;
             passData.Depth = RT_Depth;
             passData.MotionVector = RT_MotionVector;
+            passData.PreviousIndirectRadianceHistory = RT_PreviousIndirectRadianceHistory;
+            passData.CurrentIndirectRadianceHistory = RT_CurrentIndirectRadianceHistory;
+            passData.PreviousDepthHistory = RT_PreviousDepthHistory;
+            passData.CurrentDepthHistory = RT_CurrentDepthHistory;
+            passData.PreviousNormalHistory = RT_PreviousNormalHistory;
+            passData.CurrentNormalHistory = RT_CurrentNormalHistory;
 
             passData.copyDSMat = flip;
             
@@ -215,7 +329,7 @@ public class VoxelisXRenderPass : ScriptableRenderPass
 
             passData.mainLight = frameData.Get<UniversalLightData>().visibleLights[frameData.Get<UniversalLightData>().mainLightIndex].light;
             
-            passData.cameraMat = cameraData.GetViewMatrix();
+            passData.cameraMat = cameraMat;
             passData.cameraToWorldMat = passData.cameraMat.inverse;
             passData.cameraWorldPosition = passData.cameraToWorldMat.MultiplyPoint3x4(Vector3.zero);
             passData.camera = cameraData.camera;
@@ -229,6 +343,9 @@ public class VoxelisXRenderPass : ScriptableRenderPass
 
             passData.voxShaderRT = rayTracingShader;
             passData.voxAS = voxelisX.voxelScene;
+            passData.cameraState = cameraState;
+            passData.history = cameraState.history;
+            passData.historyValid = cameraState.history.IsValid;
 
             var vxPassData = frameData.GetOrCreate<VoxelisXPassData>();
             vxPassData.Color = RT;
@@ -240,6 +357,12 @@ public class VoxelisXRenderPass : ScriptableRenderPass
             builder.UseTexture(RT_Normal, AccessFlags.Write);
             builder.UseTexture(passData.Depth, AccessFlags.Write);
             builder.UseTexture(passData.MotionVector, AccessFlags.Write);
+            builder.UseTexture(passData.PreviousIndirectRadianceHistory, AccessFlags.Read);
+            builder.UseTexture(passData.CurrentIndirectRadianceHistory, AccessFlags.Write);
+            builder.UseTexture(passData.PreviousDepthHistory, AccessFlags.Read);
+            builder.UseTexture(passData.CurrentDepthHistory, AccessFlags.Write);
+            builder.UseTexture(passData.PreviousNormalHistory, AccessFlags.Read);
+            builder.UseTexture(passData.CurrentNormalHistory, AccessFlags.Write);
             builder.UseTexture(passData.Depth_dest, AccessFlags.Write);
             
             // RenderGraph does not see this properly set so ...
@@ -271,32 +394,43 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         // }
     }
 
-    static void RenderPass(PassData data, UnsafeGraphContext context)
+    private static PrevCameraState GetOrCreateCameraState(Camera camera, Matrix4x4 initialCameraMat)
     {
-        if (!prevFrameState.ContainsKey(data.camera))
+        if (!prevFrameState.TryGetValue(camera, out PrevCameraState state))
         {
-            prevFrameState.Add(data.camera, new PrevCameraState(){
-                mat = data.cameraMat,
+            state = new PrevCameraState()
+            {
+                mat = initialCameraMat,
                 frames = 0,
-            });
+            };
+            prevFrameState.Add(camera, state);
         }
 
-        var prevCameraView = prevFrameState[data.camera].mat;
-        if (data.cameraMat != prevFrameState[data.camera].mat)
+        return state;
+    }
+
+    public void Dispose()
+    {
+        foreach (PrevCameraState state in prevFrameState.Values)
         {
-            prevFrameState[data.camera] = new PrevCameraState()
-            {
-                mat = data.cameraMat,
-                frames = 0
-            };
+            state.history.Dispose();
+        }
+
+        prevFrameState.Clear();
+    }
+
+    static void RenderPass(PassData data, UnsafeGraphContext context)
+    {
+        var prevCameraView = data.cameraState.mat;
+        if (data.cameraMat != data.cameraState.mat)
+        {
+            data.cameraState.mat = data.cameraMat;
+            data.cameraState.frames = 0;
         }
         else
         {
-            prevFrameState[data.camera] = new PrevCameraState()
-            {
-                mat = data.cameraMat,
-                frames = Mathf.Min(prevFrameState[data.camera].frames + 1, data.avgFrames),
-            };
+            data.cameraState.mat = data.cameraMat;
+            data.cameraState.frames = Mathf.Min(data.cameraState.frames + 1, data.avgFrames);
         }
         
         var natcmd = CommandBufferHelpers.GetNativeCommandBuffer(context.cmd);
@@ -309,6 +443,12 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "NormalTarget", data.Normal);
         context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "DepthTarget", data.Depth);
         context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "MotionVectorTarget", data.MotionVector);
+        context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "g_PreviousIndirectRadianceHistory", data.PreviousIndirectRadianceHistory);
+        context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "g_CurrentIndirectRadianceHistory", data.CurrentIndirectRadianceHistory);
+        context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "g_PreviousDepthHistory", data.PreviousDepthHistory);
+        context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "g_CurrentDepthHistory", data.CurrentDepthHistory);
+        context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "g_PreviousNormalHistory", data.PreviousNormalHistory);
+        context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "g_CurrentNormalHistory", data.CurrentNormalHistory);
 
         // This works but feels like a super dirty hack ...
         // TODO: FIXME: Maybe PR to PBSky repo so we can use the texture properly ... idk
@@ -326,7 +466,8 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         // context.cmd.SetRayTracingMatrixParam(data.voxShaderRT, "g_PrevViewProjection", prevCameraView);
         
         context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_FrameIndex", Time.frameCount);
-        context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_ConvergenceStep", prevFrameState[data.camera].frames);
+        context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_ConvergenceStep", data.cameraState.frames);
+        context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_IndirectRadianceHistoryValid", data.historyValid ? 1 : 0);
         context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_BounceCountOpaque", data.bounceCountOpaque);
         context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_BounceCountTransparent", data.bounceCountTransparent);
         context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_spp", data.samplesPerPixel);
@@ -340,9 +481,10 @@ public class VoxelisXRenderPass : ScriptableRenderPass
             data.mainLight.color.linear * data.mainLight.intensity * (data.mainLight.useColorTemperature
                 ? Mathf.CorrelatedColorTemperatureToRGB(data.mainLight.colorTemperature)
                 : Color.white));
-        
+
         context.cmd.DispatchRays(data.voxShaderRT, "MainRayGenShader", data.width, data.height, 1, null);
-        
+        data.history.SwapAfterWrite();
+
         // Copy buffers
         // Blitter.BlitTexture(
         //     CommandBufferHelpers.GetNativeCommandBuffer(context.cmd),

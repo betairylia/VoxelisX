@@ -93,4 +93,9 @@ public class VoxelisXRendererFeature : ScriptableRendererFeature
         // _voxelisXPostPass.ConfigureInput(ScriptableRenderPassInput.Motion);
         // renderer.EnqueuePass(_voxelisXPostPass);
     }
+
+    protected override void Dispose(bool disposing)
+    {
+        _voxelisXRenderPass?.Dispose();
+    }
 }

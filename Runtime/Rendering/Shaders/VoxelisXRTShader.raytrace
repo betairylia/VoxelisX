@@ -7,7 +7,7 @@
 #include "Utils.hlsl"
 #include "VoxelisXRayPayloadUtils.hlsl"
 
-#define VOXELISXRT_SHADOW 0
+#define VOXELISXRT_SHADOW 1
 #define VOXELISXRT_BOUNCE 1
 
 RaytracingAccelerationStructure g_AccelStruct : register(t0, space1);
@@ -25,6 +25,12 @@ RWTexture2D<float4> AlbedoTarget;
 RWTexture2D<float4> NormalTarget;
 RWTexture2D<float> DepthTarget;
 RWTexture2D<float2> MotionVectorTarget;
+Texture2D<float4> g_PreviousIndirectRadianceHistory;
+RWTexture2D<float4> g_CurrentIndirectRadianceHistory;
+Texture2D<float> g_PreviousDepthHistory;
+RWTexture2D<float> g_CurrentDepthHistory;
+Texture2D<float4> g_PreviousNormalHistory;
+RWTexture2D<float4> g_CurrentNormalHistory;
 
 TextureCube<float4> g_Sky;
 SamplerState sampler_g_Sky;
@@ -34,6 +40,7 @@ SamplerState sampler_g_Sky;
 float4 g_mainLightColor;
 
 uint g_ConvergenceStep = 10;
+uint g_IndirectRadianceHistoryValid = 0;
 
 uint g_BounceCountOpaque;
 uint g_BounceCountTransparent;
@@ -58,8 +65,9 @@ void MainRayGenShader()
     // Shoot rays through the center of a pixel (plus a jitter).
     float2 frameCoord = launchIndex + float2(0.5, 0.5);
 
-    float3 radiance = float3(0, 0, 0);
-    float3 radiance_direct = float3(0, 0, 0);
+    float3 primaryEmissionRadiance = float3(0, 0, 0);
+    float3 directRadiance = float3(0, 0, 0);
+    float3 indirectIncidentRadiance = float3(0, 0, 0);
 
     // Initial random number generator seed for this pixel. The rngState will change every time we draw a random number.
     uint rngState = uint(uint(launchIndex.x) * uint(1973) + uint(launchIndex.y) * uint(9277) + uint(g_ConvergenceStep + g_FrameIndex) * uint(26699)) | uint(1);
@@ -101,6 +109,11 @@ void MainRayGenShader()
     payload.prevWorldHitPosition = float3(0, 0, 0);
     payload.k = 1;
 
+    float2 currentUV = frameCoord / float2(launchDim.x - 1, launchDim.y - 1);
+    float2 previousUV = currentUV;
+    float2 motionVector = float2(0, 0);
+    float previousSurfaceViewDepth = 0.0f;
+
     float3 wpos = ray.Origin + ray.Direction * 99999.0f;
     float3 normal = float3(0, 0, 0);
     float3 albedo = float3(0, 0, 0);
@@ -120,8 +133,8 @@ void MainRayGenShader()
     float3 throughput = float3(1, 1, 1);
     
     TraceRay(g_AccelStruct, 0, 0xFF, 0, 1, missShaderIndex, ray, payload);
-    
-    radiance += payload.emission;
+
+    primaryEmissionRadiance = payload.emission;
 
     // Hit
     if((payload.bounceIndexOpaque | payload.bounceIndexTransparent) == 1)
@@ -129,56 +142,76 @@ void MainRayGenShader()
         wpos = payload.bounceRayOrigin;
         normal = payload.worldNormal;
         albedo = payload.albedo;
-    
-        //////////////////////////////////////////
-        // Shadow Ray
-        //////////////////////////////////////////
-        
-        // TODO: Use separated pass?
-        
-#if VOXELISXRT_SHADOW
-        RayDesc shadowRay;
-        shadowRay.Origin = wpos;
-        shadowRay.Direction = mainLight.direction;
-        shadowRay.TMin = ray.TMin;
-        shadowRay.TMax = ray.TMax;
-        
-        RayPayload shadowPayload;
-        shadowPayload.albedo = float3(1, 1, 1);
-        shadowPayload.emission = float3(0, 0, 0);
-        shadowPayload.rngState = rngState;
-        shadowPayload.bounceIndexOpaque = 0;
-        shadowPayload.bounceIndexTransparent = 0;
-        shadowPayload.worldNormal = half3(0, 0, 0);
-        shadowPayload.bounceRayOrigin = float3(0, 0, 0);
-        shadowPayload.bounceRayDirection = float3(0, 0, 0);
-        shadowPayload.prevWorldHitPosition = float3(0, 0, 0);
-        shadowPayload.k = 1;
-        
-        TraceRay(g_AccelStruct, 0, 0xFF, 0, 1, missShaderIndex, shadowRay, shadowPayload);
-        
-        shadow = (shadowPayload.bounceIndexOpaque == 1) ? 0.0f : 1.0f;
-#endif 
 
-        radiance_direct += mainLight.color.rgb * albedo * clamp(shadow * clamp(dot(normal, mainLight.direction), 0, 1), 0.0, 1);
-        // radiance_direct += g_mainLightColor.rgb * shadow;
-        
         //////////////////////////////////////////
-        // Ambient / GI
+        // Reprojection Data
         //////////////////////////////////////////
-        
+
+        float3 prevViewPosition = mul(g_PrevWorldToCamera, float4(payload.prevWorldHitPosition, 1.0f)).xyz;
+        previousSurfaceViewDepth = -prevViewPosition.z;
+
+        if (previousSurfaceViewDepth > 0.00001f)
+        {
+            float2 prevNdc = prevViewPosition.xy / previousSurfaceViewDepth;
+            prevNdc /= float2(g_AspectRatio * g_Zoom, g_Zoom);
+            previousUV = prevNdc * 0.5f + 0.5f;
+            motionVector = currentUV - previousUV;
+        }
+
+        //////////////////////////////////////////
+        // Direct Lighting
+        //////////////////////////////////////////
+
+        // TODO: Use separated pass?
+
+        if (payload.bounceIndexOpaque == 1)
+        {
+#if VOXELISXRT_SHADOW
+            RayDesc shadowRay;
+            shadowRay.Origin = wpos;
+            shadowRay.Direction = mainLight.direction;
+            shadowRay.TMin = ray.TMin;
+            shadowRay.TMax = ray.TMax;
+
+            RayPayload shadowPayload;
+            shadowPayload.albedo = float3(1, 1, 1);
+            shadowPayload.emission = float3(0, 0, 0);
+            shadowPayload.rngState = rngState;
+            shadowPayload.bounceIndexOpaque = 0;
+            shadowPayload.bounceIndexTransparent = 0;
+            shadowPayload.worldNormal = half3(0, 0, 0);
+            shadowPayload.bounceRayOrigin = float3(0, 0, 0);
+            shadowPayload.bounceRayDirection = float3(0, 0, 0);
+            shadowPayload.prevWorldHitPosition = float3(0, 0, 0);
+            shadowPayload.previousTransparentMaterial = 0;
+            shadowPayload.k = 1;
+
+            TraceRay(g_AccelStruct, 0, 0xFF, 0, 1, missShaderIndex, shadowRay, shadowPayload);
+
+            shadow = (shadowPayload.bounceIndexOpaque == 1) ? 0.0f : 1.0f;
+#endif
+
+            float nDotL = saturate(dot(normal, mainLight.direction));
+            directRadiance = g_mainLightColor.rgb * albedo * saturate(shadow * nDotL);
+        }
+
+        //////////////////////////////////////////
+        // Indirect Lighting
+        //////////////////////////////////////////
+
 #if VOXELISXRT_BOUNCE
-        // Handle reflection ray
-        throughput *= payload.albedo / max(0.001, payload.k);
+        // Keep the primary albedo out of the temporal history. It is applied once
+        // during final composition so replaced voxels can reuse lighting history.
+        throughput *= 1.0f / max(0.001, payload.k);
         ray.Origin = payload.bounceRayOrigin;
         ray.Direction = payload.bounceRayDirection;
-        
+
         do
         {
             if(payload.bounceIndexOpaque==2) { ray.TMax = 20; }
             TraceRay(g_AccelStruct, 0 + (5 << 11), 0xFF, 0, 1, missShaderIndex, ray, payload);
 
-            radiance += payload.emission * throughput;
+            indirectIncidentRadiance += payload.emission * throughput;
 
             throughput *= payload.albedo / max(0.001, payload.k);
 
@@ -187,7 +220,8 @@ void MainRayGenShader()
     #define ENABLE_RUSSIAN_ROULETTE 1
 
     #if ENABLE_RUSSIAN_ROULETTE
-            pathStopProbability = max(throughput.r, max(throughput.g, throughput.b));
+            float3 throughputAlbedo = throughput * albedo;
+            pathStopProbability = max(throughputAlbedo.r, max(throughputAlbedo.g, throughputAlbedo.b));
 
             // Dark colors have higher chance to terminate the path early.
             if (pathStopProbability < RandomFloat01(payload.rngState))
@@ -202,10 +236,8 @@ void MainRayGenShader()
         while ((payload.bounceIndexOpaque <= g_BounceCountOpaque) && (payload.bounceIndexTransparent <= g_BounceCountTransparent) && (++safeNet < 1000));
         // while (false);
 #else
-        radiance += payload.albedo * 1.0f;
+        indirectIncidentRadiance += 1.0f;
 #endif
-        // Mix
-        // radiance = 0.1f * radiance_direct + 0.1f * radiance;
     }    
     // Miss
     else
@@ -213,14 +245,32 @@ void MainRayGenShader()
         isSky = true;
     }
 
-    float3 prevRadiance = RenderTarget[launchIndex].xyz;
-    // isSky = (g_ConvergenceStep < 1) * isSky + (g_ConvergenceStep >= 1) * (isSky | (!RenderTarget[launchIndex].a));
-    // isSky = false;
+    //////////////////////////////////////////
+    // Indirect Temporal Slot
+    //////////////////////////////////////////
 
-    float3 result = lerp(prevRadiance, radiance, 1 / float(g_ConvergenceStep + 1));
-    // float3 result = radiance;
-        
+    bool canReprojectIndirect =
+        !isSky &&
+        (g_IndirectRadianceHistoryValid != 0) &&
+        (previousSurfaceViewDepth > 0.00001f) &&
+        all(previousUV >= float2(0.0f, 0.0f)) &&
+        all(previousUV <= float2(1.0f, 1.0f));
+
+    float3 accumulatedIndirectRadiance = indirectIncidentRadiance;
+    if (canReprojectIndirect)
+    {
+        // History sampling and rejection will replace this no-op in the next step.
+        accumulatedIndirectRadiance = indirectIncidentRadiance;
+    }
+
+    //////////////////////////////////////////
+    // Compose
+    //////////////////////////////////////////
+
+    float3 result = primaryEmissionRadiance + directRadiance + albedo * accumulatedIndirectRadiance;
+
     RenderTarget[launchIndex] = float4(result, !isSky);
+    g_CurrentIndirectRadianceHistory[launchIndex] = float4(accumulatedIndirectRadiance, !isSky);
     // RenderTarget[launchIndex] = float4(payload.bounceIndexOpaque / 100.0 * float3(1, 1, 1), 1);
     // RenderTarget[launchIndex] = float4(payload.albedo, 1);
     
@@ -228,26 +278,12 @@ void MainRayGenShader()
     float3 viewForward = -normalize(g_CurrentCameraToWorld._m02_m12_m22);
     float distanceFromCamera = dot(wpos - g_CameraWorldPosition, viewForward);
     // float depthFromNearPlane = distanceFromCamera - _ProjectionParams.y; // _ProjectionParams.y is the near plane distance
-    DepthTarget[launchIndex] = LinearEyeDepth(distanceFromCamera, _ZBufferParams);
+    float depth = LinearEyeDepth(distanceFromCamera, _ZBufferParams);
+    DepthTarget[launchIndex] = depth;
+    g_CurrentDepthHistory[launchIndex] = depth;
     NormalTarget[launchIndex] = float4(normal, 0);
+    g_CurrentNormalHistory[launchIndex] = float4(normal, !isSky);
     AlbedoTarget[launchIndex] = float4(albedo, 1);
-
-    float2 motionVector = float2(0, 0);
-    if (!isSky)
-    {
-        float3 prevViewPosition = mul(g_PrevWorldToCamera, float4(payload.prevWorldHitPosition, 1.0f)).xyz;
-        float prevViewDepth = -prevViewPosition.z;
-
-        if (prevViewDepth > 0.00001f)
-        {
-            float2 currentUV = frameCoord / float2(launchDim.x - 1, launchDim.y - 1);
-
-            float2 prevNdc = prevViewPosition.xy / prevViewDepth;
-            prevNdc /= float2(g_AspectRatio * g_Zoom, g_Zoom);
-            float2 prevUV = prevNdc * 0.5f + 0.5f;
-            motionVector = currentUV - prevUV;
-        }
-    }
 
     MotionVectorTarget[launchIndex] = motionVector;
 }
