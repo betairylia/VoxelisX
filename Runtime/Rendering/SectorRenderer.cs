@@ -37,33 +37,31 @@ namespace Voxelis.Rendering
             internal Vector3 max;
         }
 
-        /// <summary>
-        /// Reference structure for a potential future optimization using 1-bit-per-block encoding.
-        /// Currently not used.
-        /// </summary>
-        [StructLayout(LayoutKind.Sequential)]
-        struct ZeroOnePassBrick
+        public const int BRICK_INFO_WORDS = 1;
+        public const int BRICK_OCCUPANCY_WORDS = 16;
+        public const int BRICK_BLOCK_DATA_OFFSET = BRICK_INFO_WORDS + BRICK_OCCUPANCY_WORDS;
+        public const int BRICK_BLOCK_DATA_WORDS = Sector.BLOCKS_IN_BRICK / 2;
+        public const int BRICK_DATA_LENGTH = BRICK_BLOCK_DATA_OFFSET + BRICK_BLOCK_DATA_WORDS;
+
+        public static int ToCoarseOccupancyBit(int bx, int by, int bz)
         {
-            internal ulong brickInfo; // 12bit brickPosNum, 8bit semi-brick mask, 44bit reserved
-            // internal int d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15;
-            internal ulong ul0, ul1, ul2, ul3, ul4, ul5, ul6, ul7;
+            return (bx >> 2) | ((by >> 2) << 1) | ((bz >> 2) << 2);
         }
 
-        /// <summary>
-        /// Data length for 1-bit-per-block encoding (not currently used).
-        /// 2 ints for brick position + 16 ints for block occupancy (512 blocks / 32 bits).
-        /// </summary>
-        public static readonly int BRICK_DATA_LENGTH_01PASS =
-            2           // 64 bit for brick position
-            + 512 / 32; // 1 bit per block
+        public static int ToMicroOccupancyBit(int bx, int by, int bz)
+        {
+            return (bx & 3) | ((by & 3) << 2) | ((bz & 3) << 4);
+        }
 
-        /// <summary>
-        /// Data length for current 16-bit-per-block encoding.
-        /// 1 int for brick position + 256 ints for block data (512 blocks / 2 blocks per int).
-        /// </summary>
-        public static readonly int BRICK_DATA_LENGTH =
-            1           // 32 bit for brick position
-            + 512 / 2;  // 16 bit per block
+        public static int ToOccupancyWordOffset(int coarseBit, int microBit)
+        {
+            return BRICK_INFO_WORDS + coarseBit * 2 + (microBit >> 5);
+        }
+
+        public static int PackBrickInfo(int brickIdxAbsolute, uint coarseOccupancy)
+        {
+            return unchecked((int)(((uint)brickIdxAbsolute & 0xFFFu) | ((coarseOccupancy & 0xFFu) << 16)));
+        }
 
         [BurstCompile]
         struct InitializeAABBJob : IJob
@@ -156,8 +154,12 @@ namespace Voxelis.Rendering
                 syncRecord[0] = math.min(syncRecord[0], bid);
                 syncRecord[1] = math.max(syncRecord[1], bid);
 
-                // Brick position
-                brickData[bp] = record.brickIdxAbsolute;
+                uint coarseOccupancy = 0;
+
+                for (int i = 0; i < BRICK_OCCUPANCY_WORDS; i++)
+                {
+                    brickData[bp + BRICK_INFO_WORDS + i] = 0;
+                }
 
                 // Brick data
                 for (int bz = 0; bz < Sector.SIZE_IN_BLOCKS; bz++)
@@ -170,14 +172,28 @@ namespace Voxelis.Rendering
 
                         for (int bx = 0; bx < Sector.SIZE_IN_BLOCKS; bx += 2)
                         {
+                            Block block0 = sector.voxels[blockStart + bx];
+                            Block block1 = sector.voxels[blockStart + bx + 1];
+
                             brickData[
-                                    bp + 1 + bz * (Sector.SIZE_IN_BLOCKS_SQUARED / 2) +
+                                    bp + BRICK_BLOCK_DATA_OFFSET + bz * (Sector.SIZE_IN_BLOCKS_SQUARED / 2) +
                                     by * (Sector.SIZE_IN_BLOCKS / 2) + bx / 2] =
-                                ((sector.voxels[blockStart + bx].id << 16) | sector.voxels[blockStart + bx + 1].id);
-                                // ~(0x00010001);
+                                unchecked((int)(((uint)block0.id << 16) | block1.id));
+
+                            if (!block0.isRendererEmpty)
+                            {
+                                AccumulateOccupancy(ref coarseOccupancy, bp, bx, by, bz);
+                            }
+
+                            if (!block1.isRendererEmpty)
+                            {
+                                AccumulateOccupancy(ref coarseOccupancy, bp, bx + 1, by, bz);
+                            }
                         }
                     }
                 }
+
+                brickData[bp] = PackBrickInfo(record.brickIdxAbsolute, coarseOccupancy);
 
                 // AABB
                 // Only do for new bricks
@@ -191,36 +207,19 @@ namespace Voxelis.Rendering
                     };
                 }
             }
+
+            private void AccumulateOccupancy(ref uint coarseOccupancy, int bp, int bx, int by, int bz)
+            {
+                int coarseBit = ToCoarseOccupancyBit(bx, by, bz);
+                int microBit = ToMicroOccupancyBit(bx, by, bz);
+                int wordOffset = ToOccupancyWordOffset(coarseBit, microBit);
+                uint wordBit = 1u << (microBit & 31);
+
+                coarseOccupancy |= 1u << coarseBit;
+                brickData[bp + wordOffset] = unchecked((int)(uint)brickData[bp + wordOffset] | (int)wordBit);
+            }
         }
         
-        // [BurstCompile]
-        // struct GenerateSector01PassRenderDataJob : IJob
-        // {
-        //     // ......
-        //
-        //             // Brick data
-        //             for (int bz = 0; bz < Sector.SIZE_IN_BLOCKS; bz++)
-        //             {
-        //                 for (int byhalf = 0; byhalf < 2; byhalf++)
-        //                 {
-        //                     int val = 0;
-        //                     for (int by = 0; by < Sector.SIZE_IN_BLOCKS / 2; by++)
-        //                     {
-        //                         // Assume X-First
-        //                         int blockStart = bid * Sector.BLOCKS_IN_BRICK + Sector.ToBlockIdx(0, by + byhalf * Sector.SIZE_IN_BLOCKS / 2, bz);
-        //
-        //                         for (int bx = 0; bx < Sector.SIZE_IN_BLOCKS; bx++)
-        //                         {
-        //                             val |= ((sector.voxels[blockStart + bx].isEmpty ? 0 : 1) << (bx + by * 8));
-        //                         }
-        //                     }
-        //                     brickData[bp + 1 + (byhalf + bz * 2)] = val;
-        //                 }
-        //             }
-        //             
-        //     // ......
-        // }
-
         /// <summary>
         /// Shared material used for rendering all sectors.
         /// Set globally by VoxelisXRenderer on initialization.

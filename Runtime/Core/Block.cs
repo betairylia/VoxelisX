@@ -41,6 +41,11 @@ namespace Voxelis
         /// Returns true if this block is empty (all data is zero).
         /// </summary>
         public bool isEmpty => (data == 0);
+
+        /// <summary>
+        /// Returns true if this block has no renderer-visible material ID.
+        /// </summary>
+        public bool isRendererEmpty => id == 0;
         // public bool isVoid => (data == 0);
 
         /// <summary>

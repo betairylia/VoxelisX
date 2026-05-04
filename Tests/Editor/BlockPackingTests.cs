@@ -45,6 +45,16 @@ namespace VoxelisX.Tests
         }
 
         [Test]
+        public void IsRendererEmptyUsesBlockIdOnly()
+        {
+            var metadataOnly = new Block { data = 1u };
+
+            Assert.That(Block.Empty.isRendererEmpty, Is.True);
+            Assert.That(metadataOnly.isRendererEmpty, Is.True);
+            Assert.That(new Block(1).isRendererEmpty, Is.False);
+        }
+
+        [Test]
         public void EqualityAndHashCodeUsePackedData()
         {
             var a = new Block { data = 0x00010002u };
