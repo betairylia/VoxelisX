@@ -98,6 +98,7 @@ void MainRayGenShader()
     // payload.bounceRayDirection = float3(0, 0, 0);
     payload.bounceRayOrigin = g_CameraWorldPosition;
     payload.bounceRayDirection = normalize(rayDirection);
+    payload.prevWorldHitPosition = float3(0, 0, 0);
     payload.k = 1;
 
     float3 wpos = ray.Origin + ray.Direction * 99999.0f;
@@ -151,6 +152,7 @@ void MainRayGenShader()
         shadowPayload.worldNormal = half3(0, 0, 0);
         shadowPayload.bounceRayOrigin = float3(0, 0, 0);
         shadowPayload.bounceRayDirection = float3(0, 0, 0);
+        shadowPayload.prevWorldHitPosition = float3(0, 0, 0);
         shadowPayload.k = 1;
         
         TraceRay(g_AccelStruct, 0, 0xFF, 0, 1, missShaderIndex, shadowRay, shadowPayload);
@@ -233,16 +235,12 @@ void MainRayGenShader()
     float2 motionVector = float2(0, 0);
     if (!isSky)
     {
-        float3 currentViewPosition = mul(g_CurrentWorldToCamera, float4(wpos, 1.0f)).xyz;
-        float3 prevViewPosition = mul(g_PrevWorldToCamera, float4(wpos, 1.0f)).xyz;
-        float currentViewDepth = abs(currentViewPosition.z);
-        float prevViewDepth = abs(prevViewPosition.z);
+        float3 prevViewPosition = mul(g_PrevWorldToCamera, float4(payload.prevWorldHitPosition, 1.0f)).xyz;
+        float prevViewDepth = -prevViewPosition.z;
 
-        if (currentViewDepth > 0.00001f && prevViewDepth > 0.00001f)
+        if (prevViewDepth > 0.00001f)
         {
-            float2 currentNdc = currentViewPosition.xy / currentViewDepth;
-            currentNdc /= float2(g_AspectRatio * g_Zoom, g_Zoom);
-            float2 currentUV = currentNdc * 0.5f + 0.5f;
+            float2 currentUV = frameCoord / float2(launchDim.x - 1, launchDim.y - 1);
 
             float2 prevNdc = prevViewPosition.xy / prevViewDepth;
             prevNdc /= float2(g_AspectRatio * g_Zoom, g_Zoom);

@@ -66,7 +66,7 @@ Shader "VoxelisX/BrickRTTest"
                 hit.materialID = attribs.matID;
                 hit.objectNormal = attribs.normal;
 
-                VoxelisXApplyVoxelClosestHit(payload, hit, WorldRayOrigin(), WorldRayDirection(), RayTCurrent(), ObjectToWorld3x4());
+                VoxelisXApplyVoxelClosestHit(payload, hit, WorldRayOrigin(), WorldRayDirection(), ObjectRayOrigin(), ObjectRayDirection(), RayTCurrent(), ObjectToWorld3x4());
             }
             
             ENDHLSL

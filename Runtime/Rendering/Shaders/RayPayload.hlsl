@@ -7,6 +7,7 @@ struct RayPayload
     uint bounceIndexTransparent;
     float3 bounceRayOrigin;
     float3 bounceRayDirection;
+    float3 prevWorldHitPosition;
     half3 worldNormal;
     uint rngState;          // Random number generator state.
 

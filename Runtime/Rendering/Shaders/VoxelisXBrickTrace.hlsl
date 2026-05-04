@@ -73,6 +73,7 @@ struct VoxelisXBrickAABBCandidate
 };
 
 StructuredBuffer<uint> g_bricks;
+float4x4 _PrevObjectToWorld;
 
 inline VoxelisXBrickHit VoxelisXMakeBrickMiss()
 {
@@ -357,13 +358,20 @@ inline VoxelisXBrickHit VoxelisXTraceBrickPrimitive(VoxelisXBrickTraceContext co
     return result;
 }
 
-inline void VoxelisXApplyVoxelClosestHit(inout RayPayload payload, VoxelisXBrickHit hit, float3 worldRayOrigin, float3 worldRayDirection, float currentRayT, float3x4 objectToWorld)
+inline void VoxelisXApplyVoxelClosestHit(inout RayPayload payload, VoxelisXBrickHit hit, float3 worldRayOrigin, float3 worldRayDirection, float3 objectRayOrigin, float3 objectRayDirection, float currentRayT, float3x4 objectToWorld)
 {
     int materialID = hit.materialID;
     VoxelMaterial material = GET_MATERIAL(materialID);
 
     float3 worldHitPosition = worldRayOrigin + worldRayDirection * currentRayT;
     float3 worldNormal = mul((float3x3)objectToWorld, hit.objectNormal);
+    bool isPrimaryHit = (payload.bounceIndexOpaque | payload.bounceIndexTransparent) == 0;
+
+    if (isPrimaryHit)
+    {
+        float3 objectHitPosition = objectRayOrigin + objectRayDirection * currentRayT;
+        payload.prevWorldHitPosition = mul(_PrevObjectToWorld, float4(objectHitPosition, 1.0f)).xyz;
+    }
 
     VoxelMaterial tMat = GET_MATERIAL(payload.previousTransparentMaterial);
     float3 ext = payload.previousTransparentMaterial == 0 ? float3(1, 1, 1) : exp(-(1 - tMat.albedo) * currentRayT * tMat.extinction);

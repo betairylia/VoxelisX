@@ -337,6 +337,8 @@ namespace Voxelis.Rendering
         private RayTracingAABBsInstanceConfig AABBconfig;
         private bool isDirty;
         private bool shouldRemove = false;
+        private Matrix4x4 previousObjectToWorld;
+        private bool hasPreviousObjectToWorld;
 
         /// <summary>
         /// Completes the render job and uploads data to GPU buffers.
@@ -432,6 +434,31 @@ namespace Voxelis.Rendering
         /// </remarks>
         public void RenderModifyAS(ref RayTracingAccelerationStructure AS, VoxelEntity entity, int3 sectorPos, Sector sector)
         {
+            Matrix4x4 objectToWorld =
+                entity.transform.localToWorldMatrix *
+                Matrix4x4.Translate((sectorPos * Sector.SECTOR_SIZE_IN_BLOCKS).ToVector3Int());
+            Matrix4x4 prevObjectToWorld = hasPreviousObjectToWorld ? previousObjectToWorld : objectToWorld;
+            bool updatesRenderableInstance = isDirty || hasRenderable;
+
+            if (updatesRenderableInstance)
+            {
+                if (matProps == null)
+                {
+                    matProps = new MaterialPropertyBlock();
+                }
+
+                if (brickBuffer != null && brickBuffer.IsValid())
+                {
+                    matProps.SetBuffer("g_bricks", brickBuffer);
+                }
+
+                // Previous transform is delivered through the per-instance property block for now.
+                // This matches the sector-instance RTAS layout, but it means moving sectors need a
+                // property-block update even when voxel geometry is unchanged. If that gets expensive,
+                // move these matrices to a structured buffer keyed by a stable instance/sector id.
+                matProps.SetMatrix("_PrevObjectToWorld", prevObjectToWorld);
+            }
+
             if (isDirty)
             {
                 // Create AABB config here now that we have sector info
@@ -444,19 +471,21 @@ namespace Voxelis.Rendering
                 }
 
                 AS.RemoveInstance(sectorASHandle);
-                sectorASHandle = AS.AddInstance(AABBconfig,
-                    entity.transform.localToWorldMatrix *
-                    Matrix4x4.Translate((sectorPos * Sector.SECTOR_SIZE_IN_BLOCKS).ToVector3Int()));
+                sectorASHandle = AS.AddInstance(AABBconfig, objectToWorld);
                 hasRenderable = true;
                 AS.UpdateInstancePropertyBlock(sectorASHandle, matProps);
             }
             else if(hasRenderable)
             {
-                AS.UpdateInstanceTransform(sectorASHandle,
-                    entity.transform.localToWorldMatrix *
-                    Matrix4x4.Translate((sectorPos * Sector.SECTOR_SIZE_IN_BLOCKS).ToVector3Int()));
+                AS.UpdateInstanceTransform(sectorASHandle, objectToWorld);
+                AS.UpdateInstancePropertyBlock(sectorASHandle, matProps);
             }
 
+            if (updatesRenderableInstance)
+            {
+                previousObjectToWorld = objectToWorld;
+                hasPreviousObjectToWorld = true;
+            }
             isDirty = false;
         }
 
