@@ -66,6 +66,7 @@ struct VoxelisXBrickAABBCandidate
 {
     bool hit;
     uint brickID;
+    uint coarseOccupancy;
     int3 brickOrigin;
     float t;
     int3 normal;
@@ -109,11 +110,68 @@ inline uint VoxelisXMicroOccupancyBit(int3 microCell)
     return uint(microCell.x | (microCell.y << 2) | (microCell.z << 4));
 }
 
-inline void VoxelisXLoadMicroOccupancy(uint brickBase, uint coarseBit, out uint occLo, out uint occHi)
+inline void VoxelisXLoadBrickOccupancy(uint brickBase, out uint4 occupancy0, out uint4 occupancy1, out uint4 occupancy2, out uint4 occupancy3)
 {
-    uint occupancyBase = brickBase + BRICK_INFO_WORDS + coarseBit * 2u;
-    occLo = g_bricks[occupancyBase];
-    occHi = g_bricks[occupancyBase + 1u];
+    uint occupancyBase = brickBase + BRICK_INFO_WORDS;
+    occupancy0 = uint4(
+        g_bricks[occupancyBase],
+        g_bricks[occupancyBase + 1u],
+        g_bricks[occupancyBase + 2u],
+        g_bricks[occupancyBase + 3u]);
+    occupancy1 = uint4(
+        g_bricks[occupancyBase + 4u],
+        g_bricks[occupancyBase + 5u],
+        g_bricks[occupancyBase + 6u],
+        g_bricks[occupancyBase + 7u]);
+    occupancy2 = uint4(
+        g_bricks[occupancyBase + 8u],
+        g_bricks[occupancyBase + 9u],
+        g_bricks[occupancyBase + 10u],
+        g_bricks[occupancyBase + 11u]);
+    occupancy3 = uint4(
+        g_bricks[occupancyBase + 12u],
+        g_bricks[occupancyBase + 13u],
+        g_bricks[occupancyBase + 14u],
+        g_bricks[occupancyBase + 15u]);
+}
+
+inline void VoxelisXSelectMicroOccupancy(uint coarseBit, uint4 occupancy0, uint4 occupancy1, uint4 occupancy2, uint4 occupancy3, out uint occLo, out uint occHi)
+{
+    switch (coarseBit)
+    {
+        case 0:
+            occLo = occupancy0.x;
+            occHi = occupancy0.y;
+            break;
+        case 1:
+            occLo = occupancy0.z;
+            occHi = occupancy0.w;
+            break;
+        case 2:
+            occLo = occupancy1.x;
+            occHi = occupancy1.y;
+            break;
+        case 3:
+            occLo = occupancy1.z;
+            occHi = occupancy1.w;
+            break;
+        case 4:
+            occLo = occupancy2.x;
+            occHi = occupancy2.y;
+            break;
+        case 5:
+            occLo = occupancy2.z;
+            occHi = occupancy2.w;
+            break;
+        case 6:
+            occLo = occupancy3.x;
+            occHi = occupancy3.y;
+            break;
+        default:
+            occLo = occupancy3.z;
+            occHi = occupancy3.w;
+            break;
+    }
 }
 
 inline bool VoxelisXIsMicroOccupied(uint occLo, uint occHi, uint microBit)
@@ -143,12 +201,14 @@ inline bool VoxelisXIntersectBrickAABB(VoxelisXBrickTraceContext context, out Vo
 {
     candidate.hit = false;
     candidate.brickID = context.primitiveIndex;
+    candidate.coarseOccupancy = 0u;
     candidate.brickOrigin = int3(0, 0, 0);
     candidate.t = 0.0f;
     candidate.normal = int3(0, 0, 0);
 
     uint brickInfo = g_bricks[VoxelisXBrickBase(candidate.brickID)];
-    if (VoxelisXGetCoarseOccupancy(brickInfo) == 0u)
+    uint coarseOccupancy = VoxelisXGetCoarseOccupancy(brickInfo);
+    if (coarseOccupancy == 0u)
     {
         return false;
     }
@@ -191,24 +251,30 @@ inline bool VoxelisXIntersectBrickAABB(VoxelisXBrickTraceContext context, out Vo
     }
 
     candidate.hit = true;
+    candidate.coarseOccupancy = coarseOccupancy;
     candidate.brickOrigin = int3(bX, bY, bZ);
     candidate.t = max(0, largestTmin);
     candidate.normal = hitNormal;
     return true;
 }
 
-inline bool VoxelisXTraceBrickDDA(uint brickID, float3 entryPositionInBrick, float3 rayDir, float entryT, int3 entryNormal, out DDAHit hit, out int materialID)
+inline bool VoxelisXTraceBrickDDA(uint brickID, uint coarseOccupancy, float3 entryPositionInBrick, float3 rayDir, float entryT, int3 entryNormal, out DDAHit hit, out int materialID)
 {
     DDAClearHit(hit);
     materialID = 0;
 
     uint brickBase = VoxelisXBrickBase(brickID);
-    uint coarseOccupancy = VoxelisXGetCoarseOccupancy(g_bricks[brickBase]);
+    uint4 occupancy0;
+    uint4 occupancy1;
+    uint4 occupancy2;
+    uint4 occupancy3;
+    VoxelisXLoadBrickOccupancy(brickBase, occupancy0, occupancy1, occupancy2, occupancy3);
+
     int3 coarseGridSize = int3(2, 2, 2);
     DDACursor coarseCursor = DDACreateCursor(entryPositionInBrick * 0.25f, rayDir * 0.25f, coarseGridSize);
     int prevTransparentBlock = 0;
 
-    [unroll] for (int coarseStep = 0; coarseStep < BRICK_COARSE_DDA_MAX_STEPS; coarseStep++)
+    for (int coarseStep = 0; coarseStep < BRICK_COARSE_DDA_MAX_STEPS; coarseStep++)
     {
         if (!DDAIsInside(coarseCursor, coarseGridSize))
         {
@@ -220,7 +286,7 @@ inline bool VoxelisXTraceBrickDDA(uint brickID, float3 entryPositionInBrick, flo
         {
             uint occLo;
             uint occHi;
-            VoxelisXLoadMicroOccupancy(brickBase, coarseBit, occLo, occHi);
+            VoxelisXSelectMicroOccupancy(coarseBit, occupancy0, occupancy1, occupancy2, occupancy3, occLo, occHi);
 
             if (VoxelisXShouldTraceMicroOccupancy(occLo, occHi, rayDir))
             {
@@ -232,7 +298,7 @@ inline bool VoxelisXTraceBrickDDA(uint brickID, float3 entryPositionInBrick, flo
                 int3 microGridSize = int3(BRICK_COARSE_SIZE_IN_BLOCKS, BRICK_COARSE_SIZE_IN_BLOCKS, BRICK_COARSE_SIZE_IN_BLOCKS);
                 DDACursor microCursor = DDACreateCursor(coarseEntryPosition, rayDir, microGridSize);
 
-                [unroll] for (int microStep = 0; microStep < BRICK_MICRO_DDA_MAX_STEPS; microStep++)
+                for (int microStep = 0; microStep < BRICK_MICRO_DDA_MAX_STEPS; microStep++)
                 {
                     if (!DDAIsInside(microCursor, microGridSize))
                     {
@@ -280,7 +346,7 @@ inline VoxelisXBrickHit VoxelisXTraceBrickPrimitive(VoxelisXBrickTraceContext co
 
     DDAHit ddaHit;
     int materialID;
-    if (VoxelisXTraceBrickDDA(candidate.brickID, entryPositionInBrick, context.objectRayDirection, candidate.t, candidate.normal, ddaHit, materialID))
+    if (VoxelisXTraceBrickDDA(candidate.brickID, candidate.coarseOccupancy, entryPositionInBrick, context.objectRayDirection, candidate.t, candidate.normal, ddaHit, materialID))
     {
         result.hit = true;
         result.t = ddaHit.t;
