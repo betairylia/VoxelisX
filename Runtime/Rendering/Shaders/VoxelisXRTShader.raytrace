@@ -7,6 +7,9 @@
 #include "Utils.hlsl"
 #include "VoxelisXRayPayloadUtils.hlsl"
 
+#define VOXELISXRT_SHADOW 0
+#define VOXELISXRT_BOUNCE 1
+
 RaytracingAccelerationStructure g_AccelStruct : register(t0, space1);
 
 float g_Zoom = 1.0;
@@ -27,11 +30,9 @@ float4 g_mainLightColor;
 
 uint g_ConvergenceStep = 10;
 
-// Placeholder parameters
-static uint g_BounceCountOpaque = 4;
-static uint g_BounceCountTransparent = 5;
-
-static uint g_spp = 1;
+uint g_BounceCountOpaque;
+uint g_BounceCountTransparent;
+uint g_spp;
 
 // Uncomment this pragma for debugging the HLSL code in PIX. GPU performance will be impacted.
 //#pragma enable_ray_tracing_shader_debug_symbols
@@ -129,6 +130,7 @@ void MainRayGenShader()
         
         // TODO: Use separated pass?
         
+#if VOXELISXRT_SHADOW
         RayDesc shadowRay;
         shadowRay.Origin = wpos;
         shadowRay.Direction = mainLight.direction;
@@ -149,7 +151,8 @@ void MainRayGenShader()
         TraceRay(g_AccelStruct, 0, 0xFF, 0, 1, missShaderIndex, shadowRay, shadowPayload);
         
         shadow = (shadowPayload.bounceIndexOpaque == 1) ? 0.0f : 1.0f;
-        
+#endif 
+
         radiance_direct += mainLight.color.rgb * albedo * clamp(shadow * clamp(dot(normal, mainLight.direction), 0, 1), 0.0, 1);
         // radiance_direct += g_mainLightColor.rgb * shadow;
         
@@ -157,6 +160,7 @@ void MainRayGenShader()
         // Ambient / GI
         //////////////////////////////////////////
         
+#if VOXELISXRT_BOUNCE
         // Handle reflection ray
         throughput *= payload.albedo / max(0.001, payload.k);
         ray.Origin = payload.bounceRayOrigin;
@@ -164,6 +168,7 @@ void MainRayGenShader()
         
         do
         {
+            ray.TMax = 50;
             TraceRay(g_AccelStruct, 0 + (5 << 11), 0xFF, 0, 1, missShaderIndex, ray, payload);
 
             radiance += payload.emission * throughput;
@@ -172,7 +177,7 @@ void MainRayGenShader()
 
             float pathStopProbability = 1;
 
-    #define ENABLE_RUSSIAN_ROULETTE 0
+    #define ENABLE_RUSSIAN_ROULETTE 1
 
     #if ENABLE_RUSSIAN_ROULETTE
             pathStopProbability = max(throughput.r, max(throughput.g, throughput.b));
@@ -189,9 +194,11 @@ void MainRayGenShader()
         }
         while ((payload.bounceIndexOpaque <= g_BounceCountOpaque) && (payload.bounceIndexTransparent <= g_BounceCountTransparent) && (++safeNet < 1000));
         // while (false);
-        
+#else
+        radiance += payload.albedo * 1.0f;
+#endif
         // Mix
-        // radiance = 0.1f * radiance_direct + 1.0f * radiance;
+        // radiance = 0.1f * radiance_direct + 0.1f * radiance;
     }    
     // Miss
     else

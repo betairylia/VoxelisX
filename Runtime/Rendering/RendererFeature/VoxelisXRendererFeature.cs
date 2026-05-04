@@ -30,6 +30,11 @@ public class VoxelisXRendererFeature : ScriptableRendererFeature
     /// </summary>
     [SerializeField] private int maximumAverageFrames;
 
+    [Header("Ray Tracing")]
+    [SerializeField, Min(0)] private int bounceCountOpaque = 4;
+    [SerializeField, Min(0)] private int bounceCountTransparent = 5;
+    [SerializeField, Min(1)] private int samplesPerPixel = 1;
+
     private VoxelisXRenderPass _voxelisXRenderPass;
     private VoxelisXPostProcessPass _voxelisXPostPass;
 
@@ -72,6 +77,7 @@ public class VoxelisXRendererFeature : ScriptableRendererFeature
             return;
         }
 
+        _voxelisXRenderPass.ConfigureRayTracingSettings(bounceCountOpaque, bounceCountTransparent, samplesPerPixel);
         renderer.EnqueuePass(_voxelisXRenderPass);
 
         // _voxelisXPostPass.ConfigureInput(ScriptableRenderPassInput.Motion);

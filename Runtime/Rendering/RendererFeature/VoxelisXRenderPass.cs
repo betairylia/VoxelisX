@@ -27,6 +27,9 @@ public class VoxelisXRenderPass : ScriptableRenderPass
     private VoxelisXRenderer voxelisX;
 
     private int maximumAverageFrames;
+    private int bounceCountOpaque = 4;
+    private int bounceCountTransparent = 5;
+    private int samplesPerPixel = 1;
 
     /// <summary>
     /// Post-process material for copying depth and flipping render targets if needed.
@@ -61,6 +64,9 @@ public class VoxelisXRenderPass : ScriptableRenderPass
 
         internal uint frameId;
         internal int avgFrames;
+        internal int bounceCountOpaque;
+        internal int bounceCountTransparent;
+        internal int samplesPerPixel;
 
         internal Light mainLight;
         
@@ -118,6 +124,13 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         rayTracingShader = rtShader;
         voxelisX = vox;
         this.flip = flip;
+    }
+
+    public void ConfigureRayTracingSettings(int bounceCountOpaque, int bounceCountTransparent, int samplesPerPixel)
+    {
+        this.bounceCountOpaque = Mathf.Max(0, bounceCountOpaque);
+        this.bounceCountTransparent = Mathf.Max(0, bounceCountTransparent);
+        this.samplesPerPixel = Mathf.Max(1, samplesPerPixel);
     }
 
     /// <summary>
@@ -187,6 +200,9 @@ public class VoxelisXRenderPass : ScriptableRenderPass
             passData.cameraMat = cameraData.GetViewMatrix();
             passData.camera = cameraData.camera;
             passData.avgFrames = maximumAverageFrames;
+            passData.bounceCountOpaque = bounceCountOpaque;
+            passData.bounceCountTransparent = bounceCountTransparent;
+            passData.samplesPerPixel = samplesPerPixel;
 
             passData.frameId = voxelisX.frameId;
 
@@ -287,6 +303,9 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         
         context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_FrameIndex", Time.frameCount);
         context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_ConvergenceStep", prevFrameState[data.camera].frames);
+        context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_BounceCountOpaque", data.bounceCountOpaque);
+        context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_BounceCountTransparent", data.bounceCountTransparent);
+        context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_spp", data.samplesPerPixel);
         context.cmd.SetRayTracingFloatParam(data.voxShaderRT, "g_Zoom", Mathf.Tan(Mathf.Deg2Rad * data.fov * 0.5f)); // TODO: Replace this to use camera projection matrix instead
         context.cmd.SetRayTracingFloatParam(data.voxShaderRT, "g_AspectRatio", data.width / (float)data.height);
         context.cmd.SetRayTracingVectorParam(data.voxShaderRT, "g_mainLightColor",
