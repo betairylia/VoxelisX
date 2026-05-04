@@ -14,6 +14,7 @@ public class VoxelisXDebugGUI : MonoBehaviour
     [Header("Settings")]
     [SerializeField] private bool showOnStart = true;
     [SerializeField] private KeyCode toggleKey = KeyCode.P;
+    [SerializeField] private KeyCode orbitToggleKey = KeyCode.O;
 
     [Header("References")]
     [SerializeField] private VoxelisXRenderer rayTracingRenderer;
@@ -37,6 +38,7 @@ public class VoxelisXDebugGUI : MonoBehaviour
     private GUIStyle buttonStyle;
     private GUIStyle labelStyle;
     private GUIStyle graphLabelStyle;
+    private GUIStyle tooltipStyle;
     private bool stylesInitialized = false;
 
     // Runtime line rendering
@@ -164,6 +166,11 @@ public class VoxelisXDebugGUI : MonoBehaviour
         graphLabelStyle = new GUIStyle(labelStyle);
         graphLabelStyle.fontSize = 10;
         graphLabelStyle.padding = new RectOffset(2, 2, 0, 0);
+
+        tooltipStyle = new GUIStyle(labelStyle);
+        tooltipStyle.normal.background = MakeTexture(2, 2, new Color(0f, 0f, 0f, 0.9f));
+        tooltipStyle.padding = new RectOffset(8, 8, 5, 5);
+        tooltipStyle.wordWrap = true;
 
         stylesInitialized = true;
     }
@@ -333,13 +340,17 @@ public class VoxelisXDebugGUI : MonoBehaviour
         GUILayout.Label("<b>Debug Visualization:</b>", labelStyle);
 
         // Sector borders toggle
-        if (GUILayout.Button(showSectorBorders ? "Hide Sector Borders" : "Show Sector Borders", buttonStyle))
+        if (GUILayout.Button(new GUIContent(
+                showSectorBorders ? "Hide Sector Borders" : "Show Sector Borders",
+                "Toggle world-space outlines for loaded voxel sectors."), buttonStyle))
         {
             showSectorBorders = !showSectorBorders;
         }
 
         // Brick borders toggle
-        if (GUILayout.Button(showBrickBorders ? "Hide Brick Borders" : "Show Brick Borders", buttonStyle))
+        if (GUILayout.Button(new GUIContent(
+                showBrickBorders ? "Hide Brick Borders" : "Show Brick Borders",
+                "Toggle brick outlines. Dirty bricks use the cyan debug color."), buttonStyle))
         {
             showBrickBorders = !showBrickBorders;
         }
@@ -357,7 +368,7 @@ public class VoxelisXDebugGUI : MonoBehaviour
         DrawFpsGraph();
 
         GUILayout.Space(5);
-        GUILayout.Label($"<i>Press {toggleKey} to toggle</i>", labelStyle);
+        GUILayout.Label($"<i>Press {toggleKey} to toggle GUI, {orbitToggleKey} to toggle orbit</i>", labelStyle);
 
         GUILayout.EndVertical();
         GUILayout.EndArea();

@@ -61,6 +61,8 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         internal float fov;
 
         internal Matrix4x4 cameraMat;
+        internal Matrix4x4 cameraToWorldMat;
+        internal Vector3 cameraWorldPosition;
         internal Camera camera;
 
         internal uint frameId;
@@ -214,6 +216,8 @@ public class VoxelisXRenderPass : ScriptableRenderPass
             passData.mainLight = frameData.Get<UniversalLightData>().visibleLights[frameData.Get<UniversalLightData>().mainLightIndex].light;
             
             passData.cameraMat = cameraData.GetViewMatrix();
+            passData.cameraToWorldMat = passData.cameraMat.inverse;
+            passData.cameraWorldPosition = passData.cameraToWorldMat.MultiplyPoint3x4(Vector3.zero);
             passData.camera = cameraData.camera;
             passData.avgFrames = maximumAverageFrames;
             passData.bounceCountOpaque = bounceCountOpaque;
@@ -328,6 +332,9 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_spp", data.samplesPerPixel);
         context.cmd.SetRayTracingFloatParam(data.voxShaderRT, "g_Zoom", Mathf.Tan(Mathf.Deg2Rad * data.fov * 0.5f)); // TODO: Replace this to use camera projection matrix instead
         context.cmd.SetRayTracingFloatParam(data.voxShaderRT, "g_AspectRatio", data.width / (float)data.height);
+        context.cmd.SetRayTracingVectorParam(data.voxShaderRT, "g_CameraWorldPosition", data.cameraWorldPosition);
+        context.cmd.SetRayTracingMatrixParam(data.voxShaderRT, "g_CurrentWorldToCamera", data.cameraMat);
+        context.cmd.SetRayTracingMatrixParam(data.voxShaderRT, "g_CurrentCameraToWorld", data.cameraToWorldMat);
         context.cmd.SetRayTracingMatrixParam(data.voxShaderRT, "g_PrevWorldToCamera", prevCameraView);
         context.cmd.SetRayTracingVectorParam(data.voxShaderRT, "g_mainLightColor",
             data.mainLight.color.linear * data.mainLight.intensity * (data.mainLight.useColorTemperature
