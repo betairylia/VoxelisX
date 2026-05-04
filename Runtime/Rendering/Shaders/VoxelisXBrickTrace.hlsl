@@ -1,12 +1,24 @@
 #ifndef VOXELISX_BRICK_TRACE_INCLUDED
 #define VOXELISX_BRICK_TRACE_INCLUDED
 
+#ifndef SHIFT_SIZE_IN_BLOCKS
+#define SHIFT_SIZE_IN_BLOCKS 3
+#endif
+
 #ifndef SIZE_IN_BLOCKS
-#define SIZE_IN_BLOCKS 8
+#define SIZE_IN_BLOCKS (1 << SHIFT_SIZE_IN_BLOCKS)
+#endif
+
+#ifndef SHIFT_SIZE_IN_BRICKS
+#define SHIFT_SIZE_IN_BRICKS 4
 #endif
 
 #ifndef SIZE_IN_BRICKS
-#define SIZE_IN_BRICKS 16
+#define SIZE_IN_BRICKS (1 << SHIFT_SIZE_IN_BRICKS)
+#endif
+
+#ifndef BRICK_POS_MASK
+#define BRICK_POS_MASK 15u
 #endif
 
 #ifndef SIZE_IN_BRICKS_SQUARED
@@ -14,7 +26,7 @@
 #endif
 
 #ifndef BRICK_DDA_MAX_STEPS
-#define BRICK_DDA_MAX_STEPS 36
+#define BRICK_DDA_MAX_STEPS 22
 #endif
 
 struct VoxelisXBrickTraceContext
@@ -54,9 +66,9 @@ inline VoxelisXBrickHit VoxelisXMakeBrickMiss()
     return hit;
 }
 
-inline int VoxelisXReadBrick(uint brickID, int3 localBlockPos)
+inline int VoxelisXReadBrick(uint brickBase, int3 localBlockPos)
 {
-    return (g_bricks[brickID * 257 + 1 + (localBlockPos.x / 2 + localBlockPos.y * 4 + localBlockPos.z * 32)] >> ((~(localBlockPos.x & 0b01)) << 4)) & 0xFFFF;
+    return (g_bricks[brickBase + ((localBlockPos.x >> 1) + (localBlockPos.y << 2) + (localBlockPos.z << 5))] >> ((~(localBlockPos.x & 0b01)) << 4)) & 0xFFFF;
 }
 
 inline bool VoxelisXShouldTerminateBrickDDA(int blockID, int previousTransparentBlock)
@@ -80,9 +92,10 @@ inline bool VoxelisXIntersectBrickAABB(VoxelisXBrickTraceContext context, out Vo
         return false;
     }
 
-    int bX = SIZE_IN_BLOCKS * (aabbIdx % SIZE_IN_BRICKS);
-    int bY = SIZE_IN_BLOCKS * ((aabbIdx / SIZE_IN_BRICKS) % SIZE_IN_BRICKS);
-    int bZ = SIZE_IN_BLOCKS * (aabbIdx / SIZE_IN_BRICKS_SQUARED);
+    uint idx = uint(aabbIdx);
+    int bX = int((idx & BRICK_POS_MASK) << SHIFT_SIZE_IN_BLOCKS);
+    int bY = int(((idx >> SHIFT_SIZE_IN_BRICKS) & BRICK_POS_MASK) << SHIFT_SIZE_IN_BLOCKS);
+    int bZ = int((idx >> (SHIFT_SIZE_IN_BRICKS + SHIFT_SIZE_IN_BRICKS)) << SHIFT_SIZE_IN_BLOCKS);
 
     float3 aabbMin = float3(bX, bY, bZ);
     float3 aabbMax = float3(bX + SIZE_IN_BLOCKS, bY + SIZE_IN_BLOCKS, bZ + SIZE_IN_BLOCKS);
@@ -128,6 +141,7 @@ inline bool VoxelisXTraceBrickDDA(uint brickID, float3 entryPositionInBrick, flo
     DDAClearHit(hit);
     materialID = 0;
 
+    uint brickBase = brickID * 257 + 1;
     int3 brickGridSize = int3(SIZE_IN_BLOCKS, SIZE_IN_BLOCKS, SIZE_IN_BLOCKS);
     DDACursor cursor = DDACreateCursor(entryPositionInBrick, rayDir, brickGridSize);
     int prevTransparentBlock = -1;
@@ -139,7 +153,7 @@ inline bool VoxelisXTraceBrickDDA(uint brickID, float3 entryPositionInBrick, flo
             break;
         }
 
-        int blockID = VoxelisXReadBrick(brickID, cursor.cell);
+        int blockID = VoxelisXReadBrick(brickBase, cursor.cell);
         bool shouldTerminate = VoxelisXShouldTerminateBrickDDA(blockID, prevTransparentBlock);
         prevTransparentBlock = blockID;
 

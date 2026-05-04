@@ -48,6 +48,7 @@ inline void DDAClearHit(out DDAHit hit)
     hit.stepIndex = 0;
 }
 
+// rayDir must be normalized
 inline DDACursor DDACreateCursor(float3 entryPositionInGrid, float3 rayDir, int3 gridSize)
 {
     DDACursor cursor;
@@ -55,11 +56,12 @@ inline DDACursor DDACreateCursor(float3 entryPositionInGrid, float3 rayDir, int3
     float3 gridMax = float3(gridSize.x, gridSize.y, gridSize.z) - DDA_GRID_EPSILON;
     float3 entryPos = clamp(entryPositionInGrid, 0.0f, gridMax);
     float3 raySign = sign(rayDir);
-    float rayLength = length(rayDir);
+    // float rayLength = length(rayDir);
 
     cursor.cell = int3(floor(entryPos));
     cursor.step = int3(raySign);
-    cursor.deltaDist = rayLength / max(abs(rayDir), DDA_MIN_RAY_DIR);
+    // cursor.deltaDist = rayLength / max(abs(rayDir), DDA_MIN_RAY_DIR);
+    cursor.deltaDist = 1.0f / max(abs(rayDir), DDA_MIN_RAY_DIR);
     cursor.sideDist = (raySign * (float3(cursor.cell) - entryPos) + (raySign * 0.5f) + 0.5f) * cursor.deltaDist;
     cursor.axisMask = bool3(false, false, false);
     cursor.stepIndex = 0;
@@ -69,7 +71,8 @@ inline DDACursor DDACreateCursor(float3 entryPositionInGrid, float3 rayDir, int3
 
 inline bool DDAIsInside(DDACursor cursor, int3 gridSize)
 {
-    return !any(cursor.cell < 0) && !any(cursor.cell >= gridSize);
+    // return !any(cursor.cell < 0) && !any(cursor.cell >= gridSize);
+    return !any(uint3(cursor.cell) >= uint3(gridSize));
 }
 
 inline bool3 DDANextAxisMask(float3 sideDist)
