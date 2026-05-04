@@ -30,6 +30,7 @@ public class VoxelisXRenderPass : ScriptableRenderPass
     private int bounceCountOpaque = 4;
     private int bounceCountTransparent = 5;
     private int samplesPerPixel = 1;
+    private VoxelisXRendererFeature.DebugView debugView = VoxelisXRendererFeature.DebugView.Regular;
 
     /// <summary>
     /// Post-process material for copying depth and flipping render targets if needed.
@@ -67,6 +68,7 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         internal int bounceCountOpaque;
         internal int bounceCountTransparent;
         internal int samplesPerPixel;
+        internal VoxelisXRendererFeature.DebugView debugView;
 
         internal Light mainLight;
         
@@ -75,6 +77,7 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         internal TextureHandle Normal;
         internal TextureHandle ShadowMask;
         internal TextureHandle Depth;
+        internal TextureHandle MotionVector;
 
         internal TextureHandle Albedo_dest;
         internal TextureHandle Normal_dest;
@@ -90,10 +93,12 @@ public class VoxelisXRenderPass : ScriptableRenderPass
     public class VoxelisXPassData : ContextItem
     {
         public TextureHandle Color;
+        public TextureHandle MotionVector;
         
         public override void Reset()
         {
-            Color = TextureHandle.nullHandle; 
+            Color = TextureHandle.nullHandle;
+            MotionVector = TextureHandle.nullHandle;
         }
     }
 
@@ -131,6 +136,11 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         this.bounceCountOpaque = Mathf.Max(0, bounceCountOpaque);
         this.bounceCountTransparent = Mathf.Max(0, bounceCountTransparent);
         this.samplesPerPixel = Mathf.Max(1, samplesPerPixel);
+    }
+
+    public void ConfigureDebugView(VoxelisXRendererFeature.DebugView debugView)
+    {
+        this.debugView = debugView;
     }
 
     /// <summary>
@@ -173,6 +183,11 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         
         TextureHandle RT_Depth = UniversalRenderer.CreateRenderGraphTexture(
             renderGraph, depthDesc, "VoxelisX_NormalDepth", false);
+
+        RenderTextureDescriptor motionVectorDesc = rtDesc;
+        motionVectorDesc.colorFormat = RenderTextureFormat.RGFloat;
+        TextureHandle RT_MotionVector = UniversalRenderer.CreateRenderGraphTexture(
+            renderGraph, motionVectorDesc, "VoxelisX_outMotionVector", false);
         
         // TextureHandle RT_TAA = UniversalRenderer.CreateRenderGraphTexture(
         //     renderGraph, rtDesc, "VoxelisX_accumulateColor", false);
@@ -189,6 +204,7 @@ public class VoxelisXRenderPass : ScriptableRenderPass
             passData.Albedo = RT_Albedo;
             passData.Normal = RT_Normal;
             passData.Depth = RT_Depth;
+            passData.MotionVector = RT_MotionVector;
 
             passData.copyDSMat = flip;
             
@@ -203,6 +219,7 @@ public class VoxelisXRenderPass : ScriptableRenderPass
             passData.bounceCountOpaque = bounceCountOpaque;
             passData.bounceCountTransparent = bounceCountTransparent;
             passData.samplesPerPixel = samplesPerPixel;
+            passData.debugView = debugView;
 
             passData.frameId = voxelisX.frameId;
 
@@ -211,12 +228,14 @@ public class VoxelisXRenderPass : ScriptableRenderPass
 
             var vxPassData = frameData.GetOrCreate<VoxelisXPassData>();
             vxPassData.Color = RT;
+            vxPassData.MotionVector = RT_MotionVector;
 
             // Set output
             builder.UseTexture(RT, AccessFlags.ReadWrite);
             builder.UseTexture(RT_Albedo, AccessFlags.Write);
             builder.UseTexture(RT_Normal, AccessFlags.Write);
             builder.UseTexture(passData.Depth, AccessFlags.Write);
+            builder.UseTexture(passData.MotionVector, AccessFlags.Write);
             builder.UseTexture(passData.Depth_dest, AccessFlags.Write);
             
             // RenderGraph does not see this properly set so ...
@@ -285,6 +304,7 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "AlbedoTarget", data.Albedo);
         context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "NormalTarget", data.Normal);
         context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "DepthTarget", data.Depth);
+        context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "MotionVectorTarget", data.MotionVector);
 
         // This works but feels like a super dirty hack ...
         // TODO: FIXME: Maybe PR to PBSky repo so we can use the texture properly ... idk
@@ -308,6 +328,7 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_spp", data.samplesPerPixel);
         context.cmd.SetRayTracingFloatParam(data.voxShaderRT, "g_Zoom", Mathf.Tan(Mathf.Deg2Rad * data.fov * 0.5f)); // TODO: Replace this to use camera projection matrix instead
         context.cmd.SetRayTracingFloatParam(data.voxShaderRT, "g_AspectRatio", data.width / (float)data.height);
+        context.cmd.SetRayTracingMatrixParam(data.voxShaderRT, "g_PrevWorldToCamera", prevCameraView);
         context.cmd.SetRayTracingVectorParam(data.voxShaderRT, "g_mainLightColor",
             data.mainLight.color.linear * data.mainLight.intensity * (data.mainLight.useColorTemperature
                 ? Mathf.CorrelatedColorTemperatureToRGB(data.mainLight.colorTemperature)
@@ -328,6 +349,8 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         
         cmd.SetRenderTarget(data.GI_dest, data.Depth_dest);
         data.copyDSMat.SetTexture("_DepthTex", data.Depth);
+        data.copyDSMat.SetTexture("_MotionVectorTex", data.MotionVector);
+        data.copyDSMat.SetInt("_DebugView", (int)data.debugView);
         Blitter.BlitTexture(cmd, data.GI, new Vector4(1, 1, 0, 0), data.copyDSMat, 0);
     }
 }

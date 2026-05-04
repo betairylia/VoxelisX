@@ -14,6 +14,12 @@ using Voxelis.Utils;
 /// </remarks>
 public class VoxelisXRendererFeature : ScriptableRendererFeature
 {
+    public enum DebugView
+    {
+        Regular = 0,
+        MotionVector = 1
+    }
+
     /// <summary>
     /// Ray tracing shader used for voxel rendering.
     /// </summary>
@@ -34,6 +40,9 @@ public class VoxelisXRendererFeature : ScriptableRendererFeature
     [SerializeField, Min(0)] private int bounceCountOpaque = 4;
     [SerializeField, Min(0)] private int bounceCountTransparent = 5;
     [SerializeField, Min(1)] private int samplesPerPixel = 1;
+
+    [Header("Debug")]
+    [SerializeField] private DebugView debugView = DebugView.Regular;
 
     private VoxelisXRenderPass _voxelisXRenderPass;
     private VoxelisXPostProcessPass _voxelisXPostPass;
@@ -78,6 +87,7 @@ public class VoxelisXRendererFeature : ScriptableRendererFeature
         }
 
         _voxelisXRenderPass.ConfigureRayTracingSettings(bounceCountOpaque, bounceCountTransparent, samplesPerPixel);
+        _voxelisXRenderPass.ConfigureDebugView(debugView);
         renderer.EnqueuePass(_voxelisXRenderPass);
 
         // _voxelisXPostPass.ConfigureInput(ScriptableRenderPassInput.Motion);

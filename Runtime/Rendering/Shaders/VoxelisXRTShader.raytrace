@@ -15,11 +15,13 @@ RaytracingAccelerationStructure g_AccelStruct : register(t0, space1);
 float g_Zoom = 1.0;
 float g_AspectRatio = 1.0;
 uint g_FrameIndex;
+float4x4 g_PrevWorldToCamera;
 
 RWTexture2D<float4> RenderTarget;
 RWTexture2D<float4> AlbedoTarget;
 RWTexture2D<float4> NormalTarget;
 RWTexture2D<float> DepthTarget;
+RWTexture2D<float2> MotionVectorTarget;
 
 TextureCube<float4> g_Sky;
 SamplerState sampler_g_Sky;
@@ -224,6 +226,24 @@ void MainRayGenShader()
     DepthTarget[launchIndex] = LinearEyeDepth(distanceFromCamera, _ZBufferParams);
     NormalTarget[launchIndex] = float4(normal, 0);
     AlbedoTarget[launchIndex] = float4(albedo, 1);
+
+    float2 motionVector = float2(0, 0);
+    if (!isSky)
+    {
+        float2 currentUV = frameCoord / float2(launchDim.x - 1, launchDim.y - 1);
+        float3 prevViewPosition = mul(g_PrevWorldToCamera, float4(wpos, 1.0f)).xyz;
+        float prevViewDepth = abs(prevViewPosition.z);
+
+        if (prevViewDepth > 0.00001f)
+        {
+            float2 prevNdc = prevViewPosition.xy / prevViewDepth;
+            prevNdc /= float2(g_AspectRatio * g_Zoom, g_Zoom);
+            float2 prevUV = prevNdc * 0.5f + 0.5f;
+            motionVector = currentUV - prevUV;
+        }
+    }
+
+    MotionVectorTarget[launchIndex] = motionVector;
 }
 
 static float3 skyHigh = float3(0.92, 0.95, 1.0);
