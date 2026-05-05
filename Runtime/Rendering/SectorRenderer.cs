@@ -340,6 +340,25 @@ namespace Voxelis.Rendering
         private Matrix4x4 previousObjectToWorld;
         private bool hasPreviousObjectToWorld;
 
+        private static uint HashUInt(uint value)
+        {
+            value ^= value >> 16;
+            value *= 0x7FEB352Du;
+            value ^= value >> 15;
+            value *= 0x846CA68Bu;
+            value ^= value >> 16;
+            return value;
+        }
+
+        private static uint ComputeSectorHashSeed(VoxelEntity entity, int3 sectorPos)
+        {
+            uint seed = (uint)entity.GetInstanceID();
+            seed ^= (uint)sectorPos.x * 0x9E3779B9u;
+            seed ^= (uint)sectorPos.y * 0x85EBCA6Bu;
+            seed ^= (uint)sectorPos.z * 0xC2B2AE35u;
+            return HashUInt(seed);
+        }
+
         /// <summary>
         /// Completes the render job and uploads data to GPU buffers.
         /// Must be called after RenderEmitJob() in the same frame.
@@ -445,6 +464,7 @@ namespace Voxelis.Rendering
                 if (matProps == null)
                 {
                     matProps = new MaterialPropertyBlock();
+                    matProps.SetInt("_SectorHashSeed", unchecked((int)ComputeSectorHashSeed(entity, sectorPos)));
                 }
 
                 if (brickBuffer != null && brickBuffer.IsValid())

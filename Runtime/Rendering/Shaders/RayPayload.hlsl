@@ -10,6 +10,7 @@ struct RayPayload
     float3 prevWorldHitPosition;
     half3 worldNormal;
     uint rngState;          // Random number generator state.
+    uint voxelFaceHash;
 
     int previousTransparentMaterial;
 };

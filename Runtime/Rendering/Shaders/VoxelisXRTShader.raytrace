@@ -1,5 +1,6 @@
 // #include "UnityShaderVariables.cginc"
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Packing.hlsl"
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/GlobalIllumination.hlsl"
 #include "Assets/VoxelisX/VoxelMaterials.hlsl"
@@ -112,7 +113,8 @@ float4 LoadNormalHistoryPoint(float2 uv, uint2 launchDim)
 {
     float2 historyCoord = uv * float2(launchDim.x - 1, launchDim.y - 1) - float2(0.5f, 0.5f);
     int2 historyIndex = clamp((int2)round(historyCoord), int2(0, 0), int2(launchDim) - int2(1, 1));
-    return g_PreviousNormalHistory.Load(int3(historyIndex.x, historyIndex.y, 0));
+    float4 packedNormal = g_PreviousNormalHistory.Load(int3(historyIndex.x, historyIndex.y, 0));
+    return float4(UnpackNormalOctQuadEncode(packedNormal.rg * 2.0f - 1.0f), packedNormal.a);
 }
 
 float4 LoadNormalHistoryBilinear(float2 uv, uint2 launchDim)
@@ -132,7 +134,8 @@ float4 LoadNormalHistoryBilinear(float2 uv, uint2 launchDim)
     float4 h01 = g_PreviousNormalHistory.Load(int3(coord01.x, coord01.y, 0));
     float4 h11 = g_PreviousNormalHistory.Load(int3(coord11.x, coord11.y, 0));
 
-    return lerp(lerp(h00, h10, blend.x), lerp(h01, h11, blend.x), blend.y);
+    float4 packedNormal = lerp(lerp(h00, h10, blend.x), lerp(h01, h11, blend.x), blend.y);
+    return float4(UnpackNormalOctQuadEncode(packedNormal.rg * 2.0f - 1.0f), packedNormal.a);
 }
 
 // Uncomment this pragma for debugging the HLSL code in PIX. GPU performance will be impacted.
@@ -190,6 +193,7 @@ void MainRayGenShader()
     payload.bounceIndexOpaque = 0;
     payload.bounceIndexTransparent = 0;
     payload.worldNormal = half3(0, 0, 0);
+    payload.voxelFaceHash = 0u;
     payload.previousTransparentMaterial = 0;
     // payload.bounceRayOrigin = float3(0, 0, 0);
     // payload.bounceRayDirection = float3(0, 0, 0);
@@ -272,6 +276,7 @@ void MainRayGenShader()
             shadowPayload.bounceIndexOpaque = 0;
             shadowPayload.bounceIndexTransparent = 0;
             shadowPayload.worldNormal = half3(0, 0, 0);
+            shadowPayload.voxelFaceHash = 0u;
             shadowPayload.bounceRayOrigin = float3(0, 0, 0);
             shadowPayload.bounceRayDirection = float3(0, 0, 0);
             shadowPayload.prevWorldHitPosition = float3(0, 0, 0);
@@ -390,8 +395,9 @@ void MainRayGenShader()
     float depth = LinearEyeDepth(distanceFromCamera, _ZBufferParams);
     DepthTarget[launchIndex] = depth;
     g_CurrentDepthHistory[launchIndex] = distanceFromCamera;
-    NormalTarget[launchIndex] = float4(normal, 0);
-    g_CurrentNormalHistory[launchIndex] = float4(normal, !isSky);
+    float2 packedNormal = saturate(PackNormalOctQuadEncode(isSky ? float3(0, 0, 1) : normal) * 0.5f + 0.5f);
+    NormalTarget[launchIndex] = float4(packedNormal, isSky ? 0.0f : float(payload.voxelFaceHash), 0);
+    g_CurrentNormalHistory[launchIndex] = float4(packedNormal, 0, !isSky);
     AlbedoTarget[launchIndex] = float4(albedo, 1);
 
     MotionVectorTarget[launchIndex] = motionVector;

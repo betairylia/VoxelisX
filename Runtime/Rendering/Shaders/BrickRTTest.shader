@@ -26,6 +26,7 @@ Shader "VoxelisX/BrickRTTest"
             {
                 int matID;
                 half3 normal;
+                uint faceHash;
             };
 
             float _Smoothness;
@@ -52,6 +53,7 @@ Shader "VoxelisX/BrickRTTest"
                     AttributeData attrib;
                     attrib.normal = hit.objectNormal;
                     attrib.matID = hit.materialID;
+                    attrib.faceHash = hit.faceHash;
                     ReportHit(hit.t, 0, attrib);
                 }
             }
@@ -65,6 +67,7 @@ Shader "VoxelisX/BrickRTTest"
                 hit.t = RayTCurrent();
                 hit.materialID = attribs.matID;
                 hit.objectNormal = attribs.normal;
+                hit.faceHash = attribs.faceHash;
 
                 VoxelisXApplyVoxelClosestHit(payload, hit, WorldRayOrigin(), WorldRayDirection(), ObjectRayOrigin(), ObjectRayDirection(), RayTCurrent(), ObjectToWorld3x4());
             }

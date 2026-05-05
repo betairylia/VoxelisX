@@ -45,6 +45,7 @@
 #define BRICK_INFO_COARSE_OCCUPANCY_SHIFT 16u
 #define BRICK_INFO_COARSE_OCCUPANCY_MASK 0xFFu
 #define BRICK_COARSE_SIZE_IN_BLOCKS 4
+#define VOXEL_FACE_HASH_MASK 0x3FFu
 
 struct VoxelisXBrickTraceContext
 {
@@ -60,6 +61,7 @@ struct VoxelisXBrickHit
     float t;
     int materialID;
     half3 objectNormal;
+    uint faceHash;
 };
 
 struct VoxelisXBrickAABBCandidate
@@ -74,6 +76,7 @@ struct VoxelisXBrickAABBCandidate
 
 StructuredBuffer<uint> g_bricks;
 float4x4 _PrevObjectToWorld;
+uint _SectorHashSeed;
 
 inline VoxelisXBrickHit VoxelisXMakeBrickMiss()
 {
@@ -82,7 +85,40 @@ inline VoxelisXBrickHit VoxelisXMakeBrickMiss()
     hit.t = 0.0f;
     hit.materialID = 0;
     hit.objectNormal = half3(0, 0, 0);
+    hit.faceHash = 0u;
     return hit;
+}
+
+inline uint VoxelisXHashAvalanche(uint value)
+{
+    value ^= value >> 16;
+    value *= 0x7FEB352Du;
+    value ^= value >> 15;
+    value *= 0x846CA68Bu;
+    value ^= value >> 16;
+    return value;
+}
+
+inline uint VoxelisXFaceID(int3 normal)
+{
+    if (normal.x > 0) return 0u;
+    if (normal.x < 0) return 1u;
+    if (normal.y > 0) return 2u;
+    if (normal.y < 0) return 3u;
+    if (normal.z > 0) return 4u;
+    return 5u;
+}
+
+inline uint VoxelisXMakeVoxelFaceHash(int3 sectorLocalVoxelPos, int3 normal)
+{
+    uint voxelKey =
+        uint(sectorLocalVoxelPos.x & 0x7F) |
+        (uint(sectorLocalVoxelPos.y & 0x7F) << 7) |
+        (uint(sectorLocalVoxelPos.z & 0x7F) << 14) |
+        (VoxelisXFaceID(normal) << 21);
+
+    uint hash = VoxelisXHashAvalanche(_SectorHashSeed ^ voxelKey) & VOXEL_FACE_HASH_MASK;
+    return hash == 0u ? 1u : hash;
 }
 
 inline int VoxelisXReadBrick(uint brickBase, int3 localBlockPos)
@@ -259,10 +295,11 @@ inline bool VoxelisXIntersectBrickAABB(VoxelisXBrickTraceContext context, out Vo
     return true;
 }
 
-inline bool VoxelisXTraceBrickDDA(uint brickID, uint coarseOccupancy, float3 entryPositionInBrick, float3 rayDir, float entryT, int3 entryNormal, out DDAHit hit, out int materialID)
+inline bool VoxelisXTraceBrickDDA(uint brickID, uint coarseOccupancy, float3 entryPositionInBrick, float3 rayDir, float entryT, int3 entryNormal, out DDAHit hit, out int materialID, out int3 hitBlockPosInBrick)
 {
     DDAClearHit(hit);
     materialID = 0;
+    hitBlockPosInBrick = int3(0, 0, 0);
 
     uint brickBase = VoxelisXBrickBase(brickID);
     uint4 occupancy0;
@@ -317,6 +354,7 @@ inline bool VoxelisXTraceBrickDDA(uint brickID, uint coarseOccupancy, float3 ent
                         if (shouldTerminate)
                         {
                             materialID = blockID;
+                            hitBlockPosInBrick = localBlockPos;
                             DDAMakeHit(microCursor, coarseEntryT, coarseEntryNormal, hit);
                             return true;
                         }
@@ -347,12 +385,14 @@ inline VoxelisXBrickHit VoxelisXTraceBrickPrimitive(VoxelisXBrickTraceContext co
 
     DDAHit ddaHit;
     int materialID;
-    if (VoxelisXTraceBrickDDA(candidate.brickID, candidate.coarseOccupancy, entryPositionInBrick, context.objectRayDirection, candidate.t, candidate.normal, ddaHit, materialID))
+    int3 hitBlockPosInBrick;
+    if (VoxelisXTraceBrickDDA(candidate.brickID, candidate.coarseOccupancy, entryPositionInBrick, context.objectRayDirection, candidate.t, candidate.normal, ddaHit, materialID, hitBlockPosInBrick))
     {
         result.hit = true;
         result.t = ddaHit.t;
         result.materialID = materialID;
         result.objectNormal = half3(ddaHit.normal);
+        result.faceHash = VoxelisXMakeVoxelFaceHash(candidate.brickOrigin + hitBlockPosInBrick, ddaHit.normal);
     }
 
     return result;
@@ -371,6 +411,7 @@ inline void VoxelisXApplyVoxelClosestHit(inout RayPayload payload, VoxelisXBrick
     {
         float3 objectHitPosition = objectRayOrigin + objectRayDirection * currentRayT;
         payload.prevWorldHitPosition = mul(_PrevObjectToWorld, float4(objectHitPosition, 1.0f)).xyz;
+        payload.voxelFaceHash = hit.faceHash;
     }
 
     VoxelMaterial tMat = GET_MATERIAL(payload.previousTransparentMaterial);

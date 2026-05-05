@@ -62,4 +62,3 @@ float FresnelReflectAmountTransparent(float n1, float n2, float3 incident, float
     float xx = x*x;
     return r0 + (1.0 - r0)*xx*xx*x;
 }
-
