@@ -50,6 +50,7 @@ namespace Voxelis
 
         private List<int3> sectorLoadOrder = new();
         private int currentIndex;
+        private bool initialized;
 
         /// <summary>
         /// Maximum bounds for sector loading in each axis, in sector units.
@@ -139,10 +140,32 @@ namespace Voxelis
         /// <summary>
         /// Initializes the loader by finding the VoxelEntity component and calculating load order.
         /// </summary>
-        private void Start()
+        protected virtual void OnEnable()
         {
+            InitializeLoader();
+            VoxelisXCoreWorld.instance.AddWorldLoader(this);
+        }
+
+        protected virtual void OnDisable()
+        {
+            VoxelisXCoreWorld.instance.RemoveWorldLoader(this);
+        }
+
+        protected virtual void Start()
+        {
+            InitializeLoader();
+        }
+
+        protected void InitializeLoader()
+        {
+            if (initialized)
+            {
+                return;
+            }
+
             entity = gameObject.GetComponent<VoxelEntity>();
             ResetSectorLoadOrder();
+            initialized = true;
         }
 
         /// <summary>

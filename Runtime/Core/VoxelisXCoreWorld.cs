@@ -25,6 +25,7 @@ namespace Voxelis
         }
         
         public List<VoxelEntity> entities = new();
+        private readonly List<InfiniteLoader> worldLoaders = new();
 
         /// <summary>
         /// Registers a voxel entity with this world.
@@ -47,6 +48,47 @@ namespace Voxelis
         public void RemoveEntity(VoxelEntity e)
         {
             entities.Remove(e);
+        }
+
+        /// <summary>
+        /// Registers an infinite loader with this world.
+        /// </summary>
+        /// <param name="loader">The loader to add.</param>
+        public void AddWorldLoader(InfiniteLoader loader)
+        {
+            if (worldLoaders.Contains(loader))
+            {
+                return;
+            }
+
+            worldLoaders.Add(loader);
+        }
+
+        /// <summary>
+        /// Unregisters an infinite loader from this world.
+        /// </summary>
+        /// <param name="loader">The loader to remove.</param>
+        public void RemoveWorldLoader(InfiniteLoader loader)
+        {
+            worldLoaders.Remove(loader);
+        }
+
+        /// <summary>
+        /// Ticks all infinite loaders registered with this world.
+        /// </summary>
+        protected void TickWorldLoaders()
+        {
+            for (int i = worldLoaders.Count - 1; i >= 0; i--)
+            {
+                InfiniteLoader loader = worldLoaders[i];
+                if (loader == null)
+                {
+                    worldLoaders.RemoveAt(i);
+                    continue;
+                }
+
+                loader.Tick();
+            }
         }
 
         /// <summary>

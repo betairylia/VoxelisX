@@ -97,7 +97,7 @@ namespace Voxelis
         [ContextMenu("Initialize")]
         public void Initialize()
         {
-            Dispose();
+            // Dispose();
             
             NativeList<JobHandle> fillWorldJobs = new NativeList<JobHandle>(Allocator.Temp);
             

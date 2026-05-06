@@ -68,9 +68,10 @@ namespace Voxelis
 
         public override void Tick()
         {
+            // TEMP CODE -- Tick logic
             if ((!isFirst) && freeze) return;
             isFirst = false;
-
+            
             // timer -= Time.deltaTime;
             // if (timer > 0)
             // {
@@ -81,10 +82,10 @@ namespace Voxelis
             //     timer = slowmo * 1.0f / targetTPS;
             // }
 
-            // TEMP CODE -- Tick logic
-            rayCaster?.Tick();
-
             // Ticking
+            // TODO: FIXME: Currently inf loaders will not work due to no proper sector loading transition
+            // TickWorldLoaders();
+            rayCaster?.Tick();
 
             // Fill native list by copying
             // TODO: Keep the unique instance in world and let VoxelEntity ref it?

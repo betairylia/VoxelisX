@@ -310,7 +310,7 @@ inline bool VoxelisXTraceBrickDDA(uint brickID, uint coarseOccupancy, float3 ent
 
     int3 coarseGridSize = int3(2, 2, 2);
     DDACursor coarseCursor = DDACreateCursor(entryPositionInBrick * 0.25f, rayDir * 0.25f, coarseGridSize);
-    int prevTransparentBlock = 0;
+    int prevTransparentBlock = -1;
 
     for (int coarseStep = 0; coarseStep < BRICK_COARSE_DDA_MAX_STEPS; coarseStep++)
     {
@@ -358,6 +358,10 @@ inline bool VoxelisXTraceBrickDDA(uint brickID, uint coarseOccupancy, float3 ent
                             DDAMakeHit(microCursor, coarseEntryT, coarseEntryNormal, hit);
                             return true;
                         }
+                    }
+                    else
+                    {
+                        prevTransparentBlock = 0;
                     }
 
                     DDAStep(microCursor);
