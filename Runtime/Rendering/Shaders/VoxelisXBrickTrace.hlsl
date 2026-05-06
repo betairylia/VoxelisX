@@ -45,6 +45,9 @@
 #define BRICK_INFO_COARSE_OCCUPANCY_SHIFT 16u
 #define BRICK_INFO_COARSE_OCCUPANCY_MASK 0xFFu
 #define BRICK_COARSE_SIZE_IN_BLOCKS 4
+#define BRICK_MICRO_SHIFT 2
+#define BRICK_MICRO_SIZE (1 << BRICK_MICRO_SHIFT)
+#define BRICK_MICRO_MASK (BRICK_MICRO_SIZE - 1)
 
 struct VoxelisXBrickTraceContext
 {
@@ -118,6 +121,7 @@ inline void VoxelisXLoadMicroOccupancy(uint brickBase, uint coarseBit, out uint 
 
 inline bool VoxelisXIsMicroOccupied(uint occLo, uint occHi, uint microBit)
 {
+    // return (microBit < 32u) ? ((occLo & (1u << microBit)) != 0u) : ((occHi & (1u << (microBit - 32u))) != 0u);
     if (microBit < 32u)
     {
         return (occLo & (1u << microBit)) != 0u;
@@ -129,7 +133,7 @@ inline bool VoxelisXIsMicroOccupied(uint occLo, uint occHi, uint microBit)
 inline bool VoxelisXShouldTraceMicroOccupancy(uint occLo, uint occHi, float3 rayDir)
 {
     // Future LUT early rejection can key off the 64-bit occupancy and a binned ray direction here.
-    return (occLo | occHi) != 0u;
+    return true;
 }
 
 inline bool VoxelisXShouldTerminateBrickDDA(int blockID, int previousTransparentBlock)
@@ -141,17 +145,9 @@ inline bool VoxelisXShouldTerminateBrickDDA(int blockID, int previousTransparent
 
 inline bool VoxelisXIntersectBrickAABB(VoxelisXBrickTraceContext context, out VoxelisXBrickAABBCandidate candidate)
 {
-    candidate.hit = false;
     candidate.brickID = context.primitiveIndex;
-    candidate.brickOrigin = int3(0, 0, 0);
-    candidate.t = 0.0f;
-    candidate.normal = int3(0, 0, 0);
 
     uint brickInfo = g_bricks[VoxelisXBrickBase(candidate.brickID)];
-    if (VoxelisXGetCoarseOccupancy(brickInfo) == 0u)
-    {
-        return false;
-    }
 
     uint idx = brickInfo & BRICK_INFO_ABSOLUTE_INDEX_MASK;
     int bX = int((idx & BRICK_POS_MASK) << SHIFT_SIZE_IN_BLOCKS);
@@ -175,6 +171,9 @@ inline bool VoxelisXIntersectBrickAABB(VoxelisXBrickTraceContext context, out Vo
     {
         return false;
     }
+    
+    // TODO: Do coarse bit (2x2x2) early reject here? 
+    // VoxelisXGetCoarseOccupancy(brickInfo)
 
     int3 hitNormal;
     if (largestTmin == tmin.x)
@@ -204,63 +203,52 @@ inline bool VoxelisXTraceBrickDDA(uint brickID, float3 entryPositionInBrick, flo
 
     uint brickBase = VoxelisXBrickBase(brickID);
     uint coarseOccupancy = VoxelisXGetCoarseOccupancy(g_bricks[brickBase]);
-    int3 coarseGridSize = int3(2, 2, 2);
-    DDACursor coarseCursor = DDACreateCursor(entryPositionInBrick * 0.25f, rayDir * 0.25f, coarseGridSize);
+    DDACursor cursor = DDACreateCursor(entryPositionInBrick, rayDir, SIZE_IN_BLOCKS);
+    uint occLo = 0u;
+    uint occHi = 0u;
     int prevTransparentBlock = 0;
 
-    [unroll] for (int coarseStep = 0; coarseStep < BRICK_COARSE_DDA_MAX_STEPS; coarseStep++)
+    [loop] for (int ddaStep = 0; ddaStep < BRICK_DDA_MAX_STEPS; ddaStep++)
     {
-        if (!DDAIsInside(coarseCursor, coarseGridSize))
+        if (!DDAIsInside(cursor, SIZE_IN_BLOCKS))
         {
             break;
         }
 
-        uint coarseBit = VoxelisXCoarseOccupancyBit(coarseCursor.cell);
-        if ((coarseOccupancy & (1u << coarseBit)) != 0u)
+        int3 coarseCell = cursor.cell >> BRICK_MICRO_SHIFT;
+        uint coarseBit = VoxelisXCoarseOccupancyBit(coarseCell);
+        if ((coarseOccupancy & (1u << coarseBit)) == 0u)
         {
-            uint occLo;
-            uint occHi;
-            VoxelisXLoadMicroOccupancy(brickBase, coarseBit, occLo, occHi);
+            // Faster than compute the exact distance needed to jump multiple voxels
+            DDAStep(cursor);
+            continue;
+        }
+        
+        // Let L1 Cache do its job
+        VoxelisXLoadMicroOccupancy(brickBase, coarseBit, occLo, occHi);
+        if (!VoxelisXShouldTraceMicroOccupancy(occLo, occHi, rayDir))
+        {
+            DDAStep(cursor);
+            continue;
+        }
 
-            if (VoxelisXShouldTraceMicroOccupancy(occLo, occHi, rayDir))
+        int3 microCell = cursor.cell & BRICK_MICRO_MASK;
+        uint microBit = VoxelisXMicroOccupancyBit(microCell);
+        if (VoxelisXIsMicroOccupied(occLo, occHi, microBit))
+        {
+            int blockID = VoxelisXReadBrick(brickBase + BRICK_BLOCK_DATA_OFFSET, cursor.cell);
+            bool shouldTerminate = VoxelisXShouldTerminateBrickDDA(blockID, prevTransparentBlock);
+            prevTransparentBlock = blockID;
+
+            if (shouldTerminate)
             {
-                float coarseEntryT = DDACurrentT(coarseCursor, entryT);
-                int3 coarseEntryNormal = DDACurrentNormal(coarseCursor, entryNormal);
-                int3 coarseBlockOrigin = coarseCursor.cell * BRICK_COARSE_SIZE_IN_BLOCKS;
-                float3 coarseEntryPosition = entryPositionInBrick + rayDir * (coarseEntryT - entryT) - float3(coarseBlockOrigin);
-
-                int3 microGridSize = int3(BRICK_COARSE_SIZE_IN_BLOCKS, BRICK_COARSE_SIZE_IN_BLOCKS, BRICK_COARSE_SIZE_IN_BLOCKS);
-                DDACursor microCursor = DDACreateCursor(coarseEntryPosition, rayDir, microGridSize);
-
-                [unroll] for (int microStep = 0; microStep < BRICK_MICRO_DDA_MAX_STEPS; microStep++)
-                {
-                    if (!DDAIsInside(microCursor, microGridSize))
-                    {
-                        break;
-                    }
-
-                    uint microBit = VoxelisXMicroOccupancyBit(microCursor.cell);
-                    if (VoxelisXIsMicroOccupied(occLo, occHi, microBit))
-                    {
-                        int3 localBlockPos = coarseBlockOrigin + microCursor.cell;
-                        int blockID = VoxelisXReadBrick(brickBase + BRICK_BLOCK_DATA_OFFSET, localBlockPos);
-                        bool shouldTerminate = VoxelisXShouldTerminateBrickDDA(blockID, prevTransparentBlock);
-                        prevTransparentBlock = blockID;
-
-                        if (shouldTerminate)
-                        {
-                            materialID = blockID;
-                            DDAMakeHit(microCursor, coarseEntryT, coarseEntryNormal, hit);
-                            return true;
-                        }
-                    }
-
-                    DDAStep(microCursor);
-                }
+                materialID = blockID;
+                DDAMakeHit(cursor, entryT, entryNormal, hit);
+                return true;
             }
         }
 
-        DDAStep(coarseCursor);
+        DDAStep(cursor);
     }
 
     return false;
