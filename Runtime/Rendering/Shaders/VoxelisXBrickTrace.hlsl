@@ -365,8 +365,9 @@ inline void VoxelisXApplyVoxelClosestHit(inout RayPayload payload, VoxelisXBrick
         payload.voxelFaceHash = hit.faceHash;
     }
 
-    VoxelMaterial tMat = GET_MATERIAL(payload.previousTransparentMaterial);
-    float3 ext = payload.previousTransparentMaterial == 0 ? float3(1, 1, 1) : exp(-(1 - tMat.albedo) * currentRayT * tMat.extinction);
+    bool hasPreviousTransparentMaterial = payload.previousTransparentMaterial != 0;
+    VoxelMaterial previousTransparentMaterial = GET_MATERIAL(payload.previousTransparentMaterial);
+    float3 ext = hasPreviousTransparentMaterial ? exp(-(1 - previousTransparentMaterial.albedo) * currentRayT * previousTransparentMaterial.extinction) : float3(1, 1, 1);
 
     if (IsOpaque(materialID))
     {
@@ -390,13 +391,42 @@ inline void VoxelisXApplyVoxelClosestHit(inout RayPayload payload, VoxelisXBrick
     }
     else
     {
-        payload.k = 1;
-        payload.albedo = float3(1, 1, 1);
-        payload.emission = float3(0, 0, 0);
-        payload.bounceRayOrigin = worldHitPosition - K_RAY_ORIGIN_PUSH_OFF * worldNormal;
-        payload.bounceRayDirection = worldRayDirection;
-        payload.worldNormal = worldNormal;
-        payload.previousTransparentMaterial = materialID;
+        int sourceMaterialID = payload.previousTransparentMaterial;
+        int destinationMaterialID = materialID;
+        bool hasDestinationTransparentMaterial = destinationMaterialID != 0;
+
+        float3 interfaceNormal = normalize(worldNormal);
+        if (dot(worldRayDirection, interfaceNormal) > 0.0f)
+        {
+            interfaceNormal = -interfaceNormal;
+        }
+
+        float sourceIOR = hasPreviousTransparentMaterial ? previousTransparentMaterial.IOR : 1.0f;
+        float destinationIOR = hasDestinationTransparentMaterial ? material.IOR : 1.0f;
+        float eta = sourceIOR / destinationIOR;
+
+        float3 reflectionRayDir = reflect(worldRayDirection, interfaceNormal);
+        float3 refractionRayDir = refract(worldRayDirection, interfaceNormal, eta);
+        bool canRefract = dot(refractionRayDir, refractionRayDir) > 0.000001f;
+
+        float fresnelFactor = canRefract
+            ? FresnelReflectAmountTransparent(sourceIOR, destinationIOR, worldRayDirection, interfaceNormal)
+            : 1.0f;
+        // fresnelFactor *= 0.1f;
+
+        float doRefraction = (canRefract && RandomFloat01(payload.rngState) >= fresnelFactor) ? 1.0f : 0.0f;
+        // doRefraction = 1.0f;
+        float3 bounceRayDir = normalize(lerp(reflectionRayDir, refractionRayDir, doRefraction));
+        float pushOff = doRefraction == 1.0f ? -K_RAY_ORIGIN_PUSH_OFF : K_RAY_ORIGIN_PUSH_OFF;
+
+        payload.k = doRefraction == 1.0f ? 1.0f - fresnelFactor : fresnelFactor;
+        payload.albedo = ext;
+        // payload.emission = float3(0, 0, 0);
+        payload.emission = fresnelFactor.xxx;
+        payload.bounceRayOrigin = worldHitPosition + pushOff * interfaceNormal;
+        payload.bounceRayDirection = bounceRayDir;
+        payload.worldNormal = interfaceNormal;
+        payload.previousTransparentMaterial = doRefraction == 1.0f ? destinationMaterialID : sourceMaterialID;
         payload.bounceIndexTransparent = payload.bounceIndexTransparent + 1;
     }
 }

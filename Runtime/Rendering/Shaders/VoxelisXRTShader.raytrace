@@ -271,5 +271,6 @@ static float3 skyLow = float3(0.4, 0.5, 0.6);
 [shader("miss")]
 void MainMissShader0(inout RayPayload payload: SV_RayPayload)
 {
-    VoxelisXApplyVoxelMiss(payload);
+    float3 skyRadiance = g_Sky.SampleLevel(sampler_g_Sky, WorldRayDirection(), 0).xyz;
+    VoxelisXApplyVoxelMiss(payload, skyRadiance);
 }

@@ -1,9 +1,11 @@
 #ifndef VOXELISX_RAY_PAYLOAD_UTILS_INCLUDED
 #define VOXELISX_RAY_PAYLOAD_UTILS_INCLUDED
 
-inline void VoxelisXApplyVoxelMiss(inout RayPayload payload)
+inline void VoxelisXApplyVoxelMiss(inout RayPayload payload, float3 skyRadiance)
 {
-    payload.emission = float3(0.8, 0.9, 1.0);
+    float3 ext = payload.previousTransparentMaterial == 0 ? float3(1, 1, 1) : float3(0, 0, 0);
+
+    payload.emission = skyRadiance * ext;
     payload.bounceIndexOpaque = -1;
 }
 
