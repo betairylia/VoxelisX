@@ -49,6 +49,8 @@
 #define BRICK_MICRO_SIZE (1 << BRICK_MICRO_SHIFT)
 #define BRICK_MICRO_MASK (BRICK_MICRO_SIZE - 1)
 
+#include "DDA.hlsl"
+
 struct VoxelisXBrickTraceContext
 {
     float3 objectRayOrigin;
@@ -206,7 +208,7 @@ inline bool VoxelisXTraceBrickDDA(uint brickID, float3 entryPositionInBrick, flo
     DDACursor cursor = DDACreateCursor(entryPositionInBrick, rayDir, SIZE_IN_BLOCKS);
     uint occLo = 0u;
     uint occHi = 0u;
-    int prevTransparentBlock = 0;
+    int prevTransparentBlock = -1;
 
     [loop] for (int ddaStep = 0; ddaStep < BRICK_DDA_MAX_STEPS; ddaStep++)
     {
@@ -219,6 +221,14 @@ inline bool VoxelisXTraceBrickDDA(uint brickID, float3 entryPositionInBrick, flo
         uint coarseBit = VoxelisXCoarseOccupancyBit(coarseCell);
         if ((coarseOccupancy & (1u << coarseBit)) == 0u)
         {
+            // Transparent -> Air boundary
+            if (prevTransparentBlock > 0)
+            {
+                materialID = 0;
+                DDAMakeHit(cursor, entryT, entryNormal, hit);
+                return true;
+            }
+            
             // Faster than compute the exact distance needed to jump multiple voxels
             DDAStep(cursor);
             continue;
@@ -228,6 +238,14 @@ inline bool VoxelisXTraceBrickDDA(uint brickID, float3 entryPositionInBrick, flo
         VoxelisXLoadMicroOccupancy(brickBase, coarseBit, occLo, occHi);
         if (!VoxelisXShouldTraceMicroOccupancy(occLo, occHi, rayDir))
         {
+            // Transparent -> Air boundary
+            if (prevTransparentBlock > 0)
+            {
+                materialID = 0;
+                DDAMakeHit(cursor, entryT, entryNormal, hit);
+                return true;
+            }
+            
             DDAStep(cursor);
             continue;
         }
