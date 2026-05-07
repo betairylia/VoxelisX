@@ -40,6 +40,8 @@ public class VoxelisXRendererFeature : ScriptableRendererFeature
     [SerializeField, Min(0)] private int bounceCountOpaque = 4;
     [SerializeField, Min(0)] private int bounceCountTransparent = 5;
     [SerializeField, Min(1)] private int samplesPerPixel = 1;
+    [SerializeField, Tooltip("Optional 128x8192 R8G8 UInt spatiotemporal blue-noise texture bound as stbnTexture.")]
+    private Texture2D blueNoiseTexture;
 
     [Header("Indirect Denoising")]
     [SerializeField] private VoxelisXIndirectDenoisingSettings indirectDenoising = VoxelisXIndirectDenoisingSettings.Default;
@@ -84,7 +86,7 @@ public class VoxelisXRendererFeature : ScriptableRendererFeature
         };
         // new CopyDepthPass()
 
-        _voxelisXRenderPass.InitVoxelisX(tracer, vox, postProcessMaterialFlip);
+        _voxelisXRenderPass.InitVoxelisX(tracer, vox, postProcessMaterialFlip, blueNoiseTexture);
     }
 
     /// <summary>
@@ -100,6 +102,7 @@ public class VoxelisXRendererFeature : ScriptableRendererFeature
         }
 
         _voxelisXRenderPass.ConfigureRayTracingSettings(bounceCountOpaque, bounceCountTransparent, samplesPerPixel);
+        _voxelisXRenderPass.ConfigureBlueNoiseTexture(blueNoiseTexture);
         _voxelisXRenderPass.ConfigureIndirectDenoisingSettings(indirectDenoising);
         _voxelisXRenderPass.ConfigureTemporalRadianceSettings(
             enableTemporalRadiance,

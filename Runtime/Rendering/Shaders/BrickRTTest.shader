@@ -20,6 +20,7 @@ Shader "VoxelisX/BrickRTTest"
             #include "RayPayload.hlsl"
             #include "Utils.hlsl"
             #include "Assets/VoxelisX/VoxelMaterials.hlsl"
+            #include "Utils/BlueNoise.hlsl"
             #include "VoxelisXBrickTrace.hlsl"
 
             struct AttributeData

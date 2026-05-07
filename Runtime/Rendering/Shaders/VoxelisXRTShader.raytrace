@@ -6,9 +6,10 @@
 #include "Assets/VoxelisX/VoxelMaterials.hlsl"
 #include "RayPayload.hlsl"
 #include "Utils.hlsl"
+#include "Utils/BlueNoise.hlsl"
 #include "VoxelisXRayPayloadUtils.hlsl"
 
-#define VOXELISXRT_SHADOW 1
+#define VOXELISXRT_SHADOW 0
 #define VOXELISXRT_BOUNCE 1
 
 RaytracingAccelerationStructure g_AccelStruct : register(t0, space1);
@@ -69,8 +70,8 @@ void MainRayGenShader()
     // uint rngState = uint(uint(launchIndex.x) * uint(1973) + uint(launchIndex.y) * uint(9277) + uint(g_ConvergenceStep + g_FrameIndex) * uint(26699)) | uint(1);
     uint rngState = 0;
 
-    // float2 jitter = float2(RandomFloat01(rngState), RandomFloat01(rngState)) - float2(0.5, 0.5);
-    float2 jitter = float2(0, 0);
+    float2 jitter = float2(RandomFloat01(rngState), RandomFloat01(rngState)) - float2(0.5, 0.5);
+    // float2 jitter = float2(0, 0);
 
     float2 ndcCoords = (frameCoord + jitter) / float2(launchDim.x - 1, launchDim.y - 1);
 
@@ -204,7 +205,7 @@ void MainRayGenShader()
 #if VOXELISXRT_BOUNCE
         // Keep the primary albedo out of the temporal history. It is applied once
         // during final composition so replaced voxels can reuse lighting history.
-        throughput *= 1.0f / max(0.001, payload.k);
+        // throughput *= 1.0f / max(0.001, payload.k);
         ray.Origin = payload.bounceRayOrigin;
         ray.Direction = payload.bounceRayDirection;
 
@@ -215,11 +216,11 @@ void MainRayGenShader()
 
             indirectIncidentRadiance += payload.emission * throughput;
 
-            throughput *= payload.albedo / max(0.001, payload.k);
+            // throughput *= payload.albedo / max(0.001, payload.k);
 
             float pathStopProbability = 1;
 
-    #define ENABLE_RUSSIAN_ROULETTE 1
+    #define ENABLE_RUSSIAN_ROULETTE 0
 
     #if ENABLE_RUSSIAN_ROULETTE
             float3 throughputAlbedo = throughput;

@@ -51,6 +51,7 @@
 
 #define VOXEL_FACE_HASH_MASK 0x3FFu
 
+#include "Utils/BlueNoise.hlsl"
 #include "DDA.hlsl"
 
 struct VoxelisXBrickTraceContext
@@ -319,6 +320,15 @@ inline bool VoxelisXTraceBrickDDA(uint brickID, float3 entryPositionInBrick, flo
 
         DDAStep(cursor);
     }
+    
+    // uint state = 0;
+    // entryT = RandomFloat01(state);
+    // if (prevTransparentBlock > 0 && !IsOpaque(prevTransparentBlock))
+    // {
+    //     materialID = 0;
+    //     DDAMakeHit(cursor, entryT, entryNormal, hit);
+    //     return true;
+    // }
 
     return false;
 }
@@ -377,7 +387,8 @@ inline void VoxelisXApplyVoxelClosestHit(inout RayPayload payload, VoxelisXBrick
 
         float fresnelFactor = FresnelReflectAmountOpaque(1, material.IOR, worldRayDirection, worldNormal);
         float specularChance = lerp(material.metallic, 1, fresnelFactor * material.smoothness);
-        float doSpecular = (RandomFloat01(payload.rngState) < specularChance) ? 1 : 0;
+        // float doSpecular = (RandomFloat01(payload.rngState) < specularChance) ? 1 : 0;
+        float doSpecular = 0;
 
         const float3 diffuseRayDir = normalize(worldNormal + RandomUnitVector(payload.rngState));
         float3 specularRayDir = reflect(worldRayDirection, worldNormal);

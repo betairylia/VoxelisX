@@ -45,6 +45,7 @@ public class VoxelisXRenderPass : ScriptableRenderPass
     /// Post-process material for copying depth and flipping render targets if needed.
     /// </summary>
     private Material flip;
+    private Texture2D blueNoiseTexture;
     private Material indirectRadiancePipelineMaterial;
     private Material indirectATrousFilterMaterial;
     private const string IndirectRadiancePipelineShaderName = "Hidden/VoxelisX/IndirectRadiancePipeline";
@@ -74,6 +75,7 @@ public class VoxelisXRenderPass : ScriptableRenderPass
     private static readonly int ATrousDepthSigmaID = Shader.PropertyToID("_ATrousDepthSigma");
     private static readonly int ATrousRelativeDepthSigmaID = Shader.PropertyToID("_ATrousRelativeDepthSigma");
     private static readonly int ATrousRadianceSigmaID = Shader.PropertyToID("_ATrousRadianceSigma");
+    private const string BlueNoiseTextureName = "stbnTexture";
 
     /// <summary>
     /// Stores previous camera state for temporal accumulation.
@@ -202,6 +204,8 @@ public class VoxelisXRenderPass : ScriptableRenderPass
 
         internal RayTracingShader voxShaderRT;
         internal RayTracingAccelerationStructure voxAS;
+        internal Texture2D blueNoiseTexture;
+        internal Material brickMaterial;
         internal PrevCameraState cameraState;
         internal bool historyValid;
     }
@@ -322,11 +326,13 @@ public class VoxelisXRenderPass : ScriptableRenderPass
     /// <param name="rtShader">Ray tracing shader for voxel rendering.</param>
     /// <param name="vox">VoxelisX renderer instance.</param>
     /// <param name="flip">Material for post-processing and depth copying.</param>
-    public void InitVoxelisX(RayTracingShader rtShader, VoxelisXRenderer vox, Material flip)
+    /// <param name="blueNoiseTexture">Optional 128x8192 RG integer STBN texture for ray sampling.</param>
+    public void InitVoxelisX(RayTracingShader rtShader, VoxelisXRenderer vox, Material flip, Texture2D blueNoiseTexture)
     {
         rayTracingShader = rtShader;
         voxelisX = vox;
         this.flip = flip;
+        ConfigureBlueNoiseTexture(blueNoiseTexture);
     }
 
     public void ConfigureRayTracingSettings(int bounceCountOpaque, int bounceCountTransparent, int samplesPerPixel)
@@ -334,6 +340,11 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         this.bounceCountOpaque = Mathf.Max(0, bounceCountOpaque);
         this.bounceCountTransparent = Mathf.Max(0, bounceCountTransparent);
         this.samplesPerPixel = Mathf.Max(1, samplesPerPixel);
+    }
+
+    public void ConfigureBlueNoiseTexture(Texture2D texture)
+    {
+        blueNoiseTexture = texture;
     }
 
     public void ConfigureDebugView(VoxelisXRendererFeature.DebugView debugView)
@@ -494,6 +505,8 @@ public class VoxelisXRenderPass : ScriptableRenderPass
 
             passData.voxShaderRT = rayTracingShader;
             passData.voxAS = voxelisX.voxelScene;
+            passData.blueNoiseTexture = GetBlueNoiseTexture();
+            passData.brickMaterial = voxelisX.brickMat;
             passData.cameraState = cameraState;
             passData.historyValid = cameraState.history.IsValid;
 
@@ -806,6 +819,11 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         return state;
     }
 
+    private Texture2D GetBlueNoiseTexture()
+    {
+        return blueNoiseTexture;
+    }
+
     public void Dispose()
     {
         foreach (PrevCameraState state in prevFrameState.Values)
@@ -871,6 +889,16 @@ public class VoxelisXRenderPass : ScriptableRenderPass
 
         var natcmd = CommandBufferHelpers.GetNativeCommandBuffer(context.cmd);
         natcmd.SetRayTracingShaderPass(data.voxShaderRT, "VoxelisX");
+        if (data.brickMaterial != null)
+        {
+            if (data.blueNoiseTexture != null)
+            {
+                data.brickMaterial.SetTexture(BlueNoiseTextureName, data.blueNoiseTexture);
+            }
+
+            data.brickMaterial.SetInt("g_FrameIndex", Time.frameCount);
+        }
+
         context.cmd.BuildRayTracingAccelerationStructure(data.voxAS);
 
         context.cmd.SetRayTracingAccelerationStructure(data.voxShaderRT, "g_AccelStruct", data.voxAS);
@@ -897,6 +925,11 @@ public class VoxelisXRenderPass : ScriptableRenderPass
 
         // context.cmd.SetRayTracingMatrixParam(data.voxShaderRT, "g_PrevCameraToWorld", prevCameraView.inverse);
         // context.cmd.SetRayTracingMatrixParam(data.voxShaderRT, "g_PrevViewProjection", prevCameraView);
+
+        if (data.blueNoiseTexture != null)
+        {
+            natcmd.SetRayTracingTextureParam(data.voxShaderRT, BlueNoiseTextureName, data.blueNoiseTexture);
+        }
 
         context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_FrameIndex", Time.frameCount);
         context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_ConvergenceStep", data.cameraState.frames);
