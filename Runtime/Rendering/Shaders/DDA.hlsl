@@ -9,6 +9,11 @@
 #define DDA_MIN_RAY_DIR 1e-20f
 #endif
 
+// Assumptions
+// Cubic grid
+// GridSize is PoT
+// GridSize <= 512
+
 // Buffer reads and termination policy stay with the caller so the same cursor can drive brick or hierarchy traversal.
 struct DDACursor
 {
@@ -49,11 +54,11 @@ inline void DDAClearHit(out DDAHit hit)
 }
 
 // rayDir must be normalized
-inline DDACursor DDACreateCursor(float3 entryPositionInGrid, float3 rayDir, int3 gridSize)
+inline DDACursor DDACreateCursor(float3 entryPositionInGrid, float3 rayDir, int gridSize)
 {
     DDACursor cursor;
 
-    float3 gridMax = float3(gridSize.x, gridSize.y, gridSize.z) - DDA_GRID_EPSILON;
+    float3 gridMax = float3(gridSize, gridSize, gridSize) - DDA_GRID_EPSILON;
     float3 entryPos = clamp(entryPositionInGrid, 0.0f, gridMax);
     float3 raySign = sign(rayDir);
     // float rayLength = length(rayDir);
@@ -69,10 +74,10 @@ inline DDACursor DDACreateCursor(float3 entryPositionInGrid, float3 rayDir, int3
     return cursor;
 }
 
-inline bool DDAIsInside(DDACursor cursor, int3 gridSize)
+inline bool DDAIsInside(DDACursor cursor, int gridSize)
 {
     // return !any(cursor.cell < 0) && !any(cursor.cell >= gridSize);
-    return !any(uint3(cursor.cell) >= uint3(gridSize));
+    return !any(uint3(cursor.cell) >= uint(gridSize));
 }
 
 inline bool3 DDANextAxisMask(float3 sideDist)
@@ -83,8 +88,14 @@ inline bool3 DDANextAxisMask(float3 sideDist)
 inline void DDAStep(inout DDACursor cursor)
 {
     cursor.axisMask = DDANextAxisMask(cursor.sideDist);
-    cursor.sideDist += DDAFloatMask(cursor.axisMask) * cursor.deltaDist;
-    cursor.cell += DDAIntMask(cursor.axisMask) * cursor.step;
+    cursor.sideDist += float3(
+        cursor.axisMask.x ? cursor.deltaDist.x : 0.0f,
+        cursor.axisMask.y ? cursor.deltaDist.y : 0.0f,
+        cursor.axisMask.z ? cursor.deltaDist.z : 0.0f);
+    cursor.cell += int3(
+        cursor.axisMask.x ? cursor.step.x : 0,
+        cursor.axisMask.y ? cursor.step.y : 0,
+        cursor.axisMask.z ? cursor.step.z : 0);
     cursor.stepIndex++;
 }
 

@@ -69,8 +69,8 @@ void MainRayGenShader()
     // Initial random number generator seed for this pixel. The rngState will change every time we draw a random number.
     uint rngState = uint(uint(launchIndex.x) * uint(1973) + uint(launchIndex.y) * uint(9277) + uint(g_ConvergenceStep + g_FrameIndex) * uint(26699)) | uint(1);
 
-    // float2 jitter = float2(RandomFloat01(rngState), RandomFloat01(rngState)) - float2(0.5, 0.5);
-    float2 jitter = float2(0, 0);
+    float2 jitter = float2(RandomFloat01(rngState), RandomFloat01(rngState)) - float2(0.5, 0.5);
+    // float2 jitter = float2(0, 0);
 
     float2 ndcCoords = (frameCoord + jitter) / float2(launchDim.x - 1, launchDim.y - 1);
 
