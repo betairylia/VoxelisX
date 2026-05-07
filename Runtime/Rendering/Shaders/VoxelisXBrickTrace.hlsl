@@ -421,8 +421,8 @@ inline void VoxelisXApplyVoxelClosestHit(inout RayPayload payload, VoxelisXBrick
 
         payload.k = doRefraction == 1.0f ? 1.0f - fresnelFactor : fresnelFactor;
         payload.albedo = ext;
-        // payload.emission = float3(0, 0, 0);
-        payload.emission = fresnelFactor.xxx;
+        payload.emission = float3(0, 0, 0);
+        // payload.emission = fresnelFactor.xxx;
         payload.bounceRayOrigin = worldHitPosition + pushOff * interfaceNormal;
         payload.bounceRayDirection = bounceRayDir;
         payload.worldNormal = interfaceNormal;

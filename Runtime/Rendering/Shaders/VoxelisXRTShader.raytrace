@@ -15,7 +15,6 @@ RaytracingAccelerationStructure g_AccelStruct : register(t0, space1);
 
 float g_Zoom = 1.0;
 float g_AspectRatio = 1.0;
-uint g_FrameIndex;
 float3 g_CameraWorldPosition;
 float4x4 g_CurrentWorldToCamera;
 float4x4 g_CurrentCameraToWorld;
@@ -67,10 +66,11 @@ void MainRayGenShader()
     float3 indirectIncidentRadiance = float3(0, 0, 0);
 
     // Initial random number generator seed for this pixel. The rngState will change every time we draw a random number.
-    uint rngState = uint(uint(launchIndex.x) * uint(1973) + uint(launchIndex.y) * uint(9277) + uint(g_ConvergenceStep + g_FrameIndex) * uint(26699)) | uint(1);
+    // uint rngState = uint(uint(launchIndex.x) * uint(1973) + uint(launchIndex.y) * uint(9277) + uint(g_ConvergenceStep + g_FrameIndex) * uint(26699)) | uint(1);
+    uint rngState = 0;
 
-    float2 jitter = float2(RandomFloat01(rngState), RandomFloat01(rngState)) - float2(0.5, 0.5);
-    // float2 jitter = float2(0, 0);
+    // float2 jitter = float2(RandomFloat01(rngState), RandomFloat01(rngState)) - float2(0.5, 0.5);
+    float2 jitter = float2(0, 0);
 
     float2 ndcCoords = (frameCoord + jitter) / float2(launchDim.x - 1, launchDim.y - 1);
 
@@ -247,7 +247,8 @@ void MainRayGenShader()
         isSky = true;
     }
 
-    DirectRadianceTarget[launchIndex] = float4(primaryEmissionRadiance + directRadiance, !isSky);
+    // DirectRadianceTarget[launchIndex] = float4(primaryEmissionRadiance + directRadiance, !isSky);
+    DirectRadianceTarget[launchIndex] = float4(primaryEmissionRadiance, !isSky);
     IndirectRadianceTarget[launchIndex] = float4(indirectIncidentRadiance, !isSky);
     // DirectRadianceTarget[launchIndex] = float4(payload.bounceIndexOpaque / 100.0 * float3(1, 1, 1), 1);
     // DirectRadianceTarget[launchIndex] = float4(payload.albedo, 1);

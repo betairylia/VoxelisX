@@ -30,6 +30,8 @@ Shader "Hidden/VoxelisX/IndirectRadiancePipeline"
         float _TemporalRadianceRelativeDepthTolerance;
         float _TemporalRadianceNormalThreshold;
         float _ConvergenceStep;
+        int _SeparableFilterRadius;
+        float _SeparableFilterDistanceSigma;
 
         uint2 VoxelisXPixelCoord(float2 uv)
         {
@@ -138,7 +140,7 @@ Shader "Hidden/VoxelisX/IndirectRadiancePipeline"
             [unroll]
             for (int offset = -7; offset <= 7; offset++)
             {
-                if (offset == 0)
+                if (offset == 0 || abs(offset) > _SeparableFilterRadius)
                 {
                     continue;
                 }
@@ -155,7 +157,7 @@ Shader "Hidden/VoxelisX/IndirectRadiancePipeline"
                 if (accept)
                 {
                     float distance = abs(float(offset));
-                    float weight = exp(-(distance * distance) / 18.0f);
+                    float weight = exp(-(distance * distance) / max(_SeparableFilterDistanceSigma, 0.0001f));
                     radianceSum += sampleIndirect.rgb * weight;
                     weightSum += weight;
                 }

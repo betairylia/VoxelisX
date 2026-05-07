@@ -31,7 +31,7 @@ public class VoxelisXRenderPass : ScriptableRenderPass
     private int bounceCountTransparent = 5;
     private int samplesPerPixel = 1;
     private VoxelisXRendererFeature.DebugView debugView = VoxelisXRendererFeature.DebugView.Regular;
-    private bool enableIndirectSpatialSmoothing = true;
+    private VoxelisXIndirectDenoisingSettings indirectDenoisingSettings = VoxelisXIndirectDenoisingSettings.Default;
     private bool enableTemporalRadiance = true;
     private float temporalRadianceCurrentFrameMinWeight = 0.0f;
     private bool temporalRadianceDepthRejection = true;
@@ -46,7 +46,14 @@ public class VoxelisXRenderPass : ScriptableRenderPass
     /// </summary>
     private Material flip;
     private Material indirectRadiancePipelineMaterial;
+    private Material indirectATrousFilterMaterial;
     private const string IndirectRadiancePipelineShaderName = "Hidden/VoxelisX/IndirectRadiancePipeline";
+    private const string IndirectATrousFilterShaderName = "Hidden/VoxelisX/IndirectATrousFilter";
+    private const int IndirectPipelinePassSpatialFilterX = 0;
+    private const int IndirectPipelinePassSpatialFilterY = 1;
+    private const int IndirectPipelinePassTemporalAccumulation = 2;
+    private const int IndirectPipelinePassComposite = 3;
+    private const int IndirectATrousFilterPass = 0;
     private static readonly int IndirectRadianceTexID = Shader.PropertyToID("_IndirectRadianceTex");
     private static readonly int DirectRadianceTexID = Shader.PropertyToID("_DirectRadianceTex");
     private static readonly int AlbedoTexID = Shader.PropertyToID("_AlbedoTex");
@@ -59,6 +66,14 @@ public class VoxelisXRenderPass : ScriptableRenderPass
     private static readonly int PreviousIndirectRadianceHistoryTexID = Shader.PropertyToID("_PreviousIndirectRadianceHistoryTex");
     private static readonly int PreviousDepthHistoryTexID = Shader.PropertyToID("_PreviousDepthHistoryTex");
     private static readonly int PreviousNormalHistoryTexID = Shader.PropertyToID("_PreviousNormalHistoryTex");
+    private static readonly int SeparableFilterRadiusID = Shader.PropertyToID("_SeparableFilterRadius");
+    private static readonly int SeparableFilterDistanceSigmaID = Shader.PropertyToID("_SeparableFilterDistanceSigma");
+    private static readonly int ATrousStepWidthID = Shader.PropertyToID("_ATrousStepWidth");
+    private static readonly int ATrousUseFaceHashID = Shader.PropertyToID("_ATrousUseFaceHash");
+    private static readonly int ATrousNormalPowerID = Shader.PropertyToID("_ATrousNormalPower");
+    private static readonly int ATrousDepthSigmaID = Shader.PropertyToID("_ATrousDepthSigma");
+    private static readonly int ATrousRelativeDepthSigmaID = Shader.PropertyToID("_ATrousRelativeDepthSigma");
+    private static readonly int ATrousRadianceSigmaID = Shader.PropertyToID("_ATrousRadianceSigma");
 
     /// <summary>
     /// Stores previous camera state for temporal accumulation.
@@ -196,10 +211,23 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         internal int width;
         internal int height;
         internal bool enabled;
+        internal VoxelisXSeparable15TapFilterSettings settings;
         internal TextureHandle RawIndirectRadiance;
         internal TextureHandle Normal;
         internal Material material;
         internal int passIndex;
+    }
+
+    internal class ATrousFilterPassData
+    {
+        internal int width;
+        internal int height;
+        internal int stepWidth;
+        internal VoxelisXATrousFilterSettings settings;
+        internal TextureHandle SourceIndirectRadiance;
+        internal TextureHandle Normal;
+        internal TextureHandle CurrentDepthHistory;
+        internal Material material;
     }
 
     internal class TemporalAccumulationPassData
@@ -313,9 +341,23 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         this.debugView = debugView;
     }
 
-    public void ConfigureIndirectDenoisingSettings(bool enableSpatialSmoothing)
+    public void ConfigureIndirectDenoisingSettings(VoxelisXIndirectDenoisingSettings settings)
     {
-        enableIndirectSpatialSmoothing = enableSpatialSmoothing;
+        indirectDenoisingSettings = ValidateIndirectDenoisingSettings(settings);
+    }
+
+    private static VoxelisXIndirectDenoisingSettings ValidateIndirectDenoisingSettings(VoxelisXIndirectDenoisingSettings settings)
+    {
+        settings.separable15Tap.radius = Mathf.Clamp(settings.separable15Tap.radius, 1, 7);
+        settings.separable15Tap.distanceSigma = Mathf.Max(0.0001f, settings.separable15Tap.distanceSigma);
+
+        settings.aTrous.iterations = Mathf.Clamp(settings.aTrous.iterations, 1, 6);
+        settings.aTrous.normalPower = Mathf.Max(0.0f, settings.aTrous.normalPower);
+        settings.aTrous.depthSigma = Mathf.Max(0.0001f, settings.aTrous.depthSigma);
+        settings.aTrous.relativeDepthSigma = Mathf.Max(0.0f, settings.aTrous.relativeDepthSigma);
+        settings.aTrous.radianceSigma = Mathf.Max(0.0001f, settings.aTrous.radianceSigma);
+
+        return settings;
     }
 
     public void ConfigureTemporalRadianceSettings(
@@ -423,7 +465,6 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         vxPassData.Depth = RT_Depth;
         vxPassData.MotionVector = RT_MotionVector;
         vxPassData.RawIndirectRadiance = RT_RawIndirectRadiance;
-        vxPassData.FilteredIndirectRadiance = RT_FilteredIndirectRadiance;
         vxPassData.AccumulatedIndirectRadiance = RT_CurrentIndirectRadianceHistory;
 
         using (var builder = renderGraph.AddUnsafePass<RayTracingPassData>("VoxelisX DXR Trace", out var passData))
@@ -485,53 +526,17 @@ public class VoxelisXRenderPass : ScriptableRenderPass
             });
         }
 
-        using (var builder = renderGraph.AddRasterRenderPass<SpatialFilterPassData>("VoxelisX Indirect Spatial Filter X", out var passData))
-        {
-            passData.width = cameraData.scaledWidth;
-            passData.height = cameraData.scaledHeight;
-            passData.enabled = enableIndirectSpatialSmoothing;
-            passData.RawIndirectRadiance = RT_RawIndirectRadiance;
-            passData.Normal = RT_Normal;
-            passData.material = indirectMaterial;
-            passData.passIndex = 0;
-
-            builder.UseTexture(passData.RawIndirectRadiance, AccessFlags.Read);
-            builder.UseTexture(passData.Normal, AccessFlags.Read);
-            builder.UseGlobalTexture(IndirectRadianceTexID);
-            builder.UseGlobalTexture(NormalTexID);
-            builder.SetRenderAttachment(RT_SpatialIndirectRadianceTemp, 0, AccessFlags.Write);
-            builder.SetGlobalTextureAfterPass(RT_SpatialIndirectRadianceTemp, IndirectRadianceTexID);
-            builder.AllowPassCulling(false);
-            builder.AllowGlobalStateModification(true);
-            builder.SetRenderFunc((SpatialFilterPassData data, RasterGraphContext ctx) =>
-            {
-                RenderSpatialFilterPass(data, ctx);
-            });
-        }
-
-        using (var builder = renderGraph.AddRasterRenderPass<SpatialFilterPassData>("VoxelisX Indirect Spatial Filter Y", out var passData))
-        {
-            passData.width = cameraData.scaledWidth;
-            passData.height = cameraData.scaledHeight;
-            passData.enabled = enableIndirectSpatialSmoothing;
-            passData.RawIndirectRadiance = RT_SpatialIndirectRadianceTemp;
-            passData.Normal = RT_Normal;
-            passData.material = indirectMaterial;
-            passData.passIndex = 1;
-
-            builder.UseTexture(passData.RawIndirectRadiance, AccessFlags.Read);
-            builder.UseTexture(passData.Normal, AccessFlags.Read);
-            builder.UseGlobalTexture(IndirectRadianceTexID);
-            builder.UseGlobalTexture(NormalTexID);
-            builder.SetRenderAttachment(RT_FilteredIndirectRadiance, 0, AccessFlags.Write);
-            builder.SetGlobalTextureAfterPass(RT_FilteredIndirectRadiance, IndirectRadianceTexID);
-            builder.AllowPassCulling(false);
-            builder.AllowGlobalStateModification(true);
-            builder.SetRenderFunc((SpatialFilterPassData data, RasterGraphContext ctx) =>
-            {
-                RenderSpatialFilterPass(data, ctx);
-            });
-        }
+        TextureHandle RT_SelectedIndirectRadiance = RecordIndirectDenoising(
+            renderGraph,
+            cameraData.scaledWidth,
+            cameraData.scaledHeight,
+            RT_RawIndirectRadiance,
+            RT_SpatialIndirectRadianceTemp,
+            RT_FilteredIndirectRadiance,
+            RT_Normal,
+            RT_CurrentDepthHistory,
+            indirectMaterial);
+        vxPassData.FilteredIndirectRadiance = RT_SelectedIndirectRadiance;
 
         using (var builder = renderGraph.AddRasterRenderPass<TemporalAccumulationPassData>("VoxelisX Indirect Temporal Accumulation", out var passData))
         {
@@ -549,7 +554,7 @@ public class VoxelisXRenderPass : ScriptableRenderPass
             passData.temporalRadianceNormalThreshold = temporalRadianceNormalThreshold;
             passData.temporalRadianceBilinearHistory = temporalRadianceBilinearHistory;
             passData.historyValid = cameraState.history.IsValid;
-            passData.FilteredIndirectRadiance = RT_FilteredIndirectRadiance;
+            passData.FilteredIndirectRadiance = RT_SelectedIndirectRadiance;
             passData.MotionVector = RT_MotionVector;
             passData.PreviousIndirectRadianceHistory = RT_PreviousIndirectRadianceHistory;
             passData.PreviousDepthHistory = RT_PreviousDepthHistory;
@@ -627,6 +632,165 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         }
     }
 
+    private TextureHandle RecordIndirectDenoising(
+        RenderGraph renderGraph,
+        int width,
+        int height,
+        TextureHandle rawIndirectRadiance,
+        TextureHandle spatialIndirectRadianceTemp,
+        TextureHandle filteredIndirectRadiance,
+        TextureHandle normal,
+        TextureHandle currentDepthHistory,
+        Material indirectMaterial)
+    {
+        switch (indirectDenoisingSettings.mode)
+        {
+            case VoxelisXIndirectSpatialFilterMode.Disabled:
+                return rawIndirectRadiance;
+            case VoxelisXIndirectSpatialFilterMode.ATrous:
+                return RecordATrousFilter(
+                    renderGraph,
+                    width,
+                    height,
+                    rawIndirectRadiance,
+                    spatialIndirectRadianceTemp,
+                    filteredIndirectRadiance,
+                    normal,
+                    currentDepthHistory);
+            case VoxelisXIndirectSpatialFilterMode.Separable15Tap:
+            default:
+                return RecordSeparable15TapFilter(
+                    renderGraph,
+                    width,
+                    height,
+                    rawIndirectRadiance,
+                    spatialIndirectRadianceTemp,
+                    filteredIndirectRadiance,
+                    normal,
+                    indirectMaterial);
+        }
+    }
+
+    private TextureHandle RecordSeparable15TapFilter(
+        RenderGraph renderGraph,
+        int width,
+        int height,
+        TextureHandle rawIndirectRadiance,
+        TextureHandle spatialIndirectRadianceTemp,
+        TextureHandle filteredIndirectRadiance,
+        TextureHandle normal,
+        Material indirectMaterial)
+    {
+        using (var builder = renderGraph.AddRasterRenderPass<SpatialFilterPassData>("VoxelisX Indirect Spatial Filter X", out var passData))
+        {
+            passData.width = width;
+            passData.height = height;
+            passData.enabled = true;
+            passData.settings = indirectDenoisingSettings.separable15Tap;
+            passData.RawIndirectRadiance = rawIndirectRadiance;
+            passData.Normal = normal;
+            passData.material = indirectMaterial;
+            passData.passIndex = IndirectPipelinePassSpatialFilterX;
+
+            builder.UseTexture(passData.RawIndirectRadiance, AccessFlags.Read);
+            builder.UseTexture(passData.Normal, AccessFlags.Read);
+            builder.UseGlobalTexture(IndirectRadianceTexID);
+            builder.UseGlobalTexture(NormalTexID);
+            builder.SetRenderAttachment(spatialIndirectRadianceTemp, 0, AccessFlags.Write);
+            builder.SetGlobalTextureAfterPass(spatialIndirectRadianceTemp, IndirectRadianceTexID);
+            builder.AllowPassCulling(false);
+            builder.AllowGlobalStateModification(true);
+            builder.SetRenderFunc((SpatialFilterPassData data, RasterGraphContext ctx) =>
+            {
+                RenderSpatialFilterPass(data, ctx);
+            });
+        }
+
+        using (var builder = renderGraph.AddRasterRenderPass<SpatialFilterPassData>("VoxelisX Indirect Spatial Filter Y", out var passData))
+        {
+            passData.width = width;
+            passData.height = height;
+            passData.enabled = true;
+            passData.settings = indirectDenoisingSettings.separable15Tap;
+            passData.RawIndirectRadiance = spatialIndirectRadianceTemp;
+            passData.Normal = normal;
+            passData.material = indirectMaterial;
+            passData.passIndex = IndirectPipelinePassSpatialFilterY;
+
+            builder.UseTexture(passData.RawIndirectRadiance, AccessFlags.Read);
+            builder.UseTexture(passData.Normal, AccessFlags.Read);
+            builder.UseGlobalTexture(IndirectRadianceTexID);
+            builder.UseGlobalTexture(NormalTexID);
+            builder.SetRenderAttachment(filteredIndirectRadiance, 0, AccessFlags.Write);
+            builder.SetGlobalTextureAfterPass(filteredIndirectRadiance, IndirectRadianceTexID);
+            builder.AllowPassCulling(false);
+            builder.AllowGlobalStateModification(true);
+            builder.SetRenderFunc((SpatialFilterPassData data, RasterGraphContext ctx) =>
+            {
+                RenderSpatialFilterPass(data, ctx);
+            });
+        }
+
+        return filteredIndirectRadiance;
+    }
+
+    private TextureHandle RecordATrousFilter(
+        RenderGraph renderGraph,
+        int width,
+        int height,
+        TextureHandle rawIndirectRadiance,
+        TextureHandle spatialIndirectRadianceTemp,
+        TextureHandle filteredIndirectRadiance,
+        TextureHandle normal,
+        TextureHandle currentDepthHistory)
+    {
+        Material aTrousMaterial = EnsureIndirectATrousFilterMaterial();
+        if (aTrousMaterial == null)
+        {
+            return rawIndirectRadiance;
+        }
+
+        TextureHandle source = rawIndirectRadiance;
+        TextureHandle destination = rawIndirectRadiance;
+        int iterations = indirectDenoisingSettings.aTrous.iterations;
+
+        for (int iteration = 0; iteration < iterations; iteration++)
+        {
+            destination = (iteration & 1) == 0 ? spatialIndirectRadianceTemp : filteredIndirectRadiance;
+
+            using (var builder = renderGraph.AddRasterRenderPass<ATrousFilterPassData>($"VoxelisX Indirect A-Trous Filter {iteration + 1}", out var passData))
+            {
+                passData.width = width;
+                passData.height = height;
+                passData.stepWidth = 1 << iteration;
+                passData.settings = indirectDenoisingSettings.aTrous;
+                passData.SourceIndirectRadiance = source;
+                passData.Normal = normal;
+                passData.CurrentDepthHistory = currentDepthHistory;
+                passData.material = aTrousMaterial;
+
+                builder.UseTexture(passData.SourceIndirectRadiance, AccessFlags.Read);
+                builder.UseTexture(passData.Normal, AccessFlags.Read);
+                builder.UseTexture(passData.CurrentDepthHistory, AccessFlags.Read);
+                builder.UseGlobalTexture(IndirectRadianceTexID);
+                builder.UseGlobalTexture(NormalTexID);
+                builder.UseGlobalTexture(CurrentDepthHistoryTexID);
+                builder.SetRenderAttachment(destination, 0, AccessFlags.Write);
+                builder.SetGlobalTextureAfterPass(destination, IndirectRadianceTexID);
+                builder.AllowPassCulling(false);
+                builder.AllowGlobalStateModification(true);
+                builder.SetRenderFunc((ATrousFilterPassData data, RasterGraphContext ctx) =>
+                {
+                    RenderATrousFilterPass(data, ctx);
+                });
+            }
+
+            source = destination;
+        }
+
+        return destination;
+    }
+
     private static PrevCameraState GetOrCreateCameraState(Camera camera, Matrix4x4 initialCameraMat)
     {
         if (!prevFrameState.TryGetValue(camera, out PrevCameraState state))
@@ -652,6 +816,8 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         prevFrameState.Clear();
         CoreUtils.Destroy(indirectRadiancePipelineMaterial);
         indirectRadiancePipelineMaterial = null;
+        CoreUtils.Destroy(indirectATrousFilterMaterial);
+        indirectATrousFilterMaterial = null;
     }
 
     private Material EnsureIndirectRadiancePipelineMaterial()
@@ -670,6 +836,24 @@ public class VoxelisXRenderPass : ScriptableRenderPass
 
         indirectRadiancePipelineMaterial = CoreUtils.CreateEngineMaterial(shader);
         return indirectRadiancePipelineMaterial;
+    }
+
+    private Material EnsureIndirectATrousFilterMaterial()
+    {
+        if (indirectATrousFilterMaterial != null)
+        {
+            return indirectATrousFilterMaterial;
+        }
+
+        Shader shader = Shader.Find(IndirectATrousFilterShaderName);
+        if (shader == null)
+        {
+            Debug.LogError($"Cannot find shader '{IndirectATrousFilterShaderName}'.");
+            return null;
+        }
+
+        indirectATrousFilterMaterial = CoreUtils.CreateEngineMaterial(shader);
+        return indirectATrousFilterMaterial;
     }
 
     static void RenderRayTracingPass(RayTracingPassData data, UnsafeGraphContext context)
@@ -746,8 +930,23 @@ public class VoxelisXRenderPass : ScriptableRenderPass
     {
         SetIndirectPipelineFrameParams(data.material, data.width, data.height);
         data.material.SetInt("_SpatialFilterEnabled", data.enabled ? 1 : 0);
+        data.material.SetInt(SeparableFilterRadiusID, data.settings.radius);
+        data.material.SetFloat(SeparableFilterDistanceSigmaID, data.settings.distanceSigma);
 
         Blitter.BlitTexture(context.cmd, data.RawIndirectRadiance, new Vector4(1, 1, 0, 0), data.material, data.passIndex);
+    }
+
+    static void RenderATrousFilterPass(ATrousFilterPassData data, RasterGraphContext context)
+    {
+        SetIndirectPipelineFrameParams(data.material, data.width, data.height);
+        data.material.SetInt(ATrousStepWidthID, data.stepWidth);
+        data.material.SetInt(ATrousUseFaceHashID, data.settings.useFaceHash ? 1 : 0);
+        data.material.SetFloat(ATrousNormalPowerID, data.settings.normalPower);
+        data.material.SetFloat(ATrousDepthSigmaID, data.settings.depthSigma);
+        data.material.SetFloat(ATrousRelativeDepthSigmaID, data.settings.relativeDepthSigma);
+        data.material.SetFloat(ATrousRadianceSigmaID, data.settings.radianceSigma);
+
+        Blitter.BlitTexture(context.cmd, data.SourceIndirectRadiance, new Vector4(1, 1, 0, 0), data.material, IndirectATrousFilterPass);
     }
 
     static void RenderTemporalAccumulationPass(TemporalAccumulationPassData data, RasterGraphContext context)
@@ -767,7 +966,7 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         data.material.SetTexture(PreviousDepthHistoryTexID, data.PreviousDepthHistory);
         data.material.SetTexture(PreviousNormalHistoryTexID, data.PreviousNormalHistory);
 
-        Blitter.BlitTexture(context.cmd, data.FilteredIndirectRadiance, new Vector4(1, 1, 0, 0), data.material, 2);
+        Blitter.BlitTexture(context.cmd, data.FilteredIndirectRadiance, new Vector4(1, 1, 0, 0), data.material, IndirectPipelinePassTemporalAccumulation);
         data.history.SwapAfterWrite();
     }
 
@@ -775,7 +974,7 @@ public class VoxelisXRenderPass : ScriptableRenderPass
     {
         SetIndirectPipelineFrameParams(data.material, data.width, data.height);
 
-        Blitter.BlitTexture(context.cmd, data.DirectRadiance, new Vector4(1, 1, 0, 0), data.material, 3);
+        Blitter.BlitTexture(context.cmd, data.DirectRadiance, new Vector4(1, 1, 0, 0), data.material, IndirectPipelinePassComposite);
     }
 
     static void RenderCopyToCameraPass(CopyToCameraPassData data, UnsafeGraphContext context)

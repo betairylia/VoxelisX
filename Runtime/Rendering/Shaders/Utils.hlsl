@@ -5,30 +5,30 @@
 #define K_T_MAX                 10000
 #define K_RAY_ORIGIN_PUSH_OFF   0.002
 
-uint WangHash(inout uint seed)
-{
-    seed = (seed ^ 61) ^ (seed >> 16);
-    seed *= 9;
-    seed = seed ^ (seed >> 4);
-    seed *= 0x27d4eb2d;
-    seed = seed ^ (seed >> 15);
-    return seed;
-}
-
-float RandomFloat01(inout uint seed)
-{
-    return float(WangHash(seed)) / float(0xFFFFFFFF);
-}
-
-float3 RandomUnitVector(inout uint state)
-{
-    float z = RandomFloat01(state) * 2.0f - 1.0f;
-    float a = RandomFloat01(state) * K_TWO_PI;
-    float r = sqrt(1.0f - z * z);
-    float x = r * cos(a);
-    float y = r * sin(a);
-    return float3(x, y, z);
-}
+// uint WangHash(inout uint seed)
+// {
+//     seed = (seed ^ 61) ^ (seed >> 16);
+//     seed *= 9;
+//     seed = seed ^ (seed >> 4);
+//     seed *= 0x27d4eb2d;
+//     seed = seed ^ (seed >> 15);
+//     return seed;
+// }
+//
+// float RandomFloat01(inout uint seed)
+// {
+//     return float(WangHash(seed)) / float(0xFFFFFFFF);
+// }
+//
+// float3 RandomUnitVector(inout uint state)
+// {
+//     float z = RandomFloat01(state) * 2.0f - 1.0f;
+//     float a = RandomFloat01(state) * K_TWO_PI;
+//     float r = sqrt(1.0f - z * z);
+//     float x = r * cos(a);
+//     float y = r * sin(a);
+//     return float3(x, y, z);
+// }
 
 float FresnelReflectAmountOpaque(float n1, float n2, float3 incident, float3 normal)
 {

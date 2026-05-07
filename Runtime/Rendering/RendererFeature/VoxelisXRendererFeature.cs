@@ -42,7 +42,7 @@ public class VoxelisXRendererFeature : ScriptableRendererFeature
     [SerializeField, Min(1)] private int samplesPerPixel = 1;
 
     [Header("Indirect Denoising")]
-    [SerializeField] private bool enableIndirectSpatialSmoothing = true;
+    [SerializeField] private VoxelisXIndirectDenoisingSettings indirectDenoising = VoxelisXIndirectDenoisingSettings.Default;
 
     [Header("Temporal Radiance")]
     [SerializeField] private bool enableTemporalRadiance = true;
@@ -100,7 +100,7 @@ public class VoxelisXRendererFeature : ScriptableRendererFeature
         }
 
         _voxelisXRenderPass.ConfigureRayTracingSettings(bounceCountOpaque, bounceCountTransparent, samplesPerPixel);
-        _voxelisXRenderPass.ConfigureIndirectDenoisingSettings(enableIndirectSpatialSmoothing);
+        _voxelisXRenderPass.ConfigureIndirectDenoisingSettings(indirectDenoising);
         _voxelisXRenderPass.ConfigureTemporalRadianceSettings(
             enableTemporalRadiance,
             temporalRadianceCurrentFrameMinWeight,
