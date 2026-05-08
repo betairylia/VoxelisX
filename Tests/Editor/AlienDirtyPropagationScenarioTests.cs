@@ -19,7 +19,7 @@ namespace VoxelisX.Tests
 
             Propagate(source, target, BlockEditSettings());
 
-            Assert.That(RequireFlags(target, int3.zero, int3.zero) & (ushort)DirtyFlags.GeneralAutomata, Is.Not.EqualTo(0));
+            Assert.That(RequireFlags(target, int3.zero, int3.zero) & (ushort)DirtyFlags.Reserved1, Is.Not.EqualTo(0));
             Assert.That(target.SectorAt(int3.zero).Get().sectorDirtyFlags, Is.EqualTo(0));
         }
 
@@ -31,7 +31,7 @@ namespace VoxelisX.Tests
 
             Propagate(source, BlockEditSettings());
 
-            Assert.That(RequireFlags(source, int3.zero, int3.zero) & (ushort)DirtyFlags.GeneralAutomata, Is.EqualTo(0));
+            Assert.That(RequireFlags(source, int3.zero, int3.zero) & (ushort)DirtyFlags.Reserved1, Is.EqualTo(0));
         }
 
         [Test]
@@ -58,6 +58,44 @@ namespace VoxelisX.Tests
 
             Assert.That(target.SectorAt(int3.zero).Get().sectorRequireUpdateFlags, Is.EqualTo(0));
             Assert.That(target.SectorAt(int3.zero).Get().NonEmptyBrickCount, Is.EqualTo(0));
+        }
+
+        [Test]
+        public void AlienDisallowedDirtyFlagDoesNotMarkOverlappingTargetBrick()
+        {
+            using var source = new EntityDataTestScope();
+            using var target = new EntityDataTestScope();
+            AddAllocatedBrick(source, int3.zero, int3.zero);
+            AddAllocatedBrick(target, int3.zero, int3.zero);
+            source.SectorAt(int3.zero).Get().MarkBrickDirty(0, DirtyFlags.GeometryWithLocalNeighbor);
+            target.Data.ClearDirtyFlags();
+
+            var settings = BlockEditSettings();
+            settings.FlagsToPropagate = DirtyFlags.GeometryWithLocalNeighbor;
+
+            Propagate(source, target, settings);
+
+            Assert.That(RequireFlags(target, int3.zero, int3.zero) & (ushort)DirtyFlags.GeometryWithLocalNeighbor, Is.EqualTo(0));
+        }
+
+        [Test]
+        public void AlienDisallowedMotionDirtyMaskDoesNotMarkOverlappingTargetBrick()
+        {
+            using var source = new EntityDataTestScope();
+            using var target = new EntityDataTestScope();
+            AddAllocatedBrick(source, int3.zero, int3.zero);
+            AddAllocatedBrick(target, int3.zero, int3.zero);
+            source.Data.ClearDirtyFlags();
+            target.Data.ClearDirtyFlags();
+            SetMotion(source, new float3(32f, 0f, 0f), float3.zero);
+            SetStatic(target);
+
+            var settings = MotionSettings();
+            settings.AlienMotionDirtyMask = DirtyFlags.GeometryWithLocalNeighbor;
+
+            Propagate(source, target, settings);
+
+            Assert.That(RequireFlags(target, int3.zero, int3.zero) & (ushort)DirtyFlags.GeometryWithLocalNeighbor, Is.EqualTo(0));
         }
 
         [Test]
@@ -150,7 +188,7 @@ namespace VoxelisX.Tests
         private static AlienDirtyPropagationSettings BlockEditSettings()
         {
             var settings = AlienDirtyPropagationSettings.Default;
-            settings.FlagsToPropagate = DirtyFlags.GeneralAutomata;
+            settings.FlagsToPropagate = DirtyFlags.Reserved1;
             settings.AlienMotionDirtyMask = DirtyFlags.Reserved1;
             return settings;
         }
@@ -198,6 +236,7 @@ namespace VoxelisX.Tests
             SectorHandle sector = entity.Data.sectors.ContainsKey(sectorPos) ? entity.SectorAt(sectorPos) : entity.AddSector(sectorPos);
             int3 blockPos = brickPos * Sector.SIZE_IN_BLOCKS;
             sector.SetBlock(blockPos.x, blockPos.y, blockPos.z, new Block(1));
+            sector.Get().MarkBrickDirty(Sector.ToBrickIdx(brickPos.x, brickPos.y, brickPos.z), DirtyFlags.Reserved1);
         }
 
         private static void AddAllocatedEmptyBrick(EntityDataTestScope entity, int3 sectorPos, int3 brickPos)

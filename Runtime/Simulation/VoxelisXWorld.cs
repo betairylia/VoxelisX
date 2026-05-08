@@ -190,13 +190,7 @@ namespace Voxelis
             Profiler.BeginSample("Physics Step");
             physicsWorld.SimulateStep(1.0f / targetTPS);
             Profiler.EndSample();
-
-            // Tick renderer
-            Profiler.BeginSample("Renderer Tick");
-            if (rayTracedRenderer?.enabled ?? false) rayTracedRenderer?.Tick();
-            if (meshingRenderer?.enabled ?? false) meshingRenderer?.Tick();
-            Profiler.EndSample();
-
+            
             // Dirty propagation
             Profiler.BeginSample("Dirty Propagation");
             Profiler.BeginSample("Sync Transform");
@@ -205,6 +199,7 @@ namespace Voxelis
             {
                 entities[i].SyncCurrentTransformToData(dirtyPropagationDeltaTime);
             }
+            Profiler.EndSample();
 
             Profiler.BeginSample("Clear Require Updates");
             entities.ForEach(e => e.ClearRequireUpdates());
@@ -249,6 +244,12 @@ namespace Voxelis
             Profiler.BeginSample("Clear Dirty Flags");
             entities.ForEach(e => e.ClearDirtyFlags());
             Profiler.EndSample();
+            Profiler.EndSample();
+            
+            // Tick renderer
+            Profiler.BeginSample("Renderer Tick");
+            if (rayTracedRenderer?.enabled ?? false) rayTracedRenderer?.Tick();
+            if (meshingRenderer?.enabled ?? false) meshingRenderer?.Tick();
             Profiler.EndSample();
         }
 

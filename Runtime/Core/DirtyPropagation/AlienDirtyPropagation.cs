@@ -175,6 +175,10 @@ namespace Voxelis
             }
 
             RefreshAllocatedBrickLists(entities);
+            if (settings.FlagsToPropagate == DirtyFlags.None && settings.AlienMotionDirtyMask == DirtyFlags.None)
+            {
+                return;
+            }
 
             var entityViews = new NativeList<AlienDirtyEntityView>(entities.Length, Allocator.TempJob);
             var allSectors = new NativeList<AlienDirtySectorRecord>(Allocator.TempJob);
@@ -262,10 +266,14 @@ namespace Voxelis
                 settings.FlagsToPropagate = DirtyFlags.All;
             }
 
+            settings.FlagsToPropagate = (DirtyFlags)DirtyPropagationSettings.FilterCanPropagateToAlien((ushort)settings.FlagsToPropagate);
+
             if (settings.AlienMotionDirtyMask == DirtyFlags.None)
             {
                 settings.AlienMotionDirtyMask = DirtyFlags.GeneralAutomata;
             }
+
+            settings.AlienMotionDirtyMask = (DirtyFlags)DirtyPropagationSettings.FilterCanPropagateToAlien((ushort)settings.AlienMotionDirtyMask);
 
             if (settings.SpatialCellSize < Sector.SIZE_IN_BLOCKS)
             {
@@ -397,7 +405,7 @@ namespace Voxelis
                         blockJob.Schedule(dirtySectorIndices.Length, 1).Complete();
                     }
 
-                    if (movingSectorIndices.Length > 0)
+                    if (movingSectorIndices.Length > 0 && settings.AlienMotionDirtyMask != DirtyFlags.None)
                     {
                         motionStream = new NativeStream(movingSectorIndices.Length, Allocator.TempJob);
                         var motionJob = new BuildMotionCandidatesJob

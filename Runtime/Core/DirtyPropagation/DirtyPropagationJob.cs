@@ -33,9 +33,9 @@ namespace Voxelis
     public static class DirtyPropagationSettings
     {
         //                                                   15|                 |0
-        public const uint DirtyFlagsPropagateToAlien       = 0b0011_1111_1111_1110u;
-        public const uint DirtyFlagsPropagateToNeighbor    = 0b0111_1111_1111_1110u;
-        public const uint DirtyFlagsCanAllocateLocalBricks = 0b0011_1111_1111_1110u;
+        public const uint DirtyFlagsPropagateToAlien       = 0b0011_1111_1111_1111u;
+        public const uint DirtyFlagsPropagateToNeighbor    = 0b0111_1111_1111_1111u;
+        public const uint DirtyFlagsCanAllocateLocalBricks = 0b0011_1111_1111_1111u;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static ushort FilterCanPropagateToAlien(ushort flags)
