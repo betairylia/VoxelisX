@@ -26,6 +26,11 @@ namespace Voxelis
         
         [Header("Performance")] public float targetTPS = 100.0f;
         public float slowmo = 1.0f;
+        [Header("Alien Dirty Propagation")]
+        [SerializeField] private int alienSpatialCellSize = 64;
+        [SerializeField] private DirtyFlags alienMotionDirtyMask = DirtyFlags.GeneralAutomata;
+        [SerializeField] private int alienDirtyHaloVoxels = 1;
+        [SerializeField] private float alienMotionDirtyThreshold = 0f;
         [Header("Debug")] public bool freeze = true;
         public bool isFirst = true;
         private float timer = 0.0f;
@@ -194,6 +199,13 @@ namespace Voxelis
 
             // Dirty propagation
             Profiler.BeginSample("Dirty Propagation");
+            Profiler.BeginSample("Sync Transform");
+            float dirtyPropagationDeltaTime = targetTPS > 0f ? 1.0f / targetTPS : Time.deltaTime;
+            for (int i = 0; i < entities.Count; i++)
+            {
+                entities[i].SyncCurrentTransformToData(dirtyPropagationDeltaTime);
+            }
+
             Profiler.BeginSample("Clear Require Updates");
             entities.ForEach(e => e.ClearRequireUpdates());
             Profiler.EndSample();
@@ -208,6 +220,30 @@ namespace Voxelis
             Profiler.BeginSample("Burst");
             handle.Complete();
             Profiler.EndSample();
+
+            Profiler.BeginSample("Alien Propagation");
+            var dirtyPropagationEntities = new NativeArray<VoxelEntityData>(entities.Count, Allocator.TempJob);
+            try
+            {
+                for (int i = 0; i < entities.Count; i++)
+                {
+                    dirtyPropagationEntities[i] = entities[i].GetDataCopy();
+                }
+
+                AlienDirtyPropagation.Propagate(dirtyPropagationEntities, new AlienDirtyPropagationSettings
+                {
+                    FlagsToPropagate = DirtyFlags.All,
+                    AlienMotionDirtyMask = alienMotionDirtyMask,
+                    SpatialCellSize = alienSpatialCellSize,
+                    DirtyHaloVoxels = alienDirtyHaloVoxels,
+                    MotionThreshold = alienMotionDirtyThreshold,
+                    DeltaTime = dirtyPropagationDeltaTime
+                });
+            }
+            finally
+            {
+                dirtyPropagationEntities.Dispose();
+            }
             Profiler.EndSample();
 
             Profiler.BeginSample("Clear Dirty Flags");

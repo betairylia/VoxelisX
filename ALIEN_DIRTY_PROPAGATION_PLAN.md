@@ -7,7 +7,7 @@ Make automata dirty propagation aware of alien voxel entities without using the 
 Dirty propagation should:
 
 - mark existing target bricks only;
-- never create sectors in alien entities;
+- never create sectors or bricks in alien entities;
 - propagate local block edits across entity boundaries;
 - propagate motion-based alien influence when relative motion is present;
 - remain Burst/HPC# friendly;
@@ -22,6 +22,25 @@ Motion propagation should use a dedicated configurable mask:
 ```
 
 Block-edit propagation forwards the dirty brick's actual flags. Motion propagation sets only `alienMotionDirtyMask`, so renderer, physics, and unrelated systems are not woken up by alien motion unless they explicitly opt into that flag.
+
+## Terminology
+
+Use `dirty` only for source-side changes:
+
+- `brickDirtyFlags`: what changed this tick in the source entity.
+- `sectorDirtyFlags`: aggregate source-side dirty flags.
+- dirty brick: a source brick whose `brickDirtyFlags` match the propagation mask.
+
+Use `requireUpdate` only for propagated target-side work:
+
+- `brickRequireUpdateFlags`: target brick needs automata work.
+- `sectorRequireUpdateFlags`: aggregate target-side require-update flags.
+
+Alien propagation reads source dirty/motion state and writes target `requireUpdate` state. It must not write target `dirty` state.
+
+Allocated brick means `sector.brickIdx[brickIdx] != Sector.BRICKID_EMPTY`. An allocated brick may currently contain only empty blocks; it still counts as allocated because it may have contained blocks in a previous frame and may need cleanup or lost-neighbor invalidation. Non-allocated brick slots must not be used as source influence and must not be allocated by alien propagation.
+
+`Sector.NonEmptyBricks` is currently misnamed: after `UpdateNonEmptyBricks()` runs, it contains allocated brick indices, not necessarily bricks with non-empty blocks. Alien propagation can use it as the allocated-brick list only after it has been refreshed.
 
 ## Main Design
 
@@ -64,7 +83,7 @@ struct AlienDirtyCandidate
 {
     int TargetSectorIndex;
     int SourceSectorIndex;
-    short SourceBrickIdx; // -1 for sector-level candidates
+    short SourceBrickIdx; // -1 for motion candidates
     DirtyFlags Flags;
     AlienDirtyCandidateMode Mode; // BlockEdit or Motion
 }
@@ -131,7 +150,7 @@ foreach (cell in CellsOverlappedBy(sector.CurrentWorldAabb))
     sectorSpatialHash.Add(cell, sectorIndex);
 ```
 
-For motion queries, use a separate motion spatial hash or rebuild the hash with swept sector bounds:
+For motion queries, use a separate motion spatial hash or rebuild the hash with coarse sector swept bounds:
 
 ```csharp
 swept = Union(sector.PreviousWorldAabb, sector.CurrentWorldAabb).Inflated(halo);
@@ -140,16 +159,16 @@ foreach (cell in CellsOverlappedBy(swept))
     motionSectorSpatialHash.Add(cell, sectorIndex);
 ```
 
-This catches both gained and lost alien influence, including the case where two moving entities overlapped only in their previous poses.
+This catches both gained and lost alien influence, including the case where two moving entities overlapped only in their previous poses. This broadphase is intentionally coarse; correctness comes from the target-owned marking pass, which enumerates allocated source bricks and skips non-allocated target bricks.
 
-## Dirty Brick Enumeration
+## Source Brick Enumeration
 
 The engine currently has:
 
 - `SectorNonEmptyBlockEnumerator`
 - `SectorRequiredUpdateBrickEnumerator`
 
-It does not currently have a dirty-brick enumerable. Add a Burst-friendly `SectorDirtyBrickEnumerator` or equivalent helper:
+It does not currently have a dirty-brick enumerable. Add a Burst-friendly dirty-brick enumerator or equivalent helper:
 
 ```csharp
 struct SectorDirtyBrickEnumerator
@@ -163,25 +182,18 @@ struct SectorDirtyBrickEnumerator
             return false;
 
         // V1: scan 4096 brick slots.
-        // Yield bricks where (brickDirtyFlags[i] & mask) != 0.
+        // Yield allocated bricks where (brickDirtyFlags[i] & mask) != 0.
     }
 }
 ```
 
 A 4096-brick scan is acceptable for V1 because dirty sectors are expected to be sparse and sector-level dirty flags provide a cheap skip.
 
-For dense dirty sectors, add a sector-level fast path. If a source sector has many dirty bricks, emitting one sector-level candidate is cheaper than emitting hundreds or thousands of per-brick candidates that mostly collapse during deduplication.
+For motion propagation, use refreshed `Sector.NonEmptyBricks` as the allocated source-brick list. Do not add a separate allocated-brick enumerator for V1.
 
-```csharp
-[SerializeField] int alienDirtySectorLevelThreshold = 256;
+Do not add a dense dirty-sector fast path in V1. Dense candidate compression is only a future optimization if profiling shows candidate volume from gameplay edits is a real bottleneck.
 
-if (dirtyBrickCount > alienDirtySectorLevelThreshold)
-    emit sector-level BlockEdit candidate with SourceBrickIdx = -1;
-else
-    emit per-dirty-brick candidates;
-```
-
-`SourceBrickIdx == -1` is valid for `Mode == Motion` and for sector-level `Mode == BlockEdit`. Callers must check `Mode` and sentinel meaning together.
+`SourceBrickIdx == -1` is valid for `Mode == Motion`. Block-edit candidates should use concrete dirty source brick indices in V1.
 
 ## Block-Edit Propagation
 
@@ -207,32 +219,6 @@ struct BuildBlockEditCandidatesJob : IJobParallelFor
     void Execute(int sourceSectorListIndex)
     {
         source = SourceSectors[sourceSectorListIndex];
-
-        dirtyBrickCount = CountDirtyBricks(source.Sector, DirtyFlags.All);
-        if (dirtyBrickCount > DirtySectorLevelThreshold)
-        {
-            sourceWorldAabb = source.CurrentWorldAabb.Inflated(halo);
-
-            foreach (targetSectorIndex in QuerySpatialHash(SpatialHash, sourceWorldAabb))
-            {
-                target = AllSectors[targetSectorIndex];
-                if (target.EntityId == source.EntityId)
-                    continue;
-                if (!AabbOverlap(sourceWorldAabb, target.CurrentWorldAabb))
-                    continue;
-
-                Candidates.Write(new AlienDirtyCandidate
-                {
-                    TargetSectorIndex = targetSectorIndex,
-                    SourceSectorIndex = source.Index,
-                    SourceBrickIdx = -1,
-                    Flags = source.Sector.GetAggregatedDirtyFlags(),
-                    Mode = BlockEdit
-                });
-            }
-
-            return;
-        }
 
         foreach (dirtyBrick in DirtyBricks(source.Sector, DirtyFlags.All))
         {
@@ -264,7 +250,7 @@ This pass writes append-only candidate data. It does not mutate sectors.
 
 ## Motion Propagation
 
-Motion propagation is driven by moving sectors and emits bidirectional candidates.
+Motion propagation is driven by moving sectors with allocated source bricks and emits bidirectional candidates.
 
 For each moving sector `M`, query all overlapped sectors `O` using `Union(previous, current) + halo`. Emit both:
 
@@ -275,6 +261,8 @@ This catches both:
 
 - moving source affects static/dynamic target;
 - moving target changes relative to static/dynamic source.
+
+Motion propagation must not use non-allocated source brick slots. A moving sector with no allocated bricks should emit no motion candidates. A moving sector with allocated-but-empty bricks can emit motion candidates because those bricks may represent recently removed content and need lost-neighbor invalidation.
 
 ### Managed Prep
 
@@ -304,12 +292,17 @@ struct BuildMotionCandidatesJob : IJobParallelFor
     void Execute(int movingSectorListIndex)
     {
         moving = MovingSectors[movingSectorListIndex];
+        if (!HasAllocatedBricks(moving.Sector))
+            return;
+
         swept = Union(moving.PreviousWorldAabb, moving.CurrentWorldAabb).Inflated(halo);
 
         foreach (otherSectorIndex in QuerySpatialHash(MotionSpatialHash, swept))
         {
             other = AllSectors[otherSectorIndex];
             if (other.EntityId == moving.EntityId)
+                continue;
+            if (!HasAllocatedBricks(other.Sector))
                 continue;
 
             if (!AabbOverlap(swept, other.CurrentWorldAabb) &&
@@ -411,17 +404,18 @@ struct MarkAlienRequireUpdatesJob : IJobParallelFor
 
             if (candidate.Mode == BlockEdit)
             {
-                obb = candidate.SourceBrickIdx >= 0
-                    ? SourceDirtyBrickObbPlusHalo(source, candidate.SourceBrickIdx)
-                    : SourceSectorObbPlusHalo(source);
+                obb = SourceDirtyBrickObbPlusHalo(source, candidate.SourceBrickIdx);
                 range = TransformObbToTargetBrickRange(obb, target);
-                MarkTargetBrickRange(target.Sector, range, candidate.Flags);
+                MarkAllocatedTargetBrickRange(target.Sector, range, candidate.Flags);
             }
             else // Motion
             {
-                obb = SourceSectorObbPlusHalo(source);
-                range = TransformObbToTargetBrickRange(obb, target);
-                MarkTargetBrickRange(target.Sector, range, candidate.Flags);
+                foreach (sourceBrick in source.Sector.NonEmptyBricks)
+                {
+                    obb = SourceAllocatedBrickSweptObbPlusHalo(source, sourceBrick);
+                    range = TransformObbToTargetBrickRange(obb, target);
+                    MarkAllocatedTargetBrickRange(target.Sector, range, candidate.Flags);
+                }
             }
         }
     }
@@ -429,6 +423,8 @@ struct MarkAlienRequireUpdatesJob : IJobParallelFor
 ```
 
 Because each job item owns one target sector, no atomics are needed for `brickRequireUpdateFlags`.
+
+`MarkAllocatedTargetBrickRange` skips target brick slots where `target.Sector.brickIdx[brickIdx] == Sector.BRICKID_EMPTY`. Alien propagation sets `requireUpdate` flags only on already allocated target bricks. It never allocates target bricks.
 
 ## Rigid Transform Brick Range Simplification
 
@@ -456,6 +452,8 @@ targetBrickMax = floor((targetMax - epsilon) / 8);
 Intersect this range with the current target sector's brick bounds, then mark the resulting bricks.
 
 This avoids transforming all eight corners while remaining conservative for rotations.
+
+Motion candidates use the same single-brick transform internally. They enumerate allocated source bricks and apply this transform per source brick; they do not transform or mark a whole source sector as if every brick slot were allocated.
 
 The halo is a correctness parameter, not just tuning. Define:
 
@@ -486,16 +484,18 @@ Exact placement should respect existing renderer/physics consumers of dirty reco
 
 1. Add data records and previous transform/velocity capture.
 2. Add dirty brick enumerator.
-3. Add configurable general sector spatial hash for current static/dynamic instances, default cell size `64`.
-4. Add block-edit candidate build, including dense-sector fallback.
-5. Add native sorting, deduplication, and target range building.
-6. Add target-owned marking.
-7. Add motion candidate build with bidirectional `M <-> O` emission, `alienMotionDirtyMask`, and threshold `0`.
-8. Add tests:
+3. Refresh `Sector.NonEmptyBricks` before alien propagation so it can be used as the allocated-brick list.
+4. Add configurable general sector spatial hash for current static/dynamic instances, default cell size `64`.
+5. Add block-edit candidate build.
+6. Add native sorting, deduplication, and target range building.
+7. Add target-owned marking.
+8. Add motion candidate build with bidirectional `M <-> O` emission, `alienMotionDirtyMask`, and threshold `0`.
+9. Add tests:
    - dirty brick in entity A marks overlapping target brick in entity B;
-   - dense dirty source sector emits/handles sector-level candidate;
    - no self propagation;
-   - no sector creation;
+   - no sector or brick creation;
+   - alien propagation does not mark non-allocated target brick slots;
+   - allocated-but-empty source bricks count as allocated for motion propagation;
    - moving entity marks gained overlap;
    - moving entity marks lost overlap through previous/current swept AABB;
    - bidirectional motion marks both `M -> O` and `O -> M`;
