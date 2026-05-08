@@ -71,27 +71,27 @@ namespace VoxelisX.Tests
         }
 
         [Test]
-        public void SettingBlockRecordsAddedBrickAndRendererDirtyState()
+        public void SettingBlockSetsAddedDirtyFlagAndRendererDirtyState()
         {
             using var scope = new SectorTestScope();
 
             scope.Set(8, 0, 0);
 
             Assert.That(scope.Handle.IsRendererDirty, Is.True);
-            Assert.That(scope.Sector.updateRecord.Length, Is.EqualTo(1));
-            Assert.That(scope.Sector.updateRecord[0], Is.EqualTo((short)Sector.ToBrickIdx(1, 0, 0)));
+            Assert.That(scope.Sector.sectorDirtyFlags & (ushort)DirtyFlags.BrickAdded, Is.Not.EqualTo(0));
+            Assert.That(scope.DirtyFlagsAt(new int3(1, 0, 0)) & (ushort)DirtyFlags.BrickAdded, Is.Not.EqualTo(0));
             Assert.That(scope.BrickUpdateAt(new int3(1, 0, 0)), Is.EqualTo(BrickUpdateInfo.Type.Added));
         }
 
         [Test]
-        public void EndTickClearsUpdateRecordsAndBrickUpdateFlags()
+        public void ClearDirtyFlagsClearsRendererDirtyState()
         {
             using var scope = new SectorTestScope();
             scope.Set(8, 0, 0);
 
-            scope.Sector.EndTick();
+            scope.Sector.ClearAllDirtyFlags();
 
-            Assert.That(scope.Sector.updateRecord.Length, Is.EqualTo(0));
+            Assert.That(scope.Handle.IsRendererDirty, Is.False);
             Assert.That(scope.BrickUpdateAt(new int3(1, 0, 0)), Is.EqualTo(BrickUpdateInfo.Type.Idle));
         }
 
@@ -101,14 +101,16 @@ namespace VoxelisX.Tests
             using var scope = new SectorTestScope();
             scope.Set(1, 2, 3, 7);
 
-            var clone = Sector.CloneNoRecord(scope.Sector, Allocator.Persistent);
+            var clone = Sector.CloneWithUndefinedDirtiness(scope.Sector, Allocator.Persistent);
             try
             {
+                Assert.That(clone.sectorDirtyFlags, Is.EqualTo(0));
+                Assert.That(clone.brickDirtyFlags[Sector.ToBrickIdx(0, 0, 0)], Is.EqualTo(0));
+
                 clone.SetBlock(1, 2, 3, new Block(8));
 
                 Assert.That(scope.Handle.GetBlock(1, 2, 3), Is.EqualTo(new Block(7)));
                 Assert.That(clone.GetBlock(1, 2, 3), Is.EqualTo(new Block(8)));
-                Assert.That(clone.updateRecord.Length, Is.EqualTo(0));
             }
             finally
             {

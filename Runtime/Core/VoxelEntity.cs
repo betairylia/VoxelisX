@@ -254,8 +254,8 @@ namespace Voxelis
 
         /// <summary>
         /// Ensures that neighbor sectors exist for all dirty bricks at sector boundaries.
-        /// Uses sectorNeighborsToCreate as a coarse direction mask, then checks brick flags so
-        /// only flags allowed to allocate local sectors create missing neighbors.
+        /// Uses sectorNeighborsToCreate as a coarse direction mask, then checks dirty flags so
+        /// only dirty flags allowed to allocate local sectors create missing neighbors.
         /// Must be called from main thread (not thread-safe).
         /// </summary>
         private void EnsureNeighborSectorsForDirtyBoundaries(DirtyFlags flagsToPropagate)

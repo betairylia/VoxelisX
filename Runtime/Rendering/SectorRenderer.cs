@@ -119,12 +119,13 @@ namespace Voxelis.Rendering
                 {
                     for (int brickIdxAbs = 0; brickIdxAbs < Sector.BRICKS_IN_SECTOR; brickIdxAbs++)
                     {
-                        // Check if brick is Added or has Reserved0 flag (content changed)
-                        bool isAdded = sector.brickFlags[brickIdxAbs] == BrickUpdateInfo.Type.Added;
-                        bool isModified = (sector.brickDirtyFlags[brickIdxAbs] & (ushort)DirtyFlags.GeneralAutomata) != 0;
+                        // Check if brick is Added or has GeneralAutomata flag (content changed)
+                        bool isAdded = (sector.brickDirtyFlags[brickIdxAbs] & (ushort)DirtyFlags.BrickAdded) != 0;
+                        bool isRemoved = (sector.brickDirtyFlags[brickIdxAbs] & (ushort)DirtyFlags.BrickRemoved) != 0;
+                        bool needRebuilt = (sector.brickDirtyFlags[brickIdxAbs] & (ushort)DirtyFlags.GeneralAutomata) != 0;
 
-                        if (!isAdded && !isModified) continue;
-                        if (sector.brickFlags[brickIdxAbs] == BrickUpdateInfo.Type.Removed)
+                        if (!isAdded && !isRemoved && !needRebuilt) continue;
+                        if (isRemoved)
                             throw new System.NotImplementedException();
 
                         // Check if brick exists (not empty)
@@ -524,7 +525,7 @@ namespace Voxelis.Rendering
         /// </remarks>
         public void RenderEmitJob(Sector sector)
         {
-            if (shouldRemove || sector.IsRendererEmpty || (!sector.IsRendererDirty))
+            if (shouldRemove || sector.IsRendererEmpty || (!sector.IsRendererRequireUpdate))
             {
                 return;
             }

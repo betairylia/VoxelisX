@@ -336,7 +336,6 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
 
                 // Call sector tick
                 sector.ReorderBricks();
-                sector.EndTick();
             }
         }
     }

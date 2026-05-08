@@ -60,9 +60,8 @@ namespace Voxelis.Rendering.Meshing
                 kvp.Value.CompleteJobs();
             }
 
-            // Note: We don't call EndTick() here. The sector's EndTick() is called by
-            // other rendering systems (e.g., VoxelisXRenderer for ray-tracing).
-            // We just consume the updateRecord without clearing it.
+            // Note: We don't clear dirty flags here. Dirty cleanup is owned by the
+            // dirty propagation phase after all consumers have read the flags.
 
             // Cleanup removed sectors
             RemoveMissingSectors();

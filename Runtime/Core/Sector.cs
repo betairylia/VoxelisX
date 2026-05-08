@@ -103,19 +103,6 @@ namespace Voxelis
         [NativeDisableUnsafePtrRestriction]
         public short* brickIdx;
         
-        /// <summary>
-        /// Tracks the update state of each brick for renderer synchronization.
-        /// Indexed by absolute brick ID.
-        /// </summary>
-        [NativeDisableUnsafePtrRestriction]
-        public BrickUpdateInfo.Type* brickFlags;
-
-        /// <summary>
-        /// List containing absolute IDs of bricks that have been modified and need rendering updates.
-        /// For renderer, updater, physics etc. use.
-        /// </summary>
-        public UnsafeList<short> updateRecord;
-
         // Dirty propagation buffers
         [NativeDisableUnsafePtrRestriction]
         public ushort* brickDirtyFlags;           // Write buffer: what changed THIS tick
@@ -130,7 +117,7 @@ namespace Voxelis
         /// <summary>
         /// Returns true if there are pending brick updates for the renderer.
         /// </summary>
-        public bool IsRendererDirty => !updateRecord.IsEmpty || (sectorDirtyFlags & (ushort)DirtyFlags.GeneralAutomata) != 0;
+        public bool IsRendererRequireUpdate => (sectorRequireUpdateFlags & (ushort)(DirtyFlags.GeometryWithLocalNeighbor | DirtyFlags.BrickAdded | DirtyFlags.BrickRemoved)) != 0;
 
         /// <summary>
         /// Returns true if the sector contains no allocated bricks.
@@ -190,8 +177,6 @@ namespace Voxelis
             {
                 voxels = new UnsafeList<Block>(initialBricks * BLOCKS_IN_BRICK, allocator),
                 brickIdx = (short*)UnsafeUtility.Malloc(totalBricks * sizeof(short), UnsafeUtility.AlignOf<short>(), allocator),
-                brickFlags = (BrickUpdateInfo.Type*)UnsafeUtility.Malloc(totalBricks * sizeof(BrickUpdateInfo.Type), UnsafeUtility.AlignOf<BrickUpdateInfo.Type>(), allocator),
-                updateRecord = new UnsafeList<short>(10, allocator),
                 currentBrickId = (int*)UnsafeUtility.Malloc(sizeof(int), UnsafeUtility.AlignOf<int>(), allocator),
                 brickDirtyFlags = (ushort*)UnsafeUtility.Malloc(totalBricks * sizeof(ushort), UnsafeUtility.AlignOf<ushort>(), allocator),
                 brickRequireUpdateFlags = (ushort*)UnsafeUtility.Malloc(totalBricks * sizeof(ushort), UnsafeUtility.AlignOf<ushort>(), allocator),
@@ -208,7 +193,6 @@ namespace Voxelis
             if (options == NativeArrayOptions.ClearMemory)
             {
                 UnsafeUtility.MemClear(s.brickIdx, totalBricks * sizeof(short));
-                UnsafeUtility.MemClear(s.brickFlags, totalBricks * sizeof(BrickUpdateInfo.Type));
                 UnsafeUtility.MemClear(s.brickDirtyFlags, totalBricks * sizeof(ushort));
                 UnsafeUtility.MemClear(s.brickRequireUpdateFlags, totalBricks * sizeof(ushort));
                 UnsafeUtility.MemClear(s.brickDirtyDirectionMask, totalBricks * sizeof(uint));
@@ -222,27 +206,23 @@ namespace Voxelis
         }
 
         /// <summary>
-        /// Creates a shallow copy of a sector without copying the update record.
+        /// Creates a copy of a sector without initialize the dirty/requireUpdate arrays.
         /// </summary>
         /// <param name="from">The sector handle to clone from.</param>
         /// <param name="allocator">The memory allocator to use for the new sector.</param>
-        /// <returns>A new sector containing the same voxel data but with an empty update record.</returns>
-        public static Sector CloneNoRecord(
+        /// <returns>A new sector containing the same voxel data but with undefined dirty records.</returns>
+        public static Sector CloneWithUndefinedDirtiness(
             SectorHandle from,
             Allocator allocator)
-            => CloneNoRecord(*(from.Ptr), allocator);
+            => CloneWithUndefinedDirtiness(*(from.Ptr), allocator);
 
         /// <summary>
-        /// Creates a shallow copy of a sector without copying the update record.
+        /// Creates a copy of a sector without initialize the dirty/requireUpdate arrays.
         /// </summary>
         /// <param name="from">The sector to clone from.</param>
         /// <param name="allocator">The memory allocator to use for the new sector.</param>
-        /// <returns>A new sector containing the same voxel data but with an empty update record.</returns>
-        /// <remarks>
-        /// This method copies the voxel data and brick indices but does not copy the update record,
-        /// dirty flags, or require update flags. The new sector starts in a clean state.
-        /// </remarks>
-        public static Sector CloneNoRecord(
+        /// <returns>A new sector containing the same voxel data but with undefined dirty records.</returns>
+        public static Sector CloneWithUndefinedDirtiness(
             Sector from,
             Allocator allocator)
         {
@@ -268,8 +248,6 @@ namespace Voxelis
             {
                 UnsafeUtility.Free(_snapshot_brickIdx, _snapshot_allocator == Allocator.Invalid ? allocator : _snapshot_allocator);
             }
-            if (brickFlags != null) UnsafeUtility.Free(brickFlags, allocator);
-            if (updateRecord.IsCreated) updateRecord.Dispose();
             if (currentBrickId != null) UnsafeUtility.Free(currentBrickId, allocator);
             if (NonEmptyBricks.IsCreated) NonEmptyBricks.Dispose();
             if (brickDirtyFlags != null) UnsafeUtility.Free(brickDirtyFlags, allocator);
@@ -278,7 +256,6 @@ namespace Voxelis
 
             brickIdx = null;
             _snapshot_brickIdx = null;
-            brickFlags = null;
             currentBrickId = null;
             brickDirtyFlags = null;
             brickRequireUpdateFlags = null;
@@ -541,8 +518,7 @@ namespace Voxelis
                 bid = (short)currentBrickId[0];
                 targetVoxels.AddReplicate(Block.Empty, BLOCKS_IN_BRICK);
 
-                brickFlags[brick_sector_index_id] = BrickUpdateInfo.Type.Added;
-                updateRecord.Add((short)brick_sector_index_id);
+                MarkBrickDirty(brick_sector_index_id, DirtyFlags.BrickAdded, 0);
 
                 currentBrickId[0]++;
                 
@@ -557,7 +533,7 @@ namespace Voxelis
             {
                 // Use precomputed lookup table for propagation direction mask
                 uint directionMask = GetVoxelPropagationMask(voxelIdxInBrick);
-                MarkBrickDirty(brick_sector_index_id, DirtyFlags.GeneralAutomata, directionMask);
+                MarkBrickDirty(brick_sector_index_id, DirtyPropagationSettings.DefaultSetBlockFlags, directionMask);
                 targetVoxels[vid] = b;
             }
         }
@@ -573,25 +549,6 @@ namespace Voxelis
         {
             // Not yet implemented
             return;
-        }
-
-        /// <summary>
-        /// Cleans up dirty-related data in sector at the end of a tick.
-        /// This is necessary since multiple systems may consume the dirty data for update.
-        /// In-place consumption of dirtyness will only allow one system to use.
-        /// </summary>
-        /// <remarks>
-        /// Resets all brick flags to idle and clears the update record. Should be called after
-        /// all systems (rendering, physics, etc.) have processed the dirty bricks for this tick.
-        /// </remarks>
-        public void EndTick()
-        {
-            foreach (var record in updateRecord)
-            {
-                brickFlags[record] = BrickUpdateInfo.Type.Idle;
-            }
-
-            updateRecord.Clear();
         }
 
         /// <summary>

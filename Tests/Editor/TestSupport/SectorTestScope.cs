@@ -33,7 +33,23 @@ namespace VoxelisX.Tests.TestSupport
 
         public BrickUpdateInfo.Type BrickUpdateAt(int3 brickPos)
         {
-            return Sector.brickFlags[Voxelis.Sector.ToBrickIdx(brickPos.x, brickPos.y, brickPos.z)];
+            ushort flags = DirtyFlagsAt(brickPos);
+            if ((flags & (ushort)DirtyFlags.BrickRemoved) != 0)
+            {
+                return BrickUpdateInfo.Type.Removed;
+            }
+
+            if ((flags & (ushort)DirtyFlags.BrickAdded) != 0)
+            {
+                return BrickUpdateInfo.Type.Added;
+            }
+
+            if ((flags & (ushort)DirtyFlags.GeneralAutomata) != 0)
+            {
+                return BrickUpdateInfo.Type.Modified;
+            }
+
+            return BrickUpdateInfo.Type.Idle;
         }
 
         public void Dispose()

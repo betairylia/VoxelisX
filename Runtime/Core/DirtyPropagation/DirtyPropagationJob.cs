@@ -23,8 +23,8 @@ namespace Voxelis
         Reserved9  = 1 << 9,
         Reserved10 = 1 << 10,
         Reserved11 = 1 << 11,
-        Reserved12 = 1 << 12,
-        Reserved13 = 1 << 13,
+        BrickAdded = 1 << 12,
+        BrickRemoved = 1 << 13,
         GeometryWithLocalNeighbor = 1 << 14,
         Geometry = 1 << 15,
         All        = 0xFFFF,
@@ -32,27 +32,32 @@ namespace Voxelis
 
     public static class DirtyPropagationSettings
     {
-        //                                                   15|                 |0
-        public const uint DirtyFlagsPropagateToAlien       = 0b0011_1111_1111_1111u;
-        public const uint DirtyFlagsPropagateToNeighbor    = 0b0111_1111_1111_1111u;
-        public const uint DirtyFlagsCanAllocateLocalBricks = 0b0011_1111_1111_1111u;
+        //                                                             15|                 |0
+        public const ushort DirtyFlagsPropagateToAlien       = (ushort)0b0000_1111_1111_1111u;
+        public const ushort DirtyFlagsPropagateToNeighbor    = (ushort)0b0100_1111_1111_1111u;
+        public const ushort DirtyFlagsCanAllocateLocalBricks = (ushort)0b0000_1111_1111_1111u;
+
+        public const DirtyFlags DefaultSetBlockFlags = (
+            DirtyFlags.GeneralAutomata |
+            DirtyFlags.GeometryWithLocalNeighbor |
+            DirtyFlags.Geometry);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static ushort FilterCanPropagateToAlien(ushort flags)
         {
-            return (ushort)((uint)flags & DirtyFlagsPropagateToAlien);
+            return (ushort)(flags & DirtyFlagsPropagateToAlien);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static ushort FilterCanPropagateToNeighbor(ushort flags)
         {
-            return (ushort)((uint)flags & DirtyFlagsPropagateToNeighbor);
+            return (ushort)(flags & DirtyFlagsPropagateToNeighbor);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static ushort FilterCanAllocateLocalBricks(ushort flags)
         {
-            return (ushort)((uint)flags & DirtyFlagsCanAllocateLocalBricks);
+            return (ushort)(flags & DirtyFlagsCanAllocateLocalBricks);
         }
     }
 

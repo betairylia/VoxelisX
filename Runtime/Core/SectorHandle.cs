@@ -112,7 +112,7 @@ namespace Voxelis
         /// <summary>
         /// Returns true if there are pending brick updates for the renderer.
         /// </summary>
-        public bool IsRendererDirty => _ptr->IsRendererDirty;
+        public bool IsRendererDirty => _ptr->IsRendererRequireUpdate;
 
         /// <summary>
         /// Returns true if the sector contains no allocated bricks.
