@@ -93,7 +93,9 @@ namespace Voxelis.Rendering
             /// </summary>
             public SectorHandle sectorHandle;
             public SectorNeighborHandles neighbors;
+#if !VOXELISX_RENDER_DISABLE_CULLING
             private SectorNeighborhoodReaderHelper helper;
+#endif
 
             /// <summary>
             /// Buffer of all AABB bounding boxes used for RayTracingAccelerationStructure.
@@ -117,7 +119,11 @@ namespace Voxelis.Rendering
                 syncRecord[1] = 0;
                 
                 ref Sector sector = ref sectorHandle.Get();
+                
+#if !VOXELISX_RENDER_DISABLE_CULLING
                 helper = new SectorNeighborhoodReaderHelper(sectorHandle, neighbors);
+                int brickIdx_culled = 0;
+#endif
 
                 // Sweep all bricks to find dirty ones
                 unsafe
@@ -529,19 +535,19 @@ namespace Voxelis.Rendering
         /// - No dirty bricks need updating
         /// This allows the job to run in parallel with other sector jobs.
         /// </remarks>
-        public void RenderEmitJob(Sector sector)
+        public void RenderEmitJob(SectorHandle sector)
         {
             if (shouldRemove || sector.IsRendererEmpty || (!sector.IsRendererRequireUpdate))
             {
                 return;
             }
 
-            isRealloc = PrepareBuffers(sector);
+            isRealloc = PrepareBuffers(sector.Get());
 
             // Job generating renderer buffers
             rendererJob = new GenerateSectorRenderDataJob()
             {
-                sector = sector,
+                sectorHandle = sector,
                 aabbBuffer = hostAABBBuffer,
                 brickData = hostBrickBuffer,
                 syncRecord = new NativeArray<int>(2, Allocator.TempJob)

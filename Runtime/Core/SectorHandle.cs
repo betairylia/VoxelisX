@@ -119,6 +119,8 @@ namespace Voxelis
         /// </summary>
         public bool IsRendererEmpty => _ptr->IsRendererEmpty;
 
+        public bool IsRendererRequireUpdate => _ptr->IsRendererRequireUpdate;
+
         public ushort DirtyFlags => _ptr->sectorDirtyFlags;
         public ushort RequireUpdateFlags => _ptr->sectorRequireUpdateFlags;
         

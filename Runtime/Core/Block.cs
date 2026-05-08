@@ -22,8 +22,12 @@ namespace Voxelis
 
         private const uint IDMask    = 0xFFFF0000;
         private const  int IDShift   = 16;
-        private const uint PhaseMask = 0xC0000000; // 00 - Gas; 01 - Liquid; 10 - Powder; 11 - Solid
-        private const uint PhaseShift= 30;
+        // Perhaps we can just use a LUT and free those bits
+        // private const uint PhaseMask = 0xC0000000; // 00 - Gas; 01 - Liquid; 10 - Powder; 11 - Solid
+        // private const uint PhaseShift= 30;
+        private const  int OpaqueBit = 31;
+        private const uint TransMask = 0x01FF;      // Transparent blocks have 0~1FF (512) valid blockID slots
+        private const uint TFaceShift= 25;      // 6 bits for transparent blocks will be used to represent boundaries
         private const uint MetaMask  = 0x0000FFFF;
         private const  int MetaShift = 0;
 

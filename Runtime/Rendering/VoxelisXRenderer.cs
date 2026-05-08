@@ -302,7 +302,6 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
             foreach (var kvp in e.Sectors)
             {
                 int3 sectorPos = kvp.Key;
-                ref Sector sector = ref kvp.Value.Get();
 
                 var key = (e, sectorPos);
                 if (!sectorRenderers.ContainsKey(key))
@@ -310,7 +309,7 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
                     sectorRenderers[key] = new SectorRenderer();
                 }
 
-                sectorRenderers[key].RenderEmitJob(sector);
+                sectorRenderers[key].RenderEmitJob(kvp.Value);
             }
         }
 
