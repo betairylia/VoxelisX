@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using Unity.Collections;
 using Unity.Mathematics;
 using UnityEngine;
+using UnityEngine.Profiling;
 using Voxelis.Tick;
 
 namespace Voxelis
@@ -112,7 +113,9 @@ namespace Voxelis
 
         private void Update()
         {
+            Profiler.BeginSample("VoxelisX Tick");
             Tick();
+            Profiler.EndSample();
         }
 
         /// <summary>

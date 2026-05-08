@@ -451,6 +451,7 @@ namespace Voxelis.Rendering
         /// If just the transform changed, updates the instance transform only.
         /// This method should be called after Render() to synchronize the RTAS with current voxel data.
         /// </remarks>
+        /// TODO: Optimize me for static entities for better performance
         public void RenderModifyAS(ref RayTracingAccelerationStructure AS, VoxelEntity entity, int3 sectorPos, Sector sector)
         {
             Matrix4x4 objectToWorld =

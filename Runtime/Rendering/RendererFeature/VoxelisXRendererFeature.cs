@@ -25,6 +25,8 @@ public class VoxelisXRendererFeature : ScriptableRendererFeature
     /// </summary>
     [SerializeField] private RayTracingShader tracer;
 
+    [SerializeField] private Shader indirectPipelineShader, indirectATrousShader;
+
     /// <summary>
     /// Material used for post-processing, including depth buffer copying and flip operations.
     /// </summary>
@@ -86,7 +88,8 @@ public class VoxelisXRendererFeature : ScriptableRendererFeature
         };
         // new CopyDepthPass()
 
-        _voxelisXRenderPass.InitVoxelisX(tracer, vox, postProcessMaterialFlip, blueNoiseTexture);
+        _voxelisXRenderPass.InitVoxelisX(
+            tracer, vox, postProcessMaterialFlip, blueNoiseTexture, indirectPipelineShader, indirectATrousShader);
     }
 
     /// <summary>

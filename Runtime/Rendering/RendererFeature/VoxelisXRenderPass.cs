@@ -23,6 +23,8 @@ public class VoxelisXRenderPass : ScriptableRenderPass
     /// Ray tracing shader for voxel rendering.
     /// </summary>
     public RayTracingShader rayTracingShader = null;
+    public Shader IndirectRadiancePipelineShader;
+    public Shader IndirectATrousFilterShader;
 
     private VoxelisXRenderer voxelisX;
 
@@ -48,8 +50,6 @@ public class VoxelisXRenderPass : ScriptableRenderPass
     private Texture2D blueNoiseTexture;
     private Material indirectRadiancePipelineMaterial;
     private Material indirectATrousFilterMaterial;
-    private const string IndirectRadiancePipelineShaderName = "Hidden/VoxelisX/IndirectRadiancePipeline";
-    private const string IndirectATrousFilterShaderName = "Hidden/VoxelisX/IndirectATrousFilter";
     private const int IndirectPipelinePassSpatialFilterX = 0;
     private const int IndirectPipelinePassSpatialFilterY = 1;
     private const int IndirectPipelinePassTemporalAccumulation = 2;
@@ -327,9 +327,17 @@ public class VoxelisXRenderPass : ScriptableRenderPass
     /// <param name="vox">VoxelisX renderer instance.</param>
     /// <param name="flip">Material for post-processing and depth copying.</param>
     /// <param name="blueNoiseTexture">Optional 128x8192 RG integer STBN texture for ray sampling.</param>
-    public void InitVoxelisX(RayTracingShader rtShader, VoxelisXRenderer vox, Material flip, Texture2D blueNoiseTexture)
+    public void InitVoxelisX(
+        RayTracingShader rtShader,
+        VoxelisXRenderer vox,
+        Material flip,
+        Texture2D blueNoiseTexture,
+        Shader indirectPipelineShader,
+        Shader indirectATrousShader)
     {
         rayTracingShader = rtShader;
+        IndirectRadiancePipelineShader = indirectPipelineShader;
+        IndirectATrousFilterShader = indirectATrousShader;
         voxelisX = vox;
         this.flip = flip;
         ConfigureBlueNoiseTexture(blueNoiseTexture);
@@ -845,14 +853,7 @@ public class VoxelisXRenderPass : ScriptableRenderPass
             return indirectRadiancePipelineMaterial;
         }
 
-        Shader shader = Shader.Find(IndirectRadiancePipelineShaderName);
-        if (shader == null)
-        {
-            Debug.LogError($"Cannot find shader '{IndirectRadiancePipelineShaderName}'.");
-            return null;
-        }
-
-        indirectRadiancePipelineMaterial = CoreUtils.CreateEngineMaterial(shader);
+        indirectRadiancePipelineMaterial = CoreUtils.CreateEngineMaterial(IndirectRadiancePipelineShader);
         return indirectRadiancePipelineMaterial;
     }
 
@@ -863,14 +864,7 @@ public class VoxelisXRenderPass : ScriptableRenderPass
             return indirectATrousFilterMaterial;
         }
 
-        Shader shader = Shader.Find(IndirectATrousFilterShaderName);
-        if (shader == null)
-        {
-            Debug.LogError($"Cannot find shader '{IndirectATrousFilterShaderName}'.");
-            return null;
-        }
-
-        indirectATrousFilterMaterial = CoreUtils.CreateEngineMaterial(shader);
+        indirectATrousFilterMaterial = CoreUtils.CreateEngineMaterial(IndirectATrousFilterShader);
         return indirectATrousFilterMaterial;
     }
 

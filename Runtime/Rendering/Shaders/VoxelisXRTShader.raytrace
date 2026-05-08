@@ -29,7 +29,6 @@ RWTexture2D<float> DepthTarget;
 RWTexture2D<float2> MotionVectorTarget;
 RWTexture2D<float> g_CurrentDepthHistory;
 RWTexture2D<float4> g_CurrentNormalHistory;
-
 TextureCube<float4> g_Sky;
 SamplerState sampler_g_Sky;
 
@@ -55,7 +54,8 @@ void MainRayGenShader()
     // Compute Ray Parameters
     //////////////////////////////////////////
 
-    uint2 launchIndex = uint2(DispatchRaysIndex().x, DispatchRaysDimensions().y - DispatchRaysIndex().y - 1);
+    uint2 dispatchIndex = DispatchRaysIndex().xy;
+    uint2 launchIndex = uint2(dispatchIndex.x, DispatchRaysDimensions().y - dispatchIndex.y - 1);
 
     uint2 launchDim = DispatchRaysDimensions().xy;
 
@@ -212,7 +212,7 @@ void MainRayGenShader()
         do
         {
             // if(payload.bounceIndexOpaque==2) { ray.TMax = 20; }
-            TraceRay(g_AccelStruct, 0 + (5 << 11), 0xFF, 0, 1, missShaderIndex, ray, payload);
+            TraceRay(g_AccelStruct, 0, 0xFF, 0, 1, missShaderIndex, ray, payload);
 
             indirectIncidentRadiance += payload.emission * throughput;
 

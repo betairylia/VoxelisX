@@ -321,8 +321,6 @@ inline bool VoxelisXTraceBrickDDA(uint brickID, float3 entryPositionInBrick, flo
         DDAStep(cursor);
     }
     
-    // uint state = 0;
-    // entryT = RandomFloat01(state);
     // if (prevTransparentBlock > 0 && !IsOpaque(prevTransparentBlock))
     // {
     //     materialID = 0;
@@ -362,7 +360,7 @@ inline VoxelisXBrickHit VoxelisXTraceBrickPrimitive(VoxelisXBrickTraceContext co
 inline void VoxelisXApplyVoxelClosestHit(inout RayPayload payload, VoxelisXBrickHit hit, float3 worldRayOrigin, float3 worldRayDirection, float3 objectRayOrigin, float3 objectRayDirection, float currentRayT, float3x4 objectToWorld)
 {
     int materialID = hit.materialID;
-    VoxelMaterial material = GET_MATERIAL(materialID);
+    VoxelMaterial material = GET_MATERIAL(materialID);    
 
     float3 worldHitPosition = worldRayOrigin + worldRayDirection * currentRayT;
     float3 worldNormal = mul((float3x3)objectToWorld, hit.objectNormal);
@@ -378,6 +376,8 @@ inline void VoxelisXApplyVoxelClosestHit(inout RayPayload payload, VoxelisXBrick
     bool hasPreviousTransparentMaterial = payload.previousTransparentMaterial != 0;
     VoxelMaterial previousTransparentMaterial = GET_MATERIAL(payload.previousTransparentMaterial);
     float3 ext = hasPreviousTransparentMaterial ? exp(-(1 - previousTransparentMaterial.albedo) * currentRayT * previousTransparentMaterial.extinction) : float3(1, 1, 1);
+    // TODO: Remove me vvv
+    ext = float3(1, 1, 1);
 
     if (IsOpaque(materialID))
     {
@@ -398,6 +398,7 @@ inline void VoxelisXApplyVoxelClosestHit(inout RayPayload payload, VoxelisXBrick
         payload.k = (doSpecular == 1) ? specularChance : 1 - specularChance;
         payload.bounceRayOrigin = worldHitPosition + K_RAY_ORIGIN_PUSH_OFF * worldNormal;
         payload.bounceRayDirection = reflectedRayDir;
+        payload.previousTransparentMaterial = payload.previousTransparentMaterial;
         payload.worldNormal = worldNormal;
     }
     else
@@ -423,10 +424,9 @@ inline void VoxelisXApplyVoxelClosestHit(inout RayPayload payload, VoxelisXBrick
         float fresnelFactor = canRefract
             ? FresnelReflectAmountTransparent(sourceIOR, destinationIOR, worldRayDirection, interfaceNormal)
             : 1.0f;
-        // fresnelFactor *= 0.1f;
+        fresnelFactor = 0.0f;
 
         float doRefraction = (canRefract && RandomFloat01(payload.rngState) >= fresnelFactor) ? 1.0f : 0.0f;
-        // doRefraction = 1.0f;
         float3 bounceRayDir = normalize(lerp(reflectionRayDir, refractionRayDir, doRefraction));
         float pushOff = doRefraction == 1.0f ? -K_RAY_ORIGIN_PUSH_OFF : K_RAY_ORIGIN_PUSH_OFF;
 

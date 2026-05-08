@@ -4,6 +4,7 @@ using Unity.Entities;
 using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
+using UnityEngine.Profiling;
 using Voxelis;
 using Voxelis.Rendering.Meshing;
 using Voxelis.Simulation;
@@ -85,10 +86,14 @@ namespace Voxelis
             // Ticking
             // TODO: FIXME: Currently inf loaders will not work due to no proper sector loading transition
             // TickWorldLoaders();
+            
+            Profiler.BeginSample("Player Ray Cast");
             rayCaster?.Tick();
+            Profiler.EndSample();
 
             // Fill native list by copying
             // TODO: Keep the unique instance in world and let VoxelEntity ref it?
+            Profiler.BeginSample("Fill TickBuffer");
             tickBuf.VoxelEntities.Clear();
             for (int i = 0; i < entities.Count; i++)
             {
@@ -97,8 +102,12 @@ namespace Voxelis
                 e.SyncTransformToData();
                 tickBuf.VoxelEntities.Add(e.GetDataCopy());
             }
+            Profiler.EndSample();
 
+            Profiler.BeginSample("WorldStage");
             DoTick(tickBuf);
+            Profiler.EndSample();
+            
             // Tick
             JobHandle tickHandle = new JobHandle();
 
@@ -108,6 +117,7 @@ namespace Voxelis
             // Automata stage
             // TODO: Wrap this up and handle this properly
             // Activate sector snapshotting for modifications
+            Profiler.BeginSample("Activate Sector Snapshots");
             for (int i = 0; i < entities.Count; i++)
             {
                 foreach (var kvp in entities[i].Sectors)
@@ -116,13 +126,20 @@ namespace Voxelis
                         kvp.Value.ActivateSnapshot();
                 }
             }
+            Profiler.EndSample();
 
             // Collect bricks to update
+            Profiler.BeginSample("Collect RequireUpdate Bricks");
             automataTickBuf.BricksRequiredUpdate.Clear();
             BrickCollector.Collect(ref tickBuf.VoxelEntities, ref automataTickBuf.BricksRequiredUpdate);
+            Profiler.EndSample();
+            Profiler.BeginSample("Build Alien Read Context");
             BuildAlienReadContext();
+            Profiler.EndSample();
 
+            Profiler.BeginSample("Automata Stage Schedule");
             tickHandle = automataStage.Schedule(automataTickBuf, tickHandle);
+            Profiler.EndSample();
 
             // Random access updating stage
 
@@ -138,10 +155,13 @@ namespace Voxelis
             /////// End Tick stage
             // Clear dirtiness and propagate RequireBrickUpdate to self & neighbors
 
+            Profiler.BeginSample("Work Dispatch");
             tickHandle.Complete();
+            Profiler.EndSample();
 
             // TODO: Wrap this up and handle this properly
             // Apply sector modifications
+            Profiler.BeginSample("Apply Sector Snapshots");
             for (int i = 0; i < entities.Count; i++)
             {
                 foreach (var kvp in entities[i].Sectors)
@@ -149,8 +169,10 @@ namespace Voxelis
                     kvp.Value.ApplySnapshot();
                 }
             }
+            Profiler.EndSample();
 
             // Copy data back to VoxelEntities
+            Profiler.BeginSample("Burst -> Managed Boundary Copy Back");
             for (int i = 0; i < entities.Count; i++)
             {
                 VoxelEntity e = entities[i];
@@ -158,25 +180,40 @@ namespace Voxelis
                 e.CopyDataFrom(tickBuf.VoxelEntities[i]);
                 e.SyncTransformFromData();
             }
+            Profiler.EndSample();
 
+            Profiler.BeginSample("Physics Step");
             physicsWorld.SimulateStep(1.0f / targetTPS);
+            Profiler.EndSample();
 
             // Tick renderer
+            Profiler.BeginSample("Renderer Tick");
             if (rayTracedRenderer?.enabled ?? false) rayTracedRenderer?.Tick();
             if (meshingRenderer?.enabled ?? false) meshingRenderer?.Tick();
+            Profiler.EndSample();
 
             // Dirty propagation
+            Profiler.BeginSample("Dirty Propagation");
+            Profiler.BeginSample("Clear Require Updates");
             entities.ForEach(e => e.ClearRequireUpdates());
+            Profiler.EndSample();
 
+            Profiler.BeginSample("Propagate Dirty Flags");
             JobHandle handle = new JobHandle();
             for (int i = 0; i < entities.Count; i++)
             {
                 handle = JobHandle.CombineDependencies(handle, entities[i].PropagateDirtyFlags(DirtyFlags.All, true));
             }
 
+            Profiler.BeginSample("Burst");
             handle.Complete();
+            Profiler.EndSample();
+            Profiler.EndSample();
 
+            Profiler.BeginSample("Clear Dirty Flags");
             entities.ForEach(e => e.ClearDirtyFlags());
+            Profiler.EndSample();
+            Profiler.EndSample();
         }
 
         public virtual void DoTick(

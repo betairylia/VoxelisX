@@ -12,7 +12,9 @@ Shader "VoxelisX/BrickRTTest"
         Pass
         {
             Name "VoxelisX"
-            Tags{ "LightMode" = "RayTracing" }
+            Tags{
+                "LightMode" = "RayTracing"
+            }
             
             HLSLPROGRAM
 
@@ -21,6 +23,7 @@ Shader "VoxelisX/BrickRTTest"
             #include "Utils.hlsl"
             #include "Assets/VoxelisX/VoxelMaterials.hlsl"
             #include "Utils/BlueNoise.hlsl"
+
             #include "VoxelisXBrickTrace.hlsl"
 
             struct AttributeData
@@ -72,6 +75,12 @@ Shader "VoxelisX/BrickRTTest"
 
                 VoxelisXApplyVoxelClosestHit(payload, hit, WorldRayOrigin(), WorldRayDirection(), ObjectRayOrigin(), ObjectRayDirection(), RayTCurrent(), ObjectToWorld3x4());
             }
+            
+            // [shader("anyhit")]
+            // void AniHitMain(inout RayPayload payload : SV_RayPayload, AttributeData attribs: SV_IntersectionAttributes)
+            // {
+            //     IgnoreHit();
+            // }
             
             ENDHLSL
         }

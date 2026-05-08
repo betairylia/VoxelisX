@@ -649,6 +649,7 @@ namespace Voxelis
         /// </summary>
         public void ClearAllDirtyFlags()
         {
+            if (sectorDirtyFlags == 0 && sectorNeighborsToCreate == 0) { return; }
             int totalBricks = SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS;
             UnsafeUtility.MemClear(brickDirtyFlags, totalBricks * sizeof(ushort));
             UnsafeUtility.MemClear(brickDirtyDirectionMask, totalBricks * sizeof(uint));
@@ -714,6 +715,7 @@ namespace Voxelis
         /// </summary>
         public void ClearAllRequireUpdateFlags()
         {
+            if (sectorRequireUpdateFlags == 0) { return; }
             int totalBricks = SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS;
             UnsafeUtility.MemClear(brickRequireUpdateFlags, totalBricks * sizeof(ushort));
             sectorRequireUpdateFlags = 0;
