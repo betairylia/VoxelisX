@@ -213,7 +213,7 @@ namespace Voxelis
 
             // First pass: Ensure neighbor sectors exist for all dirty sectors at boundaries
             // This allows dirty flags to propagate even to sectors that don't exist yet
-            EnsureNeighborSectorsForDirtyBoundaries();
+            EnsureNeighborSectorsForDirtyBoundaries(flagsToPropagate);
 
             // Get all sector positions
             NativeArray<int3> allPositions = sectors.GetKeyArray(Allocator.TempJob);
@@ -245,11 +245,21 @@ namespace Voxelis
 
         /// <summary>
         /// Ensures that neighbor sectors exist for all dirty bricks at sector boundaries.
-        /// Uses O(1) lookup via sectorNeighborsToCreate bitmask instead of O(4096) brick scan.
+        /// Uses sectorNeighborsToCreate as a coarse direction mask, then checks brick flags so
+        /// only flags allowed to allocate local sectors create missing neighbors.
         /// Must be called from main thread (not thread-safe).
         /// </summary>
-        private void EnsureNeighborSectorsForDirtyBoundaries()
+        private void EnsureNeighborSectorsForDirtyBoundaries(DirtyFlags flagsToPropagate)
         {
+            ushort requestedFlags = (ushort)flagsToPropagate;
+            ushort allocationFlags = DirtyPropagationSettings.FilterCanAllocateLocalBricks(
+                DirtyPropagationSettings.FilterCanPropagateToNeighbor(requestedFlags));
+
+            if (allocationFlags == 0)
+            {
+                return;
+            }
+
             // Collect which neighbor sectors need to be created
             HashSet<int3> sectorsToCreate = new HashSet<int3>();
 
@@ -266,6 +276,7 @@ namespace Voxelis
                 {
                     // Skip if this neighbor sector doesn't need creation
                     if (!NeighborhoodSettings.HasDirection(sector.sectorNeighborsToCreate, dir)) continue;
+                    if (!HasDirtyBrickThatCanAllocateNeighbor(ref sector, dir, allocationFlags)) continue;
 
                     int3 neighborSectorPos = sectorPos + NeighborhoodSettings.Directions[dir];
 
@@ -282,6 +293,22 @@ namespace Voxelis
             {
                 AddEmptySectorAt(pos);
             }
+        }
+
+        private static bool HasDirtyBrickThatCanAllocateNeighbor(ref Sector sector, int dir, ushort allocationFlags)
+        {
+            int totalBricks = Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS;
+
+            for (int brickIdx = 0; brickIdx < totalBricks; brickIdx++)
+            {
+                if ((sector.brickDirtyFlags[brickIdx] & allocationFlags) == 0) continue;
+                if (!NeighborhoodSettings.HasDirection(sector.brickDirtyDirectionMask[brickIdx], dir)) continue;
+                if (!NeighborhoodSettings.HasDirection(Sector.GetBrickSectorNeighborMask(brickIdx), dir)) continue;
+
+                return true;
+            }
+
+            return false;
         }
 
         /// <summary>

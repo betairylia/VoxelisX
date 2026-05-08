@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.CompilerServices;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Jobs;
@@ -35,6 +36,24 @@ namespace Voxelis
         public const uint DirtyFlagsPropagateToAlien       = 0b0011_1111_1111_1111u;
         public const uint DirtyFlagsPropagateToNeighbor    = 0b0111_1111_1111_1111u;
         public const uint DirtyFlagsCanAllocateLocalBricks = 0b0011_1111_1111_1111u;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static ushort FilterCanPropagateToAlien(ushort flags)
+        {
+            return (ushort)((uint)flags & DirtyFlagsPropagateToAlien);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static ushort FilterCanPropagateToNeighbor(ushort flags)
+        {
+            return (ushort)((uint)flags & DirtyFlagsPropagateToNeighbor);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static ushort FilterCanAllocateLocalBricks(ushort flags)
+        {
+            return (ushort)((uint)flags & DirtyFlagsCanAllocateLocalBricks);
+        }
     }
 
     /// <summary>
@@ -63,12 +82,14 @@ namespace Voxelis
 
             ref Sector sector = ref handle.Get();
             int neighborCount = NeighborhoodSettings.neighborhoodCount;
+            ushort requestedFlags = (ushort)flagsToPropagate;
+            ushort propagatingFlags = DirtyPropagationSettings.FilterCanPropagateToNeighbor(requestedFlags);
 
             // Create helper for convenient neighbor access
             var helper = new SectorNeighborhoodReaderHelper(handle, neighbors);
 
             // Early exit: Skip if current sector has no dirty flags AND no neighbors have dirty flags
-            bool currentSectorDirty = (sector.sectorDirtyFlags & (ushort)flagsToPropagate) != 0;
+            bool currentSectorDirty = (sector.sectorDirtyFlags & requestedFlags) != 0;
 
             if (!currentSectorDirty)
             {
@@ -77,7 +98,7 @@ namespace Voxelis
                 for (int i = 0; i < neighborCount; i++)
                 {
                     SectorHandle neighborHandle = neighbors.Neighbors[i];
-                    if (!neighborHandle.IsNull && (neighborHandle.Get().sectorDirtyFlags & (ushort)flagsToPropagate) != 0)
+                    if (!neighborHandle.IsNull && (neighborHandle.Get().sectorDirtyFlags & propagatingFlags) != 0)
                     {
                         anyNeighborDirty = true;
                         break;
@@ -96,7 +117,7 @@ namespace Voxelis
             for (int brickIdx = 0; brickIdx < Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS; brickIdx++)
             {
                 int3 brickPos = Sector.ToBrickPos((short)brickIdx);
-                ushort propagatedFlags = sector.brickDirtyFlags[brickIdx];
+                ushort propagatedFlags = (ushort)(sector.brickDirtyFlags[brickIdx] & requestedFlags);
 
                 // Check neighbors for dirty flags
                 // Optimization: Only check neighbors that want to propagate in our direction
@@ -118,7 +139,7 @@ namespace Voxelis
 
                     // Neighbor wants to propagate to us, so check its dirty flags
                     ushort neighborDirty = helper.GetBrickDirtyFlags(neighborBrickPos);
-                    propagatedFlags |= (ushort)(neighborDirty & (ushort)flagsToPropagate);
+                    propagatedFlags |= (ushort)(neighborDirty & propagatingFlags);
                 }
 
                 if (propagatedFlags != 0)

@@ -71,6 +71,42 @@ namespace VoxelisX.Tests
             ushort flags = world.RequireFlagsAt(new int3(0, 0, 0), new int3(6, 5, 5));
             Assert.That(flags & (ushort)DirtyFlags.GeneralAutomata, Is.Not.EqualTo(0));
             Assert.That(flags & (ushort)DirtyFlags.Reserved1, Is.EqualTo(0));
+
+            ushort selfFlags = world.RequireFlagsAt(new int3(0, 0, 0), new int3(5, 5, 5));
+            Assert.That(selfFlags & (ushort)DirtyFlags.GeneralAutomata, Is.Not.EqualTo(0));
+            Assert.That(selfFlags & (ushort)DirtyFlags.Reserved1, Is.EqualTo(0));
+        }
+
+        [Test]
+        public void FlagWithoutNeighborPropagationOnlyMarksDirtyBrickRequireUpdate()
+        {
+            using var world = new DirtyPropagationTestWorld();
+
+            world.MarkBrickDirty(new int3(5, 5, 5), DirtyFlags.Geometry).Propagate(DirtyFlags.Geometry);
+
+            Assert.That(world.RequireFlagsAt(new int3(0, 0, 0), new int3(5, 5, 5)) & (ushort)DirtyFlags.Geometry, Is.Not.EqualTo(0));
+            Assert.That(world.RequireFlagsAt(new int3(0, 0, 0), new int3(6, 5, 5)) & (ushort)DirtyFlags.Geometry, Is.EqualTo(0));
+        }
+
+        [Test]
+        public void FlagWithoutLocalAllocationPropagatesToExistingNeighborSector()
+        {
+            using var world = new DirtyPropagationTestWorld();
+            world.AddSector(new int3(1, 0, 0));
+
+            world.MarkBrickDirty(new int3(15, 8, 8), DirtyFlags.GeometryWithLocalNeighbor).Propagate(DirtyFlags.GeometryWithLocalNeighbor);
+
+            Assert.That(world.RequireFlagsAt(new int3(1, 0, 0), new int3(0, 8, 8)) & (ushort)DirtyFlags.GeometryWithLocalNeighbor, Is.Not.EqualTo(0));
+        }
+
+        [Test]
+        public void FlagWithoutLocalAllocationDoesNotCreateMissingNeighborSector()
+        {
+            using var world = new DirtyPropagationTestWorld();
+
+            world.MarkBrickDirty(new int3(15, 8, 8), DirtyFlags.GeometryWithLocalNeighbor).Propagate(DirtyFlags.GeometryWithLocalNeighbor);
+
+            Assert.That(world.Data.sectors.ContainsKey(new int3(1, 0, 0)), Is.False);
         }
 
         [Test]
