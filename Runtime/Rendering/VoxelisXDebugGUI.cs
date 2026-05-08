@@ -580,7 +580,7 @@ public class VoxelisXDebugGUI : MonoBehaviour
                             float3 brickLocalPos = new float3(brickPos) * Sector.SIZE_IN_BLOCKS;
                             float3 brickInSectorPos = sectorLocalPos + brickLocalPos;
 
-                            Color colorToUse = (dirtyFlags & DirtyFlags.Reserved0) > 0 ? brickBorderColorDirty : brickBorderColor;
+                            Color colorToUse = (dirtyFlags & DirtyFlags.GeneralAutomata) > 0 ? brickBorderColorDirty : brickBorderColor;
                             
                             DrawWireBox(
                                 brickInSectorPos, new float3(Sector.SIZE_IN_BLOCKS), colorToUse, entityMatrix);

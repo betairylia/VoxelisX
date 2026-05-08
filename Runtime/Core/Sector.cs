@@ -130,7 +130,7 @@ namespace Voxelis
         /// <summary>
         /// Returns true if there are pending brick updates for the renderer.
         /// </summary>
-        public bool IsRendererDirty => !updateRecord.IsEmpty || (sectorDirtyFlags & (ushort)DirtyFlags.Reserved0) != 0;
+        public bool IsRendererDirty => !updateRecord.IsEmpty || (sectorDirtyFlags & (ushort)DirtyFlags.GeneralAutomata) != 0;
 
         /// <summary>
         /// Returns true if the sector contains no allocated bricks.
@@ -557,7 +557,7 @@ namespace Voxelis
             {
                 // Use precomputed lookup table for propagation direction mask
                 uint directionMask = GetVoxelPropagationMask(voxelIdxInBrick);
-                MarkBrickDirty(brick_sector_index_id, DirtyFlags.Reserved0, directionMask);
+                MarkBrickDirty(brick_sector_index_id, DirtyFlags.GeneralAutomata, directionMask);
                 targetVoxels[vid] = b;
             }
         }

@@ -140,7 +140,7 @@ namespace Voxelis.Rendering.Meshing
                 {
                     // Check if brick is Added or has Reserved0 flag (content changed)
                     bool isAdded = sector.brickFlags[brickIdx] == BrickUpdateInfo.Type.Added;
-                    bool isModified = (sector.brickDirtyFlags[brickIdx] & (ushort)DirtyFlags.Reserved0) != 0;
+                    bool isModified = (sector.brickDirtyFlags[brickIdx] & (ushort)DirtyFlags.GeneralAutomata) != 0;
 
                     if (isAdded || isModified)
                     {

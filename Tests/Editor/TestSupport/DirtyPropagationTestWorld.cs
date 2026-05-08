@@ -37,7 +37,7 @@ namespace VoxelisX.Tests.TestSupport
             return this;
         }
 
-        public void Propagate(DirtyFlags flags = DirtyFlags.Reserved0)
+        public void Propagate(DirtyFlags flags = DirtyFlags.GeneralAutomata)
         {
             entity.Data.PropagateDirtyFlags(flags).Complete();
         }

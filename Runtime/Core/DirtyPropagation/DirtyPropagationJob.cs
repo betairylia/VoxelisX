@@ -10,7 +10,7 @@ namespace Voxelis
     public enum DirtyFlags : ushort
     {
         None       = 0,
-        Reserved0  = 1 << 0,
+        GeneralAutomata  = 1 << 0,
         Reserved1  = 1 << 1,
         Reserved2  = 1 << 2,
         Reserved3  = 1 << 3,
@@ -24,9 +24,17 @@ namespace Voxelis
         Reserved11 = 1 << 11,
         Reserved12 = 1 << 12,
         Reserved13 = 1 << 13,
-        Reserved14 = 1 << 14,
-        Reserved15 = 1 << 15,
+        GeometryWithLocalNeighbor = 1 << 14,
+        Geometry = 1 << 15,
         All        = 0xFFFF,
+    }
+
+    public static class DirtyPropagationSettings
+    {
+        //                                                   15|                 |0
+        public const uint DirtyFlagsPropagateToAlien       = 0b0011_1111_1111_1111u;
+        public const uint DirtyFlagsPropagateToNeighbor    = 0b0111_1111_1111_1111u;
+        public const uint DirtyFlagsCanAllocateLocalBricks = 0b0011_1111_1111_1111u;
     }
 
     /// <summary>
