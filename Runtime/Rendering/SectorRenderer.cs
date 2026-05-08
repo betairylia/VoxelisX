@@ -91,7 +91,9 @@ namespace Voxelis.Rendering
             /// <summary>
             /// The sector to generate render data from.
             /// </summary>
-            public Sector sector;
+            public SectorHandle sectorHandle;
+            public SectorNeighborHandles neighbors;
+            private SectorNeighborhoodReaderHelper helper;
 
             /// <summary>
             /// Buffer of all AABB bounding boxes used for RayTracingAccelerationStructure.
@@ -113,16 +115,19 @@ namespace Voxelis.Rendering
             {
                 syncRecord[0] = 65536;
                 syncRecord[1] = 0;
+                
+                ref Sector sector = ref sectorHandle.Get();
+                helper = new SectorNeighborhoodReaderHelper(sectorHandle, neighbors);
 
                 // Sweep all bricks to find dirty ones
                 unsafe
                 {
                     for (int brickIdxAbs = 0; brickIdxAbs < Sector.BRICKS_IN_SECTOR; brickIdxAbs++)
                     {
-                        // Check if brick is Added or has GeneralAutomata flag (content changed)
-                        bool isAdded = (sector.brickDirtyFlags[brickIdxAbs] & (ushort)DirtyFlags.BrickAdded) != 0;
-                        bool isRemoved = (sector.brickDirtyFlags[brickIdxAbs] & (ushort)DirtyFlags.BrickRemoved) != 0;
-                        bool needRebuilt = (sector.brickDirtyFlags[brickIdxAbs] & (ushort)DirtyFlags.GeneralAutomata) != 0;
+                        // Check require-update flags populated by dirty propagation.
+                        bool isAdded = (sector.brickRequireUpdateFlags[brickIdxAbs] & (ushort)DirtyFlags.BrickAdded) != 0;
+                        bool isRemoved = (sector.brickRequireUpdateFlags[brickIdxAbs] & (ushort)DirtyFlags.BrickRemoved) != 0;
+                        bool needRebuilt = (sector.brickRequireUpdateFlags[brickIdxAbs] & (ushort)DirtyFlags.GeometryWithLocalNeighbor) != 0;
 
                         if (!isAdded && !isRemoved && !needRebuilt) continue;
                         if (isRemoved)
@@ -150,6 +155,7 @@ namespace Voxelis.Rendering
                 // Buffer start position
                 short bid = record.brickIdx;
                 int bp = bid * BRICK_DATA_LENGTH;
+                ref Sector sector = ref sectorHandle.Get();
 
                 // Record modifications for Host-Device buffer sync
                 syncRecord[0] = math.min(syncRecord[0], bid);

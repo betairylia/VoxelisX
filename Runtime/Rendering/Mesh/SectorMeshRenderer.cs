@@ -133,14 +133,13 @@ namespace Voxelis.Rendering.Meshing
         {
             ref Sector sector = ref sectorHandle.Get();
 
-            // Sweep all bricks to find dirty ones (Added or content changed)
+            // Sweep all bricks to find required updates (Added or content changed)
             unsafe
             {
                 for (int brickIdx = 0; brickIdx < Sector.BRICKS_IN_SECTOR; brickIdx++)
                 {
-                    // Check if brick is Added or has GeneralAutomata flag (content changed)
-                    bool isAdded = (sector.brickDirtyFlags[brickIdx] & (ushort)DirtyFlags.BrickAdded) != 0;
-                    bool isModified = (sector.brickDirtyFlags[brickIdx] & (ushort)DirtyFlags.GeneralAutomata) != 0;
+                    bool isAdded = (sector.brickRequireUpdateFlags[brickIdx] & (ushort)DirtyFlags.BrickAdded) != 0;
+                    bool isModified = (sector.brickRequireUpdateFlags[brickIdx] & (ushort)DirtyFlags.GeometryWithLocalNeighbor) != 0;
 
                     if (isAdded || isModified)
                     {

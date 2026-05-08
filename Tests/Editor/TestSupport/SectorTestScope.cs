@@ -33,7 +33,7 @@ namespace VoxelisX.Tests.TestSupport
 
         public BrickUpdateInfo.Type BrickUpdateAt(int3 brickPos)
         {
-            ushort flags = DirtyFlagsAt(brickPos);
+            ushort flags = RequireFlagsAt(brickPos);
             if ((flags & (ushort)DirtyFlags.BrickRemoved) != 0)
             {
                 return BrickUpdateInfo.Type.Removed;
@@ -44,7 +44,7 @@ namespace VoxelisX.Tests.TestSupport
                 return BrickUpdateInfo.Type.Added;
             }
 
-            if ((flags & (ushort)DirtyFlags.GeneralAutomata) != 0)
+            if ((flags & (ushort)DirtyFlags.GeometryWithLocalNeighbor) != 0)
             {
                 return BrickUpdateInfo.Type.Modified;
             }
