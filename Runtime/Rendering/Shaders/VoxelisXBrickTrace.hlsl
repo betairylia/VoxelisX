@@ -185,7 +185,7 @@ inline bool VoxelisXShouldTerminateBrickDDA(int blockID, DDACursor cursor, int3 
     if (shouldTerminate) return shouldTerminate;
     
     // Transparency
-    return true;
+    if (cursor.stepIndex == 0) return false;
     int3 normal = DDACurrentNormal(cursor, entryNormal);
     int sign = normal.x + normal.y + normal.z;
     int faceBit = dot(abs(normal), int3(0, 2, 4)) + ((1 - sign) >> 1);
@@ -353,9 +353,9 @@ inline void VoxelisXApplyVoxelClosestHit(inout RayPayload payload, VoxelisXBrick
     VoxelMaterial previousTransparentMaterial = GET_MATERIAL(payload.previousTransparentMaterial);
     float3 ext = hasPreviousTransparentMaterial ? exp(-(1 - previousTransparentMaterial.albedo) * currentRayT * previousTransparentMaterial.extinction) : float3(1, 1, 1);
     // TODO: Remove me vvv
-    ext = float3(1, 1, 1);
+    // ext = float3(1, 1, 1);
 
-    if (true || IsOpaque(materialID))
+    if (IsOpaque(materialID))
     {
         payload.albedo = material.albedo.rgb * ext;
         payload.bounceIndexOpaque = payload.bounceIndexOpaque + 1;
@@ -399,7 +399,7 @@ inline void VoxelisXApplyVoxelClosestHit(inout RayPayload payload, VoxelisXBrick
         float fresnelFactor = canRefract
             ? FresnelReflectAmountTransparent(sourceIOR, destinationIOR, worldRayDirection, interfaceNormal)
             : 1.0f;
-        fresnelFactor = 0.0f;
+        // fresnelFactor = 0.0f;
 
         float doRefraction = (canRefract && RandomFloat01(payload.rngState) >= fresnelFactor) ? 1.0f : 0.0f;
         float3 bounceRayDir = normalize(lerp(reflectionRayDir, refractionRayDir, doRefraction));

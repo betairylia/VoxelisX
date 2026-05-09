@@ -10,7 +10,7 @@
 #include "VoxelisXRayPayloadUtils.hlsl"
 
 #define VOXELISXRT_SHADOW 0
-#define VOXELISXRT_BOUNCE 0
+#define VOXELISXRT_BOUNCE 1
 
 RaytracingAccelerationStructure g_AccelStruct : register(t0, space1);
 
