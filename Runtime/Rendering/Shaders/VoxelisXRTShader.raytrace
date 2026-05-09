@@ -10,7 +10,7 @@
 #include "VoxelisXRayPayloadUtils.hlsl"
 
 #define VOXELISXRT_SHADOW 0
-#define VOXELISXRT_BOUNCE 1
+#define VOXELISXRT_BOUNCE 0
 
 RaytracingAccelerationStructure g_AccelStruct : register(t0, space1);
 
@@ -250,7 +250,9 @@ void MainRayGenShader()
 
     // DirectRadianceTarget[launchIndex] = float4(primaryEmissionRadiance + directRadiance, !isSky);
     DirectRadianceTarget[launchIndex] = float4(primaryEmissionRadiance, !isSky);
+    // DirectRadianceTarget[launchIndex] = float4(payload.bounceIndexTransparent / 4.0 * float3(1, 1, 1), !isSky);
     IndirectRadianceTarget[launchIndex] = float4(indirectIncidentRadiance, !isSky);
+    // IndirectRadianceTarget[launchIndex] = float4(0, 0, 0, 0);
     // DirectRadianceTarget[launchIndex] = float4(payload.bounceIndexOpaque / 100.0 * float3(1, 1, 1), 1);
     // DirectRadianceTarget[launchIndex] = float4(payload.albedo, 1);
 

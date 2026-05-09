@@ -51,6 +51,7 @@
 
 #define VOXEL_FACE_HASH_MASK 0x3FFu
 
+#include "VoxelisXUtils.hlsl"
 #include "Utils/BlueNoise.hlsl"
 #include "DDA.hlsl"
 
@@ -184,7 +185,7 @@ inline bool VoxelisXShouldTerminateBrickDDA(int blockID, DDACursor cursor, int3 
     if (shouldTerminate) return shouldTerminate;
     
     // Transparency
-    // return false;
+    return true;
     int3 normal = DDACurrentNormal(cursor, entryNormal);
     int sign = normal.x + normal.y + normal.z;
     int faceBit = dot(abs(normal), int3(0, 2, 4)) + ((1 - sign) >> 1);
@@ -352,9 +353,9 @@ inline void VoxelisXApplyVoxelClosestHit(inout RayPayload payload, VoxelisXBrick
     VoxelMaterial previousTransparentMaterial = GET_MATERIAL(payload.previousTransparentMaterial);
     float3 ext = hasPreviousTransparentMaterial ? exp(-(1 - previousTransparentMaterial.albedo) * currentRayT * previousTransparentMaterial.extinction) : float3(1, 1, 1);
     // TODO: Remove me vvv
-    // ext = float3(1, 1, 1);
+    ext = float3(1, 1, 1);
 
-    if (IsOpaque(materialID))
+    if (true || IsOpaque(materialID))
     {
         payload.albedo = material.albedo.rgb * ext;
         payload.bounceIndexOpaque = payload.bounceIndexOpaque + 1;
@@ -363,7 +364,6 @@ inline void VoxelisXApplyVoxelClosestHit(inout RayPayload payload, VoxelisXBrick
         float fresnelFactor = FresnelReflectAmountOpaque(1, material.IOR, worldRayDirection, worldNormal);
         float specularChance = lerp(material.metallic, 1, fresnelFactor * material.smoothness);
         float doSpecular = (RandomFloat01(payload.rngState) < specularChance) ? 1 : 0;
-        // float doSpecular = 0;
 
         const float3 diffuseRayDir = normalize(worldNormal + RandomUnitVector(payload.rngState));
         float3 specularRayDir = reflect(worldRayDirection, worldNormal);
@@ -399,7 +399,7 @@ inline void VoxelisXApplyVoxelClosestHit(inout RayPayload payload, VoxelisXBrick
         float fresnelFactor = canRefract
             ? FresnelReflectAmountTransparent(sourceIOR, destinationIOR, worldRayDirection, interfaceNormal)
             : 1.0f;
-        // fresnelFactor = 0.0f;
+        fresnelFactor = 0.0f;
 
         float doRefraction = (canRefract && RandomFloat01(payload.rngState) >= fresnelFactor) ? 1.0f : 0.0f;
         float3 bounceRayDir = normalize(lerp(reflectionRayDir, refractionRayDir, doRefraction));
@@ -407,7 +407,7 @@ inline void VoxelisXApplyVoxelClosestHit(inout RayPayload payload, VoxelisXBrick
 
         payload.k = doRefraction == 1.0f ? 1.0f - fresnelFactor : fresnelFactor;
         payload.albedo = ext;
-        payload.emission = float3(0, 0, 0);
+        payload.emission = material.emission;
         // payload.emission = fresnelFactor.xxx;
         payload.bounceRayOrigin = worldHitPosition + pushOff * interfaceNormal;
         payload.bounceRayDirection = bounceRayDir;
