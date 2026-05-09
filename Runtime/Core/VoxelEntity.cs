@@ -462,6 +462,7 @@ namespace Voxelis
         }
         
         public LockableUnsafeHashMap<int3, SectorHandle> Sectors => data.sectors;
+        public LockableUnsafeHashMap<int3, SectorNeighborHandles> Neighbors => data.sectorNeighbors;
 
         /// <summary>
         /// Adds an empty sector at the specified position.

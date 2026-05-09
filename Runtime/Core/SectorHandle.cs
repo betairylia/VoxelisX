@@ -105,11 +105,6 @@ namespace Voxelis
         public int NonEmptyBrickCount => _ptr->NonEmptyBrickCount;
 
         /// <summary>
-        /// Gets the number of non-empty bricks allocated in this sector for rendering.
-        /// </summary>
-        public int RendererNonEmptyBrickCount => _ptr->RendererNonEmptyBrickCount;
-
-        /// <summary>
         /// Returns true if there are pending brick updates for the renderer.
         /// </summary>
         public bool IsRendererDirty => _ptr->IsRendererRequireUpdate;

@@ -50,6 +50,8 @@ namespace Voxelis
         /// Returns true if this block has no renderer-visible material ID.
         /// </summary>
         public bool isRendererEmpty => id == 0;
+
+        public static bool IsRendererDataEmpty(uint data) => data == 0;
         // public bool isVoid => (data == 0);
 
         public bool isOpaque => (id & OpaqueBit) > 0;

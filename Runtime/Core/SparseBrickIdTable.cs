@@ -165,7 +165,7 @@ namespace Voxelis
         /// <param name="position">Brick coordinate within the sector.</param>
         /// <param name="brickID">The assigned (or pre-existing) brick ID.</param>
         /// <returns>True iff the assigned ID exceeds the previous <see cref="Capacity"/> (caller must grow any parallel arrays).</returns>
-        public bool FindOrAddBrick(int3 position, out int brickID)
+        public bool FindOrAddBrick_RequiresExtension(int3 position, out int brickID)
         {
             AddBrick(position, out brickID, out bool exceedsCapacity);
             return exceedsCapacity;
@@ -175,14 +175,16 @@ namespace Voxelis
         /// Marks a brick at <paramref name="position"/> as invalid; its ID becomes available for reuse.
         /// No-op if the brick is already invalid.
         /// </summary>
-        public void RemoveBrick(int3 position)
+        /// <returns>Removed ID</returns>
+        public int RemoveBrick(int3 position)
         {
             int idx = Idx(position);
             short id = indices[idx];
-            if (id == EMPTY) return;
+            if (id == EMPTY) return EMPTY;
             indices[idx] = EMPTY;
             HeapPush(id);
             _meta[2]--;
+            return id;
         }
 
         /// <summary>

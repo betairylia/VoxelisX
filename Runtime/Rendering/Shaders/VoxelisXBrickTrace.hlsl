@@ -249,6 +249,10 @@ inline bool VoxelisXTraceBrickDDA(uint brickID, float3 entryPositionInBrick, flo
     uint occLo = 0u;
     uint occHi = 0u;
     int prevTransparentBlock = -1;
+    
+    // materialID = coarseOccupancy;
+    // DDAMakeHit(cursor, entryT, entryNormal, hit);
+    // return true;
 
     [loop] for (int ddaStep = 0; ddaStep < BRICK_DDA_MAX_STEPS; ddaStep++)
     {
@@ -297,6 +301,9 @@ inline bool VoxelisXTraceBrickDDA(uint brickID, float3 entryPositionInBrick, flo
         if (VoxelisXIsMicroOccupied(occLo, occHi, microBit))
         {
             int blockID = VoxelisXReadBrick(brickBase + BRICK_BLOCK_DATA_OFFSET, cursor.cell);
+            materialID = blockID;
+            DDAMakeHit(cursor, entryT, entryNormal, hit);
+            return true;
             bool shouldTerminate = VoxelisXShouldTerminateBrickDDA(blockID, prevTransparentBlock);
             prevTransparentBlock = blockID;
 

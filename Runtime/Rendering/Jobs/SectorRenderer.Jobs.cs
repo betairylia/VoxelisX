@@ -1,6 +1,9 @@
-﻿using System;
+﻿#define VOXELISX_RENDER_DISABLE_TRANSPARENCY
+
+using System;
 using Unity.Burst;
 using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
@@ -57,7 +60,7 @@ namespace Voxelis.Rendering
             public NativeList<int> brickData;
 
             /// <summary>
-            /// Array recording the range of modified bricks: [minModified, maxModified].
+            /// Array recording the range of modified bricks: [minModified, maxModified, aabbModified (0/1)].
             /// Used to optimize GPU buffer uploads by only sending changed data.
             /// </summary>
             public NativeArray<int> syncRecord;
@@ -108,26 +111,18 @@ namespace Voxelis.Rendering
                 }
             }
 
-            private void ProcessBrick(BrickUpdateInfo record)
+            private unsafe void ProcessBrick(BrickUpdateInfo record)
             {
                 // Buffer start position
                 short bid = record.brickIdx;
                 int3 brickPos = Sector.ToBrickPos(record.brickIdxAbsolute);
                 int3 brickBlockPos = brickPos * Sector.SIZE_IN_BLOCKS;
                 ref Sector sector = ref sectorHandle.Get();
-                
-                /////////////////////
-                // int bp = bid * BRICK_DATA_LENGTH;
 
-                // Record modifications for Host-Device buffer sync
-                // syncRecord[0] = math.min(syncRecord[0], bid);
-                // syncRecord[1] = math.max(syncRecord[1], bid);
+                bool isAdded = record.type == BrickUpdateInfo.Type.Added;
                 
-                // for (int i = 0; i < BRICK_OCCUPANCY_WORDS; i++)
-                // {
-                //     brickData[bp + BRICK_INFO_WORDS + i] = 0;
-                // }
-                /////////////////////
+                int rendererBrickId = -1;
+                int rendererBrickBase = -1;
 
                 uint coarseOccupancy = 0;
 
@@ -147,47 +142,106 @@ namespace Voxelis.Rendering
                             
 #if !VOXELISX_RENDER_DISABLE_CULLING
                             uint block0Data = GetRendererBlockData(block0, brickBlockPos + new int3(bx, by, bz));
-                            uint block1Data = GetRendererBlockData(block1, brickBlockPos + new int3(bx, by, bz));
+                            uint block1Data = GetRendererBlockData(block1, brickBlockPos + new int3(bx + 1, by, bz));
+                            
+                            // Do nothing if blocks are empty
+                            if (Block.IsRendererDataEmpty(block0Data) && Block.IsRendererDataEmpty(block1Data))
+                            {
+                                continue;
+                            }
 #else
                             uint block0Data = ((uint)block0.id << 16);
                             uint block1Data = ((uint)block1.id << 16);
 #endif
-                            
-                            brickData[
-                                    bp + BRICK_BLOCK_DATA_OFFSET + bz * (Sector.SIZE_IN_BLOCKS_SQUARED / 2) +
-                                    by * (Sector.SIZE_IN_BLOCKS / 2) + bx / 2] =
-                                unchecked((int)(((uint)block0.id << 16) | block1.id));
 
-                            if (!block0.isRendererEmpty)
+                            int rendererBlockIdx = Sector.ToBlockIdx(bx, by, bz) / 2;
+                            
+                            // Brick not allocated yet
+                            if (rendererBrickId == -1)
                             {
-                                AccumulateOccupancy(ref coarseOccupancy, bp, bx, by, bz);
+#if !VOXELISX_RENDER_DISABLE_CULLING
+                                // Alloc the buffer
+                                bool requireExtension = false;
+                                isAdded = rendererBrickMap.AddBrick(brickPos, out rendererBrickId, out requireExtension);
+                                if (requireExtension)
+                                {
+                                    aabbBuffer.Resize(rendererBrickMap.Capacity, NativeArrayOptions.UninitializedMemory);
+                                    brickData.Resize(rendererBrickMap.Capacity * BRICK_DATA_LENGTH, NativeArrayOptions.UninitializedMemory);
+                                }
+
+                                rendererBrickBase = rendererBrickId * BRICK_DATA_LENGTH;
+                                
+                                // Clear previous blocks
+                                for (int i = 0; i < rendererBlockIdx; i++)
+                                {
+                                    brickData[rendererBrickBase + BRICK_BLOCK_DATA_OFFSET + i] = 0;
+                                }
+#else
+                                // Alloc the buffer
+                                rendererBrickId = bid;
+                                rendererBrickBase = rendererBrickId * BRICK_DATA_LENGTH;
+#endif
+                                // Record modifications for Host-Device buffer sync
+                                syncRecord[0] = math.min(syncRecord[0], rendererBrickId);
+                                syncRecord[1] = math.max(syncRecord[1], rendererBrickId);
+                
+                                // Reset coarse occupancy
+                                for (int i = 0; i < BRICK_OCCUPANCY_WORDS; i++)
+                                {
+                                    brickData[rendererBrickBase + BRICK_INFO_WORDS + i] = 0;
+                                }
+                            }
+                            
+                            brickData[rendererBrickBase + BRICK_BLOCK_DATA_OFFSET + rendererBlockIdx] =
+                                unchecked((int)((block0Data << 16) | block1Data));
+
+                            if (Block.IsRendererDataEmpty(block0Data))
+                            {
+                                AccumulateOccupancy(ref coarseOccupancy, rendererBrickBase, bx, by, bz);
                             }
 
-                            if (!block1.isRendererEmpty)
+                            if (Block.IsRendererDataEmpty(block1Data))
                             {
-                                AccumulateOccupancy(ref coarseOccupancy, bp, bx + 1, by, bz);
+                                AccumulateOccupancy(ref coarseOccupancy, rendererBrickBase, bx + 1, by, bz);
                             }
                         }
                     }
                 }
 
-                brickData[bp] = PackBrickInfo(record.brickIdxAbsolute, coarseOccupancy);
+                // Handle removal if brick empty
+                // TODO: Compaction?
+                if (coarseOccupancy == 0)
+                {
+                    int removed = rendererBrickMap.RemoveBrick(brickPos);
+                    if (removed != SparseBrickIdTable.EMPTY)
+                    {
+                        brickData[removed * BRICK_DATA_LENGTH] = PackBrickInfo(record.brickIdxAbsolute, coarseOccupancy);
+                    }
+
+                    // We are done
+                    return;
+                }
+                
+                brickData[rendererBrickBase] = PackBrickInfo(record.brickIdxAbsolute, coarseOccupancy);
 
                 // AABB
                 // Only do for new bricks
-                if (record.type == BrickUpdateInfo.Type.Added)
+                // TODO: Handle removal -- this is tricky since we cannot leave holes in AABB buf
+                if (isAdded)
                 {
                     Vector3 brickPosf3 = brickPos.ToVector3Int();
-                    aabbBuffer[bid] = new AABB()
+                    aabbBuffer[rendererBrickId] = new AABB()
                     {
                         min = brickPosf3 * Sector.SIZE_IN_BLOCKS,
                         max = (brickPosf3 + Vector3.one) * Sector.SIZE_IN_BLOCKS
                     };
+                    syncRecord[2] = 1;
                 }
             }
 
             private ushort GetRendererBlockData(Block currentBlock, int3 sectorBlockPos)
             {
+                return currentBlock.id;
                 bool alive = false;
 
 #if !VOXELISX_RENDER_DISABLE_TRANSPARENCY

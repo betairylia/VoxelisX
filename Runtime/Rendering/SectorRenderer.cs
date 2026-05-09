@@ -86,6 +86,18 @@ namespace Voxelis.Rendering
         private SparseBrickIdTable rendererBrickMap;
 #endif
 
+        public int BrickBufferSize
+        {
+            get
+            {
+#if VOXELISX_RENDER_DISABLE_CULLING
+                return hostAABBBuffer.Length;
+#else
+                return rendererBrickMap.Capacity;
+#endif
+            }
+        }
+
         /// <summary>
         /// Gets the estimated host memory usage in bytes for this renderer's buffers.
         /// </summary>
@@ -99,13 +111,14 @@ namespace Voxelis.Rendering
         /// </summary>
         public ulong VRAMUsage =>
             (ulong)(Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * 24 +
-                    currentCapacity * BRICK_DATA_LENGTH * 4);
+                    currentGPUBrickBufferCapacity * BRICK_DATA_LENGTH * 4);
 
         private GraphicsBuffer aabbBuffer;
         private GraphicsBuffer brickBuffer;
-        private int currentCapacity;
+        private int currentGPUBrickBufferCapacity;
 
-        private bool BufferInitialized => brickBuffer != null && brickBuffer.IsValid();
+        private bool GPUBufferInitialized => brickBuffer != null && brickBuffer.IsValid();
+        private bool HostBufferInitialized => hostAABBBuffer.IsCreated;
 
         private int GetCapacity(int requestedLength)
         {
@@ -119,47 +132,60 @@ namespace Voxelis.Rendering
 
             return result;
         }
-        
+
         /// <summary>
-        /// Prepares and resizes GPU buffers if needed to accommodate current brick count.
+        /// Preallocate host buffers for the renderer data-filling job.
         /// </summary>
         /// <param name="sector">The sector to prepare buffers for.</param>
-        /// <returns>True if buffers were reallocated; false if existing buffers are sufficient.</returns>
-        public bool PrepareBuffers(Sector sector)
+        public void PreallocateBuffers(Sector sector)
         {
-            Profiler.BeginSample("PrepareBuffers");
+            if (sector.NonEmptyBrickCount == 0) return;
 
-            if (sector.RendererNonEmptyBrickCount != previousAABBCount)
-            {
-                shouldUpdateAABB = true;
-            }
-
-            previousAABBCount = sector.RendererNonEmptyBrickCount;
-
-            int requestedCapacity = GetCapacity(sector.RendererNonEmptyBrickCount);
-            if (requestedCapacity == currentCapacity)
-            {
-                Profiler.EndSample();
-                return false;
-            }
+            int requestedCapacity = 0;
+#if VOXELISX_RENDER_DISABLE_CULLING
+            requestedCapacity = sector.RendererNonEmptyBrickCount;
+#endif
             
-            if (!BufferInitialized)
+            // Prepare Host Buffers
+            if (!HostBufferInitialized)
             {
                 hostAABBBuffer = new NativeList<AABB>(requestedCapacity, Allocator.Persistent);
                 hostBrickBuffer = new NativeList<int>(requestedCapacity * BRICK_DATA_LENGTH,
                     Allocator.Persistent);
-                
-                aabbBuffer = new GraphicsBuffer(
-                    GraphicsBuffer.Target.Structured,
-                    Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS, 24);
-                
 #if !VOXELISX_RENDER_DISABLE_CULLING
                 rendererBrickMap = SparseBrickIdTable.New(Allocator.Persistent);
 #endif
             }
             
+            // Pre-allocate buffers only for non-culling case
+            // Since we already know how many bricks will be there before running the actual data-filling job
+#if VOXELISX_RENDER_DISABLE_CULLING
             hostAABBBuffer.Resize(requestedCapacity, NativeArrayOptions.ClearMemory);
             hostBrickBuffer.Resize(requestedCapacity * BRICK_DATA_LENGTH, NativeArrayOptions.ClearMemory);
+#endif
+        }
+        
+        /// <summary>
+        /// Prepares and resizes GPU buffers if needed to accommodate current brick count.
+        /// </summary>
+        /// <returns>True if buffers were reallocated; false if existing buffers are sufficient.</returns>
+        public bool ExtendGPUBuffers()
+        {
+            Profiler.BeginSample("ExtendGPUBuffers");
+
+            int requestedCapacity = GetCapacity(BrickBufferSize);
+            if (requestedCapacity == currentGPUBrickBufferCapacity)
+            {
+                Profiler.EndSample();
+                return false;
+            }
+            
+            if (!GPUBufferInitialized)
+            {
+                aabbBuffer = new GraphicsBuffer(
+                    GraphicsBuffer.Target.Structured,
+                    Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS, 24);
+            }
             
             // Allocate our buffers on GPU side
 
@@ -171,7 +197,7 @@ namespace Voxelis.Rendering
             brickBuffer?.Dispose();
 
             brickBuffer = new_brickBuffer;
-            currentCapacity = requestedCapacity;
+            currentGPUBrickBufferCapacity = requestedCapacity;
             
             Profiler.EndSample();
 
@@ -182,8 +208,8 @@ namespace Voxelis.Rendering
         // Please ensure call RenderEmitJob and Render (after emit job) in the same frame / tick
         private JobHandle jobHandle;
         private GenerateSectorRenderDataJob rendererJob;
-        private int previousAABBCount;
-        private bool isRealloc, jobScheduled, shouldUpdateAABB;
+        private int previousBrickBufferSize;
+        private bool isRealloc, jobScheduled;
         private RayTracingAABBsInstanceConfig AABBconfig;
         private bool isDirty;
         private bool shouldRemove = false;
@@ -230,7 +256,12 @@ namespace Voxelis.Rendering
             
             int minModified = rendererJob.syncRecord[0];
             int maxModified = rendererJob.syncRecord[1];
+            bool shouldUpdateAABB = rendererJob.syncRecord[2] > 0;
             rendererJob.syncRecord.Dispose();
+
+            Debug.Log($"Bricks: {rendererBrickMap.Capacity}");
+
+            isRealloc = ExtendGPUBuffers();
 
             if (minModified <= maxModified)
             {
@@ -336,7 +367,7 @@ namespace Voxelis.Rendering
                 if (AABBconfig.aabbCount == 0 && matProps != null)
                 {
                     AABBconfig = new RayTracingAABBsInstanceConfig(
-                        aabbBuffer, sector.RendererNonEmptyBrickCount, false, sectorMaterial);
+                        aabbBuffer, BrickBufferSize, false, sectorMaterial);
                     AABBconfig.accelerationStructureBuildFlags = RayTracingAccelerationStructureBuildFlags.PreferFastTrace;
                     AABBconfig.materialProperties = matProps;
                 }
@@ -372,22 +403,26 @@ namespace Voxelis.Rendering
         /// - No dirty bricks need updating
         /// This allows the job to run in parallel with other sector jobs.
         /// </remarks>
-        public void RenderEmitJob(SectorHandle sector)
+        public void RenderEmitJob(SectorHandle sector, SectorNeighborHandles neighborHandle)
         {
             if (shouldRemove || sector.IsRendererEmpty || (!sector.IsRendererRequireUpdate))
             {
                 return;
             }
 
-            isRealloc = PrepareBuffers(sector.Get());
+            PreallocateBuffers(sector.Get());
 
             // Job generating renderer buffers
             rendererJob = new GenerateSectorRenderDataJob()
             {
                 sectorHandle = sector,
+                neighbors = neighborHandle,
+#if !VOXELISX_RENDER_DISABLE_CULLING
+                rendererBrickMap = rendererBrickMap,
+#endif
                 aabbBuffer = hostAABBBuffer,
                 brickData = hostBrickBuffer,
-                syncRecord = new NativeArray<int>(2, Allocator.TempJob)
+                syncRecord = new NativeArray<int>(3, Allocator.TempJob)
             };
             jobHandle = rendererJob.Schedule();
 

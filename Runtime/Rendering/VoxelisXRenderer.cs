@@ -309,7 +309,7 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
                     sectorRenderers[key] = new SectorRenderer();
                 }
 
-                sectorRenderers[key].RenderEmitJob(kvp.Value);
+                sectorRenderers[key].RenderEmitJob(kvp.Value, e.Neighbors[sectorPos]);
             }
         }
 

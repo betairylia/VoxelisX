@@ -122,7 +122,7 @@ namespace VoxelisX.Tests
         [Test]
         public void FindOrAddBrick_NewPositionReturnsExceedsCapacity()
         {
-            bool exceeds = _t.FindOrAddBrick(new int3(1, 1, 1), out int id);
+            bool exceeds = _t.FindOrAddBrick_RequiresExtension(new int3(1, 1, 1), out int id);
 
             Assert.That(exceeds, Is.True);
             Assert.That(id, Is.EqualTo(0));
@@ -134,7 +134,7 @@ namespace VoxelisX.Tests
         {
             _t.AddBrick(new int3(1, 1, 1), out int firstId, out _);
 
-            bool exceeds = _t.FindOrAddBrick(new int3(1, 1, 1), out int id);
+            bool exceeds = _t.FindOrAddBrick_RequiresExtension(new int3(1, 1, 1), out int id);
 
             Assert.That(exceeds, Is.False);
             Assert.That(id, Is.EqualTo(firstId));
@@ -148,7 +148,7 @@ namespace VoxelisX.Tests
             _t.AddBrick(new int3(1, 0, 0), out int id1, out _);
             _t.RemoveBrick(new int3(0, 0, 0));
 
-            bool exceeds = _t.FindOrAddBrick(new int3(2, 0, 0), out int reusedId);
+            bool exceeds = _t.FindOrAddBrick_RequiresExtension(new int3(2, 0, 0), out int reusedId);
 
             Assert.That(exceeds, Is.False);
             Assert.That(reusedId, Is.EqualTo(id0));
