@@ -184,8 +184,10 @@ inline bool VoxelisXShouldTerminateBrickDDA(int blockID, DDACursor cursor, int3 
     if (shouldTerminate) return shouldTerminate;
     
     // Transparency
+    // return false;
     int3 normal = DDACurrentNormal(cursor, entryNormal);
-    int faceBit = dot(cursor.axisMask, int3(0, 2, 4) + !(normal & 1u));
+    int sign = normal.x + normal.y + normal.z;
+    int faceBit = dot(abs(normal), int3(0, 2, 4)) + ((1 - sign) >> 1);
     shouldTerminate = GetFaceBits(blockID) & (1 << faceBit);
     return shouldTerminate;
 }
@@ -270,16 +272,7 @@ inline bool VoxelisXTraceBrickDDA(uint brickID, float3 entryPositionInBrick, flo
         uint coarseBit = VoxelisXCoarseOccupancyBit(coarseCell);
         if ((coarseOccupancy & (1u << coarseBit)) == 0u)
         {
-            // Transparent -> Air boundary
-            if (prevTransparentBlock > 0)
-            {
-                materialID = 0;
-                DDAMakeHit(cursor, entryT, entryNormal, hit);
-                return true;
-            }
-            
             // Faster than compute the exact distance needed to jump multiple voxels
-            prevTransparentBlock = 0;
             DDAStep(cursor);
             continue;
         }
@@ -288,15 +281,6 @@ inline bool VoxelisXTraceBrickDDA(uint brickID, float3 entryPositionInBrick, flo
         VoxelisXLoadMicroOccupancy(brickBase, coarseBit, occLo, occHi);
         if (!VoxelisXShouldTraceMicroOccupancy(occLo, occHi, rayDir))
         {
-            // Transparent -> Air boundary
-            if (prevTransparentBlock > 0)
-            {
-                materialID = 0;
-                DDAMakeHit(cursor, entryT, entryNormal, hit);
-                return true;
-            }
-            
-            prevTransparentBlock = 0;
             DDAStep(cursor);
             continue;
         }
@@ -307,7 +291,6 @@ inline bool VoxelisXTraceBrickDDA(uint brickID, float3 entryPositionInBrick, flo
         {
             int blockID = VoxelisXReadBrick(brickBase + BRICK_BLOCK_DATA_OFFSET, cursor.cell);
             bool shouldTerminate = VoxelisXShouldTerminateBrickDDA(blockID, cursor, entryNormal);
-            prevTransparentBlock = blockID;
 
             if (shouldTerminate)
             {
@@ -316,26 +299,9 @@ inline bool VoxelisXTraceBrickDDA(uint brickID, float3 entryPositionInBrick, flo
                 return true;
             }
         }
-        else if (prevTransparentBlock > 0)
-        {
-            materialID = 0;
-            DDAMakeHit(cursor, entryT, entryNormal, hit);
-            return true;
-        }
-        else
-        {
-            prevTransparentBlock = 0;
-        }
 
         DDAStep(cursor);
     }
-    
-    // if (prevTransparentBlock > 0 && !IsOpaque(prevTransparentBlock))
-    // {
-    //     materialID = 0;
-    //     DDAMakeHit(cursor, entryT, entryNormal, hit);
-    //     return true;
-    // }
 
     return false;
 }
@@ -386,7 +352,7 @@ inline void VoxelisXApplyVoxelClosestHit(inout RayPayload payload, VoxelisXBrick
     VoxelMaterial previousTransparentMaterial = GET_MATERIAL(payload.previousTransparentMaterial);
     float3 ext = hasPreviousTransparentMaterial ? exp(-(1 - previousTransparentMaterial.albedo) * currentRayT * previousTransparentMaterial.extinction) : float3(1, 1, 1);
     // TODO: Remove me vvv
-    ext = float3(1, 1, 1);
+    // ext = float3(1, 1, 1);
 
     if (IsOpaque(materialID))
     {
@@ -396,8 +362,8 @@ inline void VoxelisXApplyVoxelClosestHit(inout RayPayload payload, VoxelisXBrick
 
         float fresnelFactor = FresnelReflectAmountOpaque(1, material.IOR, worldRayDirection, worldNormal);
         float specularChance = lerp(material.metallic, 1, fresnelFactor * material.smoothness);
-        // float doSpecular = (RandomFloat01(payload.rngState) < specularChance) ? 1 : 0;
-        float doSpecular = 0;
+        float doSpecular = (RandomFloat01(payload.rngState) < specularChance) ? 1 : 0;
+        // float doSpecular = 0;
 
         const float3 diffuseRayDir = normalize(worldNormal + RandomUnitVector(payload.rngState));
         float3 specularRayDir = reflect(worldRayDirection, worldNormal);
@@ -433,7 +399,7 @@ inline void VoxelisXApplyVoxelClosestHit(inout RayPayload payload, VoxelisXBrick
         float fresnelFactor = canRefract
             ? FresnelReflectAmountTransparent(sourceIOR, destinationIOR, worldRayDirection, interfaceNormal)
             : 1.0f;
-        fresnelFactor = 0.0f;
+        // fresnelFactor = 0.0f;
 
         float doRefraction = (canRefract && RandomFloat01(payload.rngState) >= fresnelFactor) ? 1.0f : 0.0f;
         float3 bounceRayDir = normalize(lerp(reflectionRayDir, refractionRayDir, doRefraction));
