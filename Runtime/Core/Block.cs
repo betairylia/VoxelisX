@@ -27,7 +27,7 @@ namespace Voxelis
         // private const uint PhaseShift= 30;
         private const  int OpaqueBit = 31;
         private const uint TransMask = 0x01FF;      // Transparent blocks have 0~1FF (512) valid blockID slots
-        private const uint TFaceShift= 25;      // 6 bits for transparent blocks will be used to represent boundaries
+        private const  int TFaceShift= 9;           // 6 bits for transparent blocks will be used to represent boundaries
         private const uint MetaMask  = 0x0000FFFF;
         private const  int MetaShift = 0;
 
@@ -51,6 +51,12 @@ namespace Voxelis
         /// </summary>
         public bool isRendererEmpty => id == 0;
         // public bool isVoid => (data == 0);
+
+        public bool isOpaque => (id & OpaqueBit) > 0;
+        public uint transparentId => (id & TransMask);
+
+        public static uint MaskTransparency(uint faceMask, uint transparencyId)
+            => transparencyId + (faceMask << TFaceShift);
 
         /// <summary>
         /// Constructs a block with the specified block ID.

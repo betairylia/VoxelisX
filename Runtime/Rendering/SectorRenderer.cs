@@ -25,7 +25,7 @@ namespace Voxelis.Rendering
     /// - Scheduling Burst-compiled jobs to prepare render data
     /// - Updating the ray tracing acceleration structure when geometry changes
     /// </remarks>
-    public class SectorRenderer : IDisposable
+    public partial class SectorRenderer : IDisposable
     {
         /// <summary>
         /// Axis-aligned bounding box structure for ray tracing.
@@ -62,176 +62,6 @@ namespace Voxelis.Rendering
         {
             return unchecked((int)(((uint)brickIdxAbsolute & 0xFFFu) | ((coarseOccupancy & 0xFFu) << 16)));
         }
-
-        [BurstCompile]
-        struct InitializeAABBJob : IJob
-        {
-            public NativeList<AABB> aabbBuffer;
-
-            public void Execute()
-            {
-                for (int i = 0; i < aabbBuffer.Length; i++)
-                {
-                    aabbBuffer[i] = new AABB()
-                    {
-                        min = new Vector3(0, 0, 0),
-                        max = new Vector3(-1, -1, -1)
-                    };
-                }
-            }
-        }
-        
-        /// <summary>
-        /// Burst-compiled job that generates GPU-ready render data from sector voxel data.
-        /// Processes dirty bricks and updates AABB and brick data buffers.
-        /// </summary>
-        [BurstCompile]
-        struct GenerateSectorRenderDataJob : IJob
-        {
-            /// <summary>
-            /// The sector to generate render data from.
-            /// </summary>
-            public SectorHandle sectorHandle;
-            public SectorNeighborHandles neighbors;
-#if !VOXELISX_RENDER_DISABLE_CULLING
-            private SectorNeighborhoodReaderHelper helper;
-#endif
-
-            /// <summary>
-            /// Buffer of all AABB bounding boxes used for RayTracingAccelerationStructure.
-            /// </summary>
-            public NativeList<AABB> aabbBuffer;
-
-            /// <summary>
-            /// Buffer containing packed brick data for ray tracing shaders.
-            /// </summary>
-            public NativeList<int> brickData;
-
-            /// <summary>
-            /// Array recording the range of modified bricks: [minModified, maxModified].
-            /// Used to optimize GPU buffer uploads by only sending changed data.
-            /// </summary>
-            public NativeArray<int> syncRecord;
-
-            public void Execute()
-            {
-                syncRecord[0] = 65536;
-                syncRecord[1] = 0;
-                
-                ref Sector sector = ref sectorHandle.Get();
-                
-#if !VOXELISX_RENDER_DISABLE_CULLING
-                helper = new SectorNeighborhoodReaderHelper(sectorHandle, neighbors);
-                int brickIdx_culled = 0;
-#endif
-
-                // Sweep all bricks to find dirty ones
-                unsafe
-                {
-                    for (int brickIdxAbs = 0; brickIdxAbs < Sector.BRICKS_IN_SECTOR; brickIdxAbs++)
-                    {
-                        // Check require-update flags populated by dirty propagation.
-                        bool isAdded = (sector.brickRequireUpdateFlags[brickIdxAbs] & (ushort)DirtyFlags.BrickAdded) != 0;
-                        bool isRemoved = (sector.brickRequireUpdateFlags[brickIdxAbs] & (ushort)DirtyFlags.BrickRemoved) != 0;
-                        bool needRebuilt = (sector.brickRequireUpdateFlags[brickIdxAbs] & (ushort)DirtyFlags.GeometryWithLocalNeighbor) != 0;
-
-                        if (!isAdded && !isRemoved && !needRebuilt) continue;
-                        if (isRemoved)
-                            throw new System.NotImplementedException();
-
-                        // Check if brick exists (not empty)
-                        short bid = sector.brickIdx[brickIdxAbs];
-                        if (bid == Sector.BRICKID_EMPTY) continue;
-
-                        // Create record for this brick
-                        var record = new BrickUpdateInfo()
-                        {
-                            brickIdx = bid,
-                            brickIdxAbsolute = (short)brickIdxAbs,
-                            type = isAdded ? BrickUpdateInfo.Type.Added : BrickUpdateInfo.Type.Modified
-                        };
-
-                        ProcessBrick(record);
-                    }
-                }
-            }
-
-            private void ProcessBrick(BrickUpdateInfo record)
-            {
-                // Buffer start position
-                short bid = record.brickIdx;
-                int bp = bid * BRICK_DATA_LENGTH;
-                ref Sector sector = ref sectorHandle.Get();
-
-                // Record modifications for Host-Device buffer sync
-                syncRecord[0] = math.min(syncRecord[0], bid);
-                syncRecord[1] = math.max(syncRecord[1], bid);
-
-                uint coarseOccupancy = 0;
-
-                for (int i = 0; i < BRICK_OCCUPANCY_WORDS; i++)
-                {
-                    brickData[bp + BRICK_INFO_WORDS + i] = 0;
-                }
-
-                // Brick data
-                for (int bz = 0; bz < Sector.SIZE_IN_BLOCKS; bz++)
-                {
-                    for (int by = 0; by < Sector.SIZE_IN_BLOCKS; by++)
-                    {
-                        // Assume X-First
-                        int blockStart = bid * Sector.BLOCKS_IN_BRICK +
-                                         Sector.ToBlockIdx(0, by, bz);
-
-                        for (int bx = 0; bx < Sector.SIZE_IN_BLOCKS; bx += 2)
-                        {
-                            Block block0 = sector.voxels[blockStart + bx];
-                            Block block1 = sector.voxels[blockStart + bx + 1];
-
-                            brickData[
-                                    bp + BRICK_BLOCK_DATA_OFFSET + bz * (Sector.SIZE_IN_BLOCKS_SQUARED / 2) +
-                                    by * (Sector.SIZE_IN_BLOCKS / 2) + bx / 2] =
-                                unchecked((int)(((uint)block0.id << 16) | block1.id));
-
-                            if (!block0.isRendererEmpty)
-                            {
-                                AccumulateOccupancy(ref coarseOccupancy, bp, bx, by, bz);
-                            }
-
-                            if (!block1.isRendererEmpty)
-                            {
-                                AccumulateOccupancy(ref coarseOccupancy, bp, bx + 1, by, bz);
-                            }
-                        }
-                    }
-                }
-
-                brickData[bp] = PackBrickInfo(record.brickIdxAbsolute, coarseOccupancy);
-
-                // AABB
-                // Only do for new bricks
-                if (record.type == BrickUpdateInfo.Type.Added)
-                {
-                    Vector3 brickPos = Sector.ToBrickPos(record.brickIdxAbsolute).ToVector3Int();
-                    aabbBuffer[bid] = new AABB()
-                    {
-                        min = brickPos * Sector.SIZE_IN_BLOCKS,
-                        max = (brickPos + Vector3.one) * Sector.SIZE_IN_BLOCKS
-                    };
-                }
-            }
-
-            private void AccumulateOccupancy(ref uint coarseOccupancy, int bp, int bx, int by, int bz)
-            {
-                int coarseBit = ToCoarseOccupancyBit(bx, by, bz);
-                int microBit = ToMicroOccupancyBit(bx, by, bz);
-                int wordOffset = ToOccupancyWordOffset(coarseBit, microBit);
-                uint wordBit = 1u << (microBit & 31);
-
-                coarseOccupancy |= 1u << coarseBit;
-                brickData[bp + wordOffset] = unchecked((int)(uint)brickData[bp + wordOffset] | (int)wordBit);
-            }
-        }
         
         /// <summary>
         /// Shared material used for rendering all sectors.
@@ -252,6 +82,9 @@ namespace Voxelis.Rendering
 
         private NativeList<AABB> hostAABBBuffer;
         private NativeList<int> hostBrickBuffer;
+#if !VOXELISX_RENDER_DISABLE_CULLING
+        private SparseBrickIdTable rendererBrickMap;
+#endif
 
         /// <summary>
         /// Gets the estimated host memory usage in bytes for this renderer's buffers.
@@ -319,6 +152,10 @@ namespace Voxelis.Rendering
                 aabbBuffer = new GraphicsBuffer(
                     GraphicsBuffer.Target.Structured,
                     Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS, 24);
+                
+#if !VOXELISX_RENDER_DISABLE_CULLING
+                rendererBrickMap = SparseBrickIdTable.New(Allocator.Persistent);
+#endif
             }
             
             hostAABBBuffer.Resize(requestedCapacity, NativeArrayOptions.ClearMemory);
@@ -572,6 +409,7 @@ namespace Voxelis.Rendering
         {
             if (hostAABBBuffer.IsCreated) hostAABBBuffer.Dispose();
             if (hostBrickBuffer.IsCreated) hostBrickBuffer.Dispose();
+            if (rendererBrickMap.IsCreated) rendererBrickMap.Dispose();
             
             aabbBuffer?.Dispose();
             brickBuffer?.Dispose();
