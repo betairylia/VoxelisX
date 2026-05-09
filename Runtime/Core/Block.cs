@@ -25,7 +25,7 @@ namespace Voxelis
         // Perhaps we can just use a LUT and free those bits
         // private const uint PhaseMask = 0xC0000000; // 00 - Gas; 01 - Liquid; 10 - Powder; 11 - Solid
         // private const uint PhaseShift= 30;
-        private const  int OpaqueBit = 31;
+        private const  int OpaqueMask= 0x8000;
         private const uint TransMask = 0x01FF;      // Transparent blocks have 0~1FF (512) valid blockID slots
         private const  int TFaceShift= 9;           // 6 bits for transparent blocks will be used to represent boundaries
         private const uint MetaMask  = 0x0000FFFF;
@@ -54,7 +54,7 @@ namespace Voxelis
         public static bool IsRendererDataEmpty(uint data) => data == 0;
         // public bool isVoid => (data == 0);
 
-        public bool isOpaque => (id & OpaqueBit) > 0;
+        public bool isOpaque => (id & OpaqueMask) > 0;
         public uint transparentId => (id & TransMask);
 
         public static uint MaskTransparency(uint faceMask, uint transparencyId)

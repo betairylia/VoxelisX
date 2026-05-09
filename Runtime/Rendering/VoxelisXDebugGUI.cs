@@ -308,7 +308,7 @@ public class VoxelisXDebugGUI : MonoBehaviour
                         foreach (var kvp in entity.Sectors)
                         {
                             ref Sector sector = ref kvp.Value.Get();
-                            totalBricks += Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS;
+                            totalBricks += sector.NonEmptyBrickCount;
                         }
                     }
                 }

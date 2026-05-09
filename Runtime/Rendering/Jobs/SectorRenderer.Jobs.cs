@@ -1,4 +1,4 @@
-﻿#define VOXELISX_RENDER_DISABLE_TRANSPARENCY
+﻿// #define VOXELISX_RENDER_DISABLE_TRANSPARENCY
 
 using System;
 using Unity.Burst;
@@ -140,6 +140,8 @@ namespace Voxelis.Rendering
                             Block block0 = sector.voxels[blockStart + bx];
                             Block block1 = sector.voxels[blockStart + bx + 1];
                             
+                            int rendererBlockIdx = Sector.ToBlockIdx(bx, by, bz) / 2;
+                            
 #if !VOXELISX_RENDER_DISABLE_CULLING
                             uint block0Data = GetRendererBlockData(block0, brickBlockPos + new int3(bx, by, bz));
                             uint block1Data = GetRendererBlockData(block1, brickBlockPos + new int3(bx + 1, by, bz));
@@ -147,14 +149,16 @@ namespace Voxelis.Rendering
                             // Do nothing if blocks are empty
                             if (Block.IsRendererDataEmpty(block0Data) && Block.IsRendererDataEmpty(block1Data))
                             {
+                                if (rendererBrickBase >= 0)
+                                {
+                                    brickData[rendererBrickBase + BRICK_BLOCK_DATA_OFFSET + rendererBlockIdx] = 0;
+                                }
                                 continue;
                             }
 #else
-                            uint block0Data = ((uint)block0.id << 16);
-                            uint block1Data = ((uint)block1.id << 16);
+                            uint block0Data = ((uint)block0.id);
+                            uint block1Data = ((uint)block1.id);
 #endif
-
-                            int rendererBlockIdx = Sector.ToBlockIdx(bx, by, bz) / 2;
                             
                             // Brick not allocated yet
                             if (rendererBrickId == -1)
@@ -195,12 +199,12 @@ namespace Voxelis.Rendering
                             brickData[rendererBrickBase + BRICK_BLOCK_DATA_OFFSET + rendererBlockIdx] =
                                 unchecked((int)((block0Data << 16) | block1Data));
 
-                            if (Block.IsRendererDataEmpty(block0Data))
+                            if (!Block.IsRendererDataEmpty(block0Data))
                             {
                                 AccumulateOccupancy(ref coarseOccupancy, rendererBrickBase, bx, by, bz);
                             }
 
-                            if (Block.IsRendererDataEmpty(block1Data))
+                            if (!Block.IsRendererDataEmpty(block1Data))
                             {
                                 AccumulateOccupancy(ref coarseOccupancy, rendererBrickBase, bx + 1, by, bz);
                             }
@@ -212,7 +216,11 @@ namespace Voxelis.Rendering
                 // TODO: Compaction?
                 if (coarseOccupancy == 0)
                 {
+#if !VOXELISX_RENDER_DISABLE_CULLING
                     int removed = rendererBrickMap.RemoveBrick(brickPos);
+#else
+                    int removed = SparseBrickIdTable.EMPTY;
+#endif
                     if (removed != SparseBrickIdTable.EMPTY)
                     {
                         brickData[removed * BRICK_DATA_LENGTH] = PackBrickInfo(record.brickIdxAbsolute, coarseOccupancy);
@@ -239,28 +247,28 @@ namespace Voxelis.Rendering
                 }
             }
 
+#if !VOXELISX_RENDER_DISABLE_CULLING
             private ushort GetRendererBlockData(Block currentBlock, int3 sectorBlockPos)
             {
-                return currentBlock.id;
                 bool alive = false;
 
-#if !VOXELISX_RENDER_DISABLE_TRANSPARENCY
+    #if !VOXELISX_RENDER_DISABLE_TRANSPARENCY
                 bool isOpaque = currentBlock.isOpaque;
                 uint transparentId = currentBlock.transparentId;
                 uint faceMask = 0;
-#endif
+    #endif
                 
                 for (int ni = 0; ni < 6; ni++)
                 {
                     int3 nd = NeighborhoodSettings.Directions[ni];
                     Block neighbor = helper.GetBlock(sectorBlockPos + nd);
                     
-#if !VOXELISX_RENDER_DISABLE_TRANSPARENCY
+    #if !VOXELISX_RENDER_DISABLE_TRANSPARENCY
                     // Opaque face is always non-visible
                     alive |= (!neighbor.isOpaque);
                     
                     // For transparent faces, visible only adjacent to different transparent blocks
-                    if(alive && (!isOpaque))
+                    if((!neighbor.isOpaque) && (!isOpaque))
                     {
                         uint neighborTransparentId = neighbor.transparentId;
                         if (neighborTransparentId != transparentId)
@@ -271,10 +279,10 @@ namespace Voxelis.Rendering
                     }
 
                     if (alive && isOpaque) break;
-#else
-                    alive |= (!neighbor.isRendererEmpty);
+    #else
+                    alive |= (neighbor.isRendererEmpty);
                     if (alive) break;
-#endif
+    #endif
                 }
 
                 if (!alive)
@@ -283,7 +291,7 @@ namespace Voxelis.Rendering
                 }
 
                 ushort result = 0;
-#if !VOXELISX_RENDER_DISABLE_TRANSPARENCY
+    #if !VOXELISX_RENDER_DISABLE_TRANSPARENCY
                 if (!isOpaque)
                 {
                     result = (ushort)Block.MaskTransparency(faceMask, transparentId);
@@ -292,12 +300,13 @@ namespace Voxelis.Rendering
                 {
                     result = currentBlock.id;
                 }
-#else
+    #else
                 result = currentBlock.id;
-#endif
+    #endif
 
                 return result;
             }
+#endif
 
             private void AccumulateOccupancy(ref uint coarseOccupancy, int bp, int bx, int by, int bz)
             {

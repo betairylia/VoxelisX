@@ -259,8 +259,6 @@ namespace Voxelis.Rendering
             bool shouldUpdateAABB = rendererJob.syncRecord[2] > 0;
             rendererJob.syncRecord.Dispose();
 
-            Debug.Log($"Bricks: {rendererBrickMap.Capacity}");
-
             isRealloc = ExtendGPUBuffers();
 
             if (minModified <= maxModified)
@@ -444,7 +442,9 @@ namespace Voxelis.Rendering
         {
             if (hostAABBBuffer.IsCreated) hostAABBBuffer.Dispose();
             if (hostBrickBuffer.IsCreated) hostBrickBuffer.Dispose();
+#if !VOXELISX_RENDER_DISABLE_CULLING
             if (rendererBrickMap.IsCreated) rendererBrickMap.Dispose();
+#endif
             
             aabbBuffer?.Dispose();
             brickBuffer?.Dispose();
