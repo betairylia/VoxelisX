@@ -179,13 +179,13 @@ inline bool VoxelisXShouldTraceMicroOccupancy(uint occLo, uint occHi, float3 ray
     return true;
 }
 
-inline bool VoxelisXShouldTerminateBrickDDA(int blockID, DDACursor cursor, int3 entryNormal)
+inline bool VoxelisXShouldTerminateBrickDDA(int blockID, DDACursor cursor, int3 entryNormal, float entryT)
 {
     bool shouldTerminate = IsOpaque(blockID);
     if (shouldTerminate) return shouldTerminate;
     
     // Transparency
-    if (cursor.stepIndex == 0) return false;
+    if (cursor.stepIndex == 0 && entryT == 0) return false;
     int3 normal = DDACurrentNormal(cursor, entryNormal);
     int sign = normal.x + normal.y + normal.z;
     int faceBit = dot(abs(normal), int3(0, 2, 4)) + ((1 - sign) >> 1);
@@ -198,6 +198,12 @@ inline bool VoxelisXIntersectBrickAABB(VoxelisXBrickTraceContext context, out Vo
     candidate.brickID = context.primitiveIndex;
 
     uint brickInfo = g_bricks[VoxelisXBrickBase(candidate.brickID)];
+    
+    // Empty brick
+    if(VoxelisXGetCoarseOccupancy(brickInfo) == 0)
+    {
+        return false;
+    }
 
     uint idx = brickInfo & BRICK_INFO_ABSOLUTE_INDEX_MASK;
     int bX = int((idx & BRICK_POS_MASK) << SHIFT_SIZE_IN_BLOCKS);
@@ -291,7 +297,8 @@ inline bool VoxelisXTraceBrickDDA(uint brickID, float3 entryPositionInBrick, flo
         if (VoxelisXIsMicroOccupied(occLo, occHi, microBit))
         {
             int blockID = VoxelisXReadBrick(brickBase + BRICK_BLOCK_DATA_OFFSET, cursor.cell);
-            bool shouldTerminate = VoxelisXShouldTerminateBrickDDA(blockID, cursor, entryNormal);
+            bool shouldTerminate = VoxelisXShouldTerminateBrickDDA(
+                blockID, cursor, entryNormal, entryT);
 
             if (shouldTerminate)
             {

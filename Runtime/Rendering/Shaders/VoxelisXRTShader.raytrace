@@ -220,7 +220,7 @@ void MainRayGenShader()
 
             float pathStopProbability = 1;
 
-    #define ENABLE_RUSSIAN_ROULETTE 0
+    #define ENABLE_RUSSIAN_ROULETTE 1
 
     #if ENABLE_RUSSIAN_ROULETTE
             float3 throughputAlbedo = throughput;
