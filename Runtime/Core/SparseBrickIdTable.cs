@@ -100,6 +100,20 @@ namespace Voxelis
             return c;
         }
 
+        /// <summary>
+        /// Overwrites this table's contents with <paramref name="other"/>'s without reallocating.
+        /// Both tables must already be allocated (<see cref="IsCreated"/>); buffer sizes always match.
+        /// Useful for double-buffered snapshots that reuse a persistent back-buffer each tick.
+        /// </summary>
+        public void CopyFrom(in SparseBrickIdTable other)
+        {
+            UnsafeUtility.MemCpy(indices, other.indices, CAPACITY * sizeof(short));
+            int freeCount = other._meta[1];
+            if (freeCount > 0)
+                UnsafeUtility.MemCpy(_freelist, other._freelist, freeCount * sizeof(short));
+            UnsafeUtility.MemCpy(_meta, other._meta, 3 * sizeof(int));
+        }
+
         /// <summary>Frees all unmanaged memory owned by this table.</summary>
         public void Dispose()
         {
