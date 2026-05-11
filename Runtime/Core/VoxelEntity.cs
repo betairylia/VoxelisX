@@ -451,6 +451,38 @@ namespace Voxelis
         private VoxelEntityData data;
         public VoxelEntityData GetDataCopy() => data;
 
+        [SerializeField, HideInInspector] private string _persistentGuid;
+        private Guid _persistentGuidCached;
+        private bool _persistentGuidResolved;
+
+        /// <summary>
+        /// Stable identifier used by the save/load system. Lazily generated on first access if
+        /// not already present; persisted in the scene via the hidden <c>_persistentGuid</c> field
+        /// so scene-baked entities keep the same identity across saves.
+        /// </summary>
+        public Guid PersistentGuid
+        {
+            get
+            {
+                if (!_persistentGuidResolved)
+                {
+                    if (!Guid.TryParse(_persistentGuid, out _persistentGuidCached))
+                    {
+                        _persistentGuidCached = Guid.NewGuid();
+                        _persistentGuid = _persistentGuidCached.ToString();
+                    }
+                    _persistentGuidResolved = true;
+                }
+                return _persistentGuidCached;
+            }
+            set
+            {
+                _persistentGuidCached = value;
+                _persistentGuid = value.ToString();
+                _persistentGuidResolved = true;
+            }
+        }
+
         private void Awake()
         {
             data = new VoxelEntityData(Allocator.Persistent, transform);

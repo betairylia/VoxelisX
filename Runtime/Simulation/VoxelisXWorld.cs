@@ -1,4 +1,6 @@
-﻿using Simulation.Utils;
+﻿using System;
+using System.Collections.Generic;
+using Simulation.Utils;
 using Unity.Collections;
 using Unity.Entities;
 using Unity.Jobs;
@@ -6,6 +8,7 @@ using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Profiling;
 using Voxelis;
+using Voxelis.IO;
 using Voxelis.Rendering.Meshing;
 using Voxelis.Simulation;
 using Voxelis.Tick;
@@ -314,6 +317,49 @@ namespace Voxelis
                     EntitiesInDeterministicOrder = alienEntityViews.AsArray()
                 }
             };
+        }
+
+        /// <summary>
+        /// Saves every registered <see cref="VoxelEntity"/> to a <c>.vxw</c> file at <paramref name="path"/>.
+        /// Each entity's current Unity transform is synced into its native data prior to serialization.
+        /// </summary>
+        public void Save(string path)
+        {
+            var list = new List<(Guid, VoxelEntity)>(entities.Count);
+            for (int i = 0; i < entities.Count; i++)
+            {
+                VoxelEntity e = entities[i];
+                e.SyncCurrentTransformToData(0f);
+                list.Add((e.PersistentGuid, e));
+            }
+            WorldSaver.Save(path, list);
+        }
+
+        /// <summary>
+        /// Loads entities from a <c>.vxw</c> file. The caller supplies a factory that creates the
+        /// target <see cref="VoxelEntity"/> for each saved record (e.g. instantiate a prefab).
+        /// The factory may return null to skip a record.
+        /// </summary>
+        public void Load(string path, Func<EntityRecord, VoxelEntity> entityFactory)
+        {
+            WorldLoader.Load(path, rec =>
+            {
+                var e = entityFactory(rec);
+                if (e != null) e.PersistentGuid = rec.Guid;
+                return e;
+            });
+        }
+
+        /// <summary>
+        /// Convenience overload that creates a bare <c>VoxelEntity</c> GameObject for each saved record.
+        /// </summary>
+        public void Load(string path)
+        {
+            Load(path, rec =>
+            {
+                var go = new GameObject($"VoxelEntity_{rec.Guid}");
+                return go.AddComponent<VoxelEntity>();
+            });
         }
     }
 }

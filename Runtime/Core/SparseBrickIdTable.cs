@@ -61,6 +61,25 @@ namespace Voxelis
         public bool IsCreated { [MethodImpl(MethodImplOptions.AggressiveInlining)] get => indices != null; }
 
         /// <summary>
+        /// Raw pointer to the freelist buffer. Only the first <see cref="FreeCount"/> entries are valid (min-heap order).
+        /// Exposed to the IO layer for save/load round-trips; do not mutate during normal use.
+        /// </summary>
+        internal short* FreelistRaw { [MethodImpl(MethodImplOptions.AggressiveInlining)] get => _freelist; }
+
+        /// <summary>
+        /// Overwrites this table's meta counters in one shot. The caller must have already populated
+        /// <see cref="indices"/> and (if <paramref name="freeCount"/> &gt; 0) the first <paramref name="freeCount"/>
+        /// entries of <see cref="FreelistRaw"/> with a valid min-heap.
+        /// Exposed to the IO layer for save/load round-trips; do not call during normal use.
+        /// </summary>
+        internal void RestoreSerializedState(int capacity, int count, int freeCount)
+        {
+            _meta[0] = capacity;
+            _meta[1] = freeCount;
+            _meta[2] = count;
+        }
+
+        /// <summary>
         /// Allocates a new sparse brick id table.
         /// </summary>
         public static SparseBrickIdTable New(Allocator allocator)

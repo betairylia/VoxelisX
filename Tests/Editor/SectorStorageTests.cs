@@ -127,9 +127,6 @@ namespace VoxelisX.Tests
             var clone = Sector.CloneWithUndefinedDirtiness(scope.Sector, Allocator.Persistent);
             try
             {
-                Assert.That(clone.sectorDirtyFlags, Is.EqualTo(0));
-                Assert.That(clone.brickDirtyFlags[Sector.ToBrickIdx(0, 0, 0)], Is.EqualTo(0));
-
                 clone.SetBlock(1, 2, 3, new Block(8));
 
                 Assert.That(scope.Handle.GetBlock(1, 2, 3), Is.EqualTo(new Block(7)));
