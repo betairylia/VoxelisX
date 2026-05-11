@@ -53,9 +53,8 @@ namespace VoxelisX.Tests
             var handle = SectorHandle.AllocEmpty();
             try
             {
-                ref Sector sector = ref handle.Get();
                 uint[] preview = new uint[Sector.BRICKS_IN_SECTOR];
-                PreviewBuilder.Build(in sector, preview);
+                PreviewBuilder.Build(handle.Ptr, preview);
 
                 for (int i = 0; i < Sector.BRICKS_IN_SECTOR; i++)
                 {
@@ -74,9 +73,8 @@ namespace VoxelisX.Tests
                 // Block at (0,0,0) sits inside sub-brick (0,0,0) = subIdx 0
                 handle.SetBlock(0, 0, 0, MakeBlock(15, 20, 25, false));
 
-                ref Sector sector = ref handle.Get();
                 uint[] preview = new uint[Sector.BRICKS_IN_SECTOR];
-                PreviewBuilder.Build(in sector, preview);
+                PreviewBuilder.Build(handle.Ptr, preview);
 
                 int brickIdx = Sector.ToBrickIdx(0, 0, 0);
                 Assert.That(BrickPreview.Occupancy(preview[brickIdx]), Is.EqualTo(0x01u));
@@ -94,9 +92,8 @@ namespace VoxelisX.Tests
                 // Block at (7,7,7) sits inside sub-brick (1,1,1) = subIdx 7
                 handle.SetBlock(7, 7, 7, MakeBlock(15, 20, 25, false));
 
-                ref Sector sector = ref handle.Get();
                 uint[] preview = new uint[Sector.BRICKS_IN_SECTOR];
-                PreviewBuilder.Build(in sector, preview);
+                PreviewBuilder.Build(handle.Ptr, preview);
 
                 int brickIdx = Sector.ToBrickIdx(0, 0, 0);
                 Assert.That(BrickPreview.Occupancy(preview[brickIdx]), Is.EqualTo(0x80u));
@@ -112,9 +109,8 @@ namespace VoxelisX.Tests
             {
                 handle.SetBlock(4, 0, 0, MakeBlock(10, 10, 10, true));
 
-                ref Sector sector = ref handle.Get();
                 uint[] preview = new uint[Sector.BRICKS_IN_SECTOR];
-                PreviewBuilder.Build(in sector, preview);
+                PreviewBuilder.Build(handle.Ptr, preview);
 
                 int brickIdx = Sector.ToBrickIdx(0, 0, 0);
                 // (4,0,0) → sub (1,0,0) → subIdx 1
@@ -139,9 +135,8 @@ namespace VoxelisX.Tests
                     handle.SetBlock(x, y, z, MakeBlock(r5, g5, b5, false));
                 }
 
-                ref Sector sector = ref handle.Get();
                 uint[] preview = new uint[Sector.BRICKS_IN_SECTOR];
-                PreviewBuilder.Build(in sector, preview);
+                PreviewBuilder.Build(handle.Ptr, preview);
 
                 int brickIdx = Sector.ToBrickIdx(0, 0, 0);
                 ushort color = BrickPreview.Color565(preview[brickIdx]);
@@ -409,7 +404,7 @@ namespace VoxelisX.Tests
                 source.sectorRequireUpdateFlags = (ushort)DirtyFlags.GeneralAutomata;
 
                 uint[] preview = new uint[Sector.BRICKS_IN_SECTOR];
-                PreviewBuilder.Build(in source, preview);
+                PreviewBuilder.Build(handle.Ptr, preview);
                 byte[] payload = SectorSerializer.Pack(in source);
 
                 int3 coord = new int3(0, 0, 0);

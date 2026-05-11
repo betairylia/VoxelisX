@@ -13,9 +13,9 @@ namespace Voxelis.IO
     public static class PreviewBuilder
     {
         [BurstCompile]
-        public static unsafe void Build(in Sector sector, uint* dst)
+        public static unsafe void Build(Sector* sector, uint* dst)
         {
-            short* indices = sector.brickMap.indices;
+            short* indices = sector->brickMap.indices;
             for (int brickAbsIdx = 0; brickAbsIdx < Sector.BRICKS_IN_SECTOR; brickAbsIdx++)
             {
                 short bid = indices[brickAbsIdx];
@@ -25,7 +25,7 @@ namespace Voxelis.IO
                     continue;
                 }
 
-                Block* brick = sector.GetBrick(bid);
+                Block* brick = sector->GetBrick(bid);
                 uint occupancy = 0, emission = 0;
                 ulong sumR = 0, sumG = 0, sumB = 0;
                 int count = 0;
@@ -72,9 +72,9 @@ namespace Voxelis.IO
             }
         }
 
-        public static unsafe void Build(in Sector sector, uint[] dst)
+        public static unsafe void Build(Sector* sector, uint[] dst)
         {
-            fixed (uint* p = dst) Build(in sector, p);
+            fixed (uint* p = dst) Build(sector, p);
         }
     }
 }

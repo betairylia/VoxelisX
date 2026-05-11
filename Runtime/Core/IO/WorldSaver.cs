@@ -32,10 +32,9 @@ namespace Voxelis.IO
             foreach (var kvp in data.sectors)
             {
                 int3 coord = kvp.Key;
-                ref Sector sector = ref kvp.Value.Get();
 
-                PreviewBuilder.Build(in sector, preview);
-                byte[] payload = SectorSerializer.Pack(in sector);
+                PreviewBuilder.Build(kvp.Value.Ptr, preview);
+                byte[] payload = SectorSerializer.Pack(in kvp.Value.Get());
                 writer.WriteSector(coord, preview, payload);
             }
 

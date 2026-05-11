@@ -1,10 +1,14 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using Simulation.Utils;
 using Unity.Collections;
 using Unity.Entities;
 using Unity.Jobs;
 using Unity.Mathematics;
+#if UNITY_EDITOR
+using UnityEditor;
+#endif
 using UnityEngine;
 using UnityEngine.Profiling;
 using Voxelis;
@@ -37,6 +41,11 @@ namespace Voxelis
         [Header("Debug")] public bool freeze = true;
         public bool isFirst = true;
         private float timer = 0.0f;
+
+        private const string DefaultSaveLoadFileName = "voxelisx-world.vxw";
+
+        [Header("Save / Load")]
+        [SerializeField] private string saveLoadPath = DefaultSaveLoadFileName;
         
         public struct WorldStageInputs
         {
@@ -336,6 +345,17 @@ namespace Voxelis
         }
 
         /// <summary>
+        /// Saves the world using the inspector-configured save/load path.
+        /// </summary>
+        [InspectorButton("Save World", PlayModeOnly = true)]
+        public void Save()
+        {
+            string path = ResolveSaveLoadPath();
+            Save(path);
+            Debug.Log($"Saved VoxelisX world to {path}", this);
+        }
+
+        /// <summary>
         /// Loads entities from a <c>.vxw</c> file. The caller supplies a factory that creates the
         /// target <see cref="VoxelEntity"/> for each saved record (e.g. instantiate a prefab).
         /// The factory may return null to skip a record.
@@ -360,6 +380,61 @@ namespace Voxelis
                 var go = new GameObject($"VoxelEntity_{rec.Guid}");
                 return go.AddComponent<VoxelEntity>();
             });
+        }
+
+        /// <summary>
+        /// Loads the world using the inspector-configured save/load path.
+        /// </summary>
+        [InspectorButton("Load World", PlayModeOnly = true)]
+        public void Load()
+        {
+            string path = ResolveSaveLoadPath();
+            Load(path);
+            Debug.Log($"Loaded VoxelisX world from {path}", this);
+        }
+
+        [InspectorButton("Choose Save/Load Path")]
+        private void ChooseSaveLoadPath()
+        {
+#if UNITY_EDITOR
+            string currentPath = ResolveSaveLoadPath();
+            string directory = Path.GetDirectoryName(currentPath);
+            if (string.IsNullOrEmpty(directory))
+            {
+                directory = Application.persistentDataPath;
+            }
+
+            string fileName = Path.GetFileName(currentPath);
+            if (string.IsNullOrEmpty(fileName))
+            {
+                fileName = DefaultSaveLoadFileName;
+            }
+
+            string selectedPath = EditorUtility.SaveFilePanel(
+                "Choose VoxelisX world file",
+                directory,
+                fileName,
+                "vxw");
+
+            if (string.IsNullOrEmpty(selectedPath))
+            {
+                return;
+            }
+
+            saveLoadPath = selectedPath;
+            EditorUtility.SetDirty(this);
+#endif
+        }
+
+        private string ResolveSaveLoadPath()
+        {
+            string path = string.IsNullOrWhiteSpace(saveLoadPath)
+                ? DefaultSaveLoadFileName
+                : saveLoadPath;
+
+            return Path.IsPathRooted(path)
+                ? path
+                : Path.Combine(Application.persistentDataPath, path);
         }
     }
 }

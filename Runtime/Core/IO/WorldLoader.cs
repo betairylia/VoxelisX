@@ -33,6 +33,7 @@ namespace Voxelis.IO
         public static unsafe void LoadEntity(IWorldSaveReader reader, int entityIndex, in EntityRecord rec, VoxelEntity entity)
         {
             entity.transform.SetPositionAndRotation(rec.Transform.Position, rec.Transform.Rotation);
+            entity.SyncCurrentTransformToData(0f);
 
             var sectorIndex = reader.ReadSectorIndex(entityIndex);
             for (int s = 0; s < sectorIndex.Count; s++)
@@ -48,6 +49,7 @@ namespace Voxelis.IO
             ApplyEntityRequireUpdateFlags(entity, rec.EntityRequireUpdateFlags);
         }
 
+        // Accumulating the dirty flags so renderers can pick them up after dirty propagation
         private static unsafe void ApplyFirstFrameUploadFlags(VoxelEntity entity)
         {
             foreach (var kvp in entity.Sectors)
@@ -57,9 +59,9 @@ namespace Voxelis.IO
                 for (int i = 0; i < nonEmpty; i++)
                 {
                     short absBrickIdx = sector.NonEmptyBricks[i];
-                    sector.brickRequireUpdateFlags[absBrickIdx] |= FirstFrameUploadFlags;
+                    sector.brickDirtyFlags[absBrickIdx] |= FirstFrameUploadFlags;
                 }
-                sector.sectorRequireUpdateFlags |= FirstFrameUploadFlags;
+                sector.sectorDirtyFlags |= FirstFrameUploadFlags;
             }
         }
 
@@ -68,7 +70,7 @@ namespace Voxelis.IO
             var data = entity.GetDataCopy();
             data.entityRequireUpdateFlags |= entityRequireUpdateFlags;
             // Also fold in the first-frame upload bits at entity level for consistency with sector aggregates.
-            data.entityRequireUpdateFlags |= FirstFrameUploadFlags;
+            data.entityDirtyFlags |= FirstFrameUploadFlags;
             entity.CopyDataFrom(data);
         }
     }
