@@ -32,6 +32,9 @@ public class VoxelisXRenderPass : ScriptableRenderPass
     private int bounceCountOpaque = 4;
     private int bounceCountTransparent = 5;
     private int samplesPerPixel = 1;
+    private bool enableSkySun = true;
+    private float sunDiskRadiusRadians = 0.004363323f;
+    private float sunFlareRadiusRadians = 0.03490659f;
     private VoxelisXRendererFeature.DebugView debugView = VoxelisXRendererFeature.DebugView.Regular;
     private VoxelisXIndirectDenoisingSettings indirectDenoisingSettings = VoxelisXIndirectDenoisingSettings.Default;
     private bool enableTemporalRadiance = true;
@@ -190,6 +193,9 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         internal int bounceCountOpaque;
         internal int bounceCountTransparent;
         internal int samplesPerPixel;
+        internal bool enableSkySun;
+        internal float sunDiskRadiusRadians;
+        internal float sunFlareRadiusRadians;
 
         internal Light mainLight;
 
@@ -355,6 +361,13 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         blueNoiseTexture = texture;
     }
 
+    public void ConfigureSkySunSettings(bool enabled, float diskRadiusRadians, float flareRadiusRadians)
+    {
+        enableSkySun = enabled;
+        sunDiskRadiusRadians = Mathf.Max(0.0f, diskRadiusRadians);
+        sunFlareRadiusRadians = Mathf.Max(sunDiskRadiusRadians, flareRadiusRadians);
+    }
+
     public void ConfigureDebugView(VoxelisXRendererFeature.DebugView debugView)
     {
         this.debugView = debugView;
@@ -510,6 +523,9 @@ public class VoxelisXRenderPass : ScriptableRenderPass
             passData.bounceCountOpaque = bounceCountOpaque;
             passData.bounceCountTransparent = bounceCountTransparent;
             passData.samplesPerPixel = samplesPerPixel;
+            passData.enableSkySun = enableSkySun;
+            passData.sunDiskRadiusRadians = sunDiskRadiusRadians;
+            passData.sunFlareRadiusRadians = sunFlareRadiusRadians;
 
             passData.voxShaderRT = rayTracingShader;
             passData.voxAS = voxelisX.voxelScene;
@@ -930,6 +946,9 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_BounceCountOpaque", data.bounceCountOpaque);
         context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_BounceCountTransparent", data.bounceCountTransparent);
         context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_spp", data.samplesPerPixel);
+        context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_EnableSkySun", data.enableSkySun ? 1 : 0);
+        context.cmd.SetRayTracingFloatParam(data.voxShaderRT, "g_SkySunDiskRadius", data.sunDiskRadiusRadians);
+        context.cmd.SetRayTracingFloatParam(data.voxShaderRT, "g_SkySunFlareRadius", data.sunFlareRadiusRadians);
         context.cmd.SetRayTracingFloatParam(data.voxShaderRT, "g_Zoom", Mathf.Tan(Mathf.Deg2Rad * data.fov * 0.5f)); // TODO: Replace this to use camera projection matrix instead
         context.cmd.SetRayTracingFloatParam(data.voxShaderRT, "g_AspectRatio", data.width / (float)data.height);
         context.cmd.SetRayTracingVectorParam(data.voxShaderRT, "g_CameraWorldPosition", data.cameraWorldPosition);

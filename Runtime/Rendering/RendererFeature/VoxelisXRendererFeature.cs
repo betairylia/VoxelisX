@@ -45,6 +45,11 @@ public class VoxelisXRendererFeature : ScriptableRendererFeature
     [SerializeField, Tooltip("Optional 128x8192 R8G8 UInt spatiotemporal blue-noise texture bound as stbnTexture.")]
     private Texture2D blueNoiseTexture;
 
+    [Header("Sky Sun")]
+    [SerializeField] private bool enableSkySun = true;
+    [SerializeField, Min(0.0f)] private float sunDiskRadiusRadians = 0.004363323f;
+    [SerializeField, Min(0.0f)] private float sunFlareRadiusRadians = 0.03490659f;
+
     [Header("Indirect Denoising")]
     [SerializeField] private VoxelisXIndirectDenoisingSettings indirectDenoising = VoxelisXIndirectDenoisingSettings.Default;
 
@@ -105,6 +110,7 @@ public class VoxelisXRendererFeature : ScriptableRendererFeature
         }
 
         _voxelisXRenderPass.ConfigureRayTracingSettings(bounceCountOpaque, bounceCountTransparent, samplesPerPixel);
+        _voxelisXRenderPass.ConfigureSkySunSettings(enableSkySun, sunDiskRadiusRadians, sunFlareRadiusRadians);
         _voxelisXRenderPass.ConfigureBlueNoiseTexture(blueNoiseTexture);
         _voxelisXRenderPass.ConfigureIndirectDenoisingSettings(indirectDenoising);
         _voxelisXRenderPass.ConfigureTemporalRadianceSettings(

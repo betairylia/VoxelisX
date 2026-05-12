@@ -41,6 +41,9 @@ uint g_ConvergenceStep = 10;
 uint g_BounceCountOpaque;
 uint g_BounceCountTransparent;
 uint g_spp;
+uint g_EnableSkySun;
+float g_SkySunDiskRadius;
+float g_SkySunFlareRadius;
 
 // Uncomment this pragma for debugging the HLSL code in PIX. GPU performance will be impacted.
 //#pragma enable_ray_tracing_shader_debug_symbols
@@ -276,5 +279,26 @@ static float3 skyLow = float3(0.4, 0.5, 0.6);
 void MainMissShader0(inout RayPayload payload: SV_RayPayload)
 {
     float3 skyRadiance = g_Sky.SampleLevel(sampler_g_Sky, WorldRayDirection(), 0).xyz;
+
+    if (g_EnableSkySun != 0 && g_SkySunFlareRadius > 0.0f)
+    {
+        Light mainLight = GetMainLight();
+        float diskRadius = max(g_SkySunDiskRadius, 0.0f);
+        float flareRadius = max(g_SkySunFlareRadius, diskRadius);
+        float raySunCos = dot(normalize(WorldRayDirection()), normalize(mainLight.direction));
+        float diskCos = cos(diskRadius);
+        float flareCos = cos(flareRadius);
+
+        if (raySunCos >= diskCos)
+        {
+            skyRadiance += g_mainLightColor.rgb;
+        }
+        else if (flareRadius > diskRadius && raySunCos >= flareCos)
+        {
+            float flare = smoothstep(flareCos, diskCos, raySunCos);
+            skyRadiance += g_mainLightColor.rgb * pow(flare, 4.0f);
+        }
+    }
+
     VoxelisXApplyVoxelMiss(payload, skyRadiance);
 }
