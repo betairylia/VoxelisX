@@ -239,6 +239,7 @@ Shader "Hidden/VoxelisX/IndirectRadiancePipeline"
             float4 indirectRadiance = LOAD_TEXTURE2D(_AccumulatedIndirectRadianceTex, coord);
 
             float3 result = directRadiance.rgb + albedo.rgb * indirectRadiance.rgb;
+            // float3 result = indirectRadiance.rgb;
             return float4(result, directRadiance.a);
         }
 

@@ -208,7 +208,7 @@ void MainRayGenShader()
 #if VOXELISXRT_BOUNCE
         // Keep the primary albedo out of the temporal history. It is applied once
         // during final composition so replaced voxels can reuse lighting history.
-        // throughput *= 1.0f / max(0.001, payload.k);
+        throughput *= 1.0f / max(0.001, payload.k);
         ray.Origin = payload.bounceRayOrigin;
         ray.Direction = payload.bounceRayDirection;
 
@@ -218,8 +218,9 @@ void MainRayGenShader()
             TraceRay(g_AccelStruct, 0, 0xFF, 0, 1, missShaderIndex, ray, payload);
 
             indirectIncidentRadiance += payload.emission * throughput;
+            // indirectIncidentRadiance = payload.bounceRayDirection * 0.1f;
 
-            // throughput *= payload.albedo / max(0.001, payload.k);
+            throughput *= payload.albedo / max(0.001, payload.k);
 
             float pathStopProbability = 1;
 

@@ -54,6 +54,7 @@
 #include "VoxelisXUtils.hlsl"
 #include "Utils/BlueNoise.hlsl"
 #include "DDA.hlsl"
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
 
 struct VoxelisXBrickTraceContext
 {
@@ -372,9 +373,10 @@ inline void VoxelisXApplyVoxelClosestHit(inout RayPayload payload, VoxelisXBrick
         float specularChance = lerp(material.metallic, 1, fresnelFactor * material.smoothness);
         float doSpecular = (RandomFloat01(payload.rngState) < specularChance) ? 1 : 0;
 
-        const float3 diffuseRayDir = normalize(worldNormal + RandomUnitVector(payload.rngState));
+        float3 diffuseRayDir = SafeNormalize(worldNormal + RandomUnitVector(payload.rngState));
+        diffuseRayDir = (dot(diffuseRayDir, diffuseRayDir) > 0) ? diffuseRayDir : worldNormal; // Degenerate patch
         float3 specularRayDir = reflect(worldRayDirection, worldNormal);
-        specularRayDir = normalize(lerp(diffuseRayDir, specularRayDir, material.smoothness));
+        specularRayDir = SafeNormalize(lerp(diffuseRayDir, specularRayDir, material.smoothness));
         float3 reflectedRayDir = lerp(diffuseRayDir, specularRayDir, doSpecular);
 
         payload.k = (doSpecular == 1) ? specularChance : 1 - specularChance;
@@ -389,7 +391,7 @@ inline void VoxelisXApplyVoxelClosestHit(inout RayPayload payload, VoxelisXBrick
         int destinationMaterialID = materialID;
         bool hasDestinationTransparentMaterial = destinationMaterialID != 0;
 
-        float3 interfaceNormal = normalize(worldNormal);
+        float3 interfaceNormal = SafeNormalize(worldNormal);
         if (dot(worldRayDirection, interfaceNormal) > 0.0f)
         {
             interfaceNormal = -interfaceNormal;
@@ -409,7 +411,7 @@ inline void VoxelisXApplyVoxelClosestHit(inout RayPayload payload, VoxelisXBrick
         // fresnelFactor = 0.0f;
 
         float doRefraction = (canRefract && RandomFloat01(payload.rngState) >= fresnelFactor) ? 1.0f : 0.0f;
-        float3 bounceRayDir = normalize(lerp(reflectionRayDir, refractionRayDir, doRefraction));
+        float3 bounceRayDir = SafeNormalize(lerp(reflectionRayDir, refractionRayDir, doRefraction));
         float pushOff = doRefraction == 1.0f ? -K_RAY_ORIGIN_PUSH_OFF : K_RAY_ORIGIN_PUSH_OFF;
 
         payload.k = doRefraction == 1.0f ? 1.0f - fresnelFactor : fresnelFactor;

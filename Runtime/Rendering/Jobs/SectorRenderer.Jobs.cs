@@ -69,6 +69,7 @@ namespace Voxelis.Rendering
             {
                 syncRecord[0] = 65536;
                 syncRecord[1] = 0;
+                syncRecord[2] = 0;
 
                 ref Sector sector = ref sectorHandle.Get();
 
@@ -224,6 +225,8 @@ namespace Voxelis.Rendering
                     if (removed != SparseBrickIdTable.EMPTY)
                     {
                         brickData[removed * BRICK_DATA_LENGTH] = PackBrickInfo(record.brickIdxAbsolute, coarseOccupancy);
+                        syncRecord[0] = math.min(syncRecord[0], removed);
+                        syncRecord[1] = math.max(syncRecord[1], removed);
                     }
 
                     // We are done

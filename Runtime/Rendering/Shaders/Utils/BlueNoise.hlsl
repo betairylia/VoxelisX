@@ -19,8 +19,11 @@ float2 SampleBlueNoise(inout uint state)
     int2 pos = (DispatchRaysIndex().xy + int2(offset * 128)) & 127;
     pos.y += ((g_FrameIndex) & 63) * 128;
 
+    // return float2(0, 1);
+    // return float2(0.001f, 0.999f);
+    return stbnTexture[pos] * 0.99609375f + 0.001953125f;
     // return stbnTexture[pos];
-    return stbnTexture[pos] + EPSILON;
+    // return stbnTexture[pos] + EPSILON;
     // return ((stbnTexture[pos]) + 0.5) / 256.0;
     // return (stbnTexture[pos] == 0) * 1.0;
 }
