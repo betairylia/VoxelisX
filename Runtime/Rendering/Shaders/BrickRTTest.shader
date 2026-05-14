@@ -49,6 +49,12 @@ Shader "VoxelisX/BrickRTTest"
                 context.objectRayDirection = ObjectRayDirection();
                 context.currentRayT = RayTCurrent();
                 context.primitiveIndex = PrimitiveIndex();
+                
+                // AttributeData attrib;
+                // attrib.normal = float3(0, 1, 0);
+                // attrib.matID = PrimitiveIndex() % 0xFFFF;
+                // attrib.faceHash = 1;
+                // ReportHit(1, 0, attrib);
 
                 VoxelisXBrickHit hit = VoxelisXTraceBrickPrimitive(context);
                 if (hit.hit)

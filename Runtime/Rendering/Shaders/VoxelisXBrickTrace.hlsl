@@ -255,6 +255,11 @@ inline bool3 VoxelisXBrickRayNextAxisMask(float3 sideDist, float nextT)
         nextT + BRICK_RAY_STEP_EPSILON);
 }
 
+inline void VoxelisXJumpBrickRay(inout VoxelisXBrickRayCursor cursor, float3 rayDir, int mask)
+{
+    cursor.cell = lerp(cursor.cell | mask, cursor.cell & (~mask), rayDir < 0);
+}
+
 inline void VoxelisXStepBrickRay(inout VoxelisXBrickRayCursor cursor, float3 entryPositionInGrid, float3 rayDir, VoxelisXBrickRayConstants constants)
 {
     float3 sideDist = constants.tStart + float3(cursor.cell) * constants.invDir;
@@ -442,6 +447,7 @@ inline bool VoxelisXTraceBrickRay(uint brickID, float3 entryPositionInBrick, flo
         if ((coarseOccupancy & (1u << coarseBit)) == 0u)
         {
             // Faster than compute the exact distance needed to jump multiple voxels
+            VoxelisXJumpBrickRay(cursor, rayDir, 3u);
             VoxelisXStepBrickRay(cursor, entryPositionInBrick, rayDir, rayConstants);
             continue;
         }

@@ -39,6 +39,8 @@ public class VoxelisXRendererFeature : ScriptableRendererFeature
     [SerializeField] private int maximumAverageFrames;
 
     [Header("Ray Tracing")]
+    [SerializeField, Tooltip("Build the VoxelisX ray tracing acceleration structure inside the render pass each frame. Disable only if the structure is built elsewhere before tracing.")]
+    private bool buildAccelerationStructure = true;
     [SerializeField, Min(0)] private int bounceCountOpaque = 4;
     [SerializeField, Min(0)] private int bounceCountTransparent = 5;
     [SerializeField, Min(1)] private int samplesPerPixel = 1;
@@ -109,7 +111,11 @@ public class VoxelisXRendererFeature : ScriptableRendererFeature
             return;
         }
 
-        _voxelisXRenderPass.ConfigureRayTracingSettings(bounceCountOpaque, bounceCountTransparent, samplesPerPixel);
+        _voxelisXRenderPass.ConfigureRayTracingSettings(
+            buildAccelerationStructure,
+            bounceCountOpaque,
+            bounceCountTransparent,
+            samplesPerPixel);
         _voxelisXRenderPass.ConfigureSkySunSettings(enableSkySun, sunDiskRadiusRadians, sunFlareRadiusRadians);
         _voxelisXRenderPass.ConfigureBlueNoiseTexture(blueNoiseTexture);
         _voxelisXRenderPass.ConfigureIndirectDenoisingSettings(indirectDenoising);

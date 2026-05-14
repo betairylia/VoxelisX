@@ -29,6 +29,7 @@ public class VoxelisXRenderPass : ScriptableRenderPass
     private VoxelisXRenderer voxelisX;
 
     private int maximumAverageFrames;
+    private bool buildAccelerationStructure = true;
     private int bounceCountOpaque = 4;
     private int bounceCountTransparent = 5;
     private int samplesPerPixel = 1;
@@ -190,6 +191,7 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         internal Vector3 cameraWorldPosition;
 
         internal int avgFrames;
+        internal bool buildAccelerationStructure;
         internal int bounceCountOpaque;
         internal int bounceCountTransparent;
         internal int samplesPerPixel;
@@ -349,8 +351,13 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         ConfigureBlueNoiseTexture(blueNoiseTexture);
     }
 
-    public void ConfigureRayTracingSettings(int bounceCountOpaque, int bounceCountTransparent, int samplesPerPixel)
+    public void ConfigureRayTracingSettings(
+        bool buildAccelerationStructure,
+        int bounceCountOpaque,
+        int bounceCountTransparent,
+        int samplesPerPixel)
     {
+        this.buildAccelerationStructure = buildAccelerationStructure;
         this.bounceCountOpaque = Mathf.Max(0, bounceCountOpaque);
         this.bounceCountTransparent = Mathf.Max(0, bounceCountTransparent);
         this.samplesPerPixel = Mathf.Max(1, samplesPerPixel);
@@ -520,6 +527,7 @@ public class VoxelisXRenderPass : ScriptableRenderPass
             passData.cameraToWorldMat = passData.cameraMat.inverse;
             passData.cameraWorldPosition = passData.cameraToWorldMat.MultiplyPoint3x4(Vector3.zero);
             passData.avgFrames = maximumAverageFrames;
+            passData.buildAccelerationStructure = buildAccelerationStructure;
             passData.bounceCountOpaque = bounceCountOpaque;
             passData.bounceCountTransparent = bounceCountTransparent;
             passData.samplesPerPixel = samplesPerPixel;
@@ -909,7 +917,10 @@ public class VoxelisXRenderPass : ScriptableRenderPass
             data.brickMaterial.SetInt("g_FrameIndex", Time.frameCount);
         }
 
-        context.cmd.BuildRayTracingAccelerationStructure(data.voxAS);
+        if (data.buildAccelerationStructure)
+        {
+            context.cmd.BuildRayTracingAccelerationStructure(data.voxAS);
+        }
 
         context.cmd.SetRayTracingAccelerationStructure(data.voxShaderRT, "g_AccelStruct", data.voxAS);
         context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "DirectRadianceTarget", data.DirectRadiance);
