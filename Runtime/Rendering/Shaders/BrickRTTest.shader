@@ -71,7 +71,6 @@ Shader "VoxelisX/BrickRTTest"
                 hit.objectNormal = attribs.normal;
 
                 VoxelisXApplyVoxelClosestHitMinimumPayload(payload, hit);
-                // VoxelisXApplyVoxelClosestHit(payload, hit, WorldRayOrigin(), WorldRayDirection(), ObjectRayOrigin(), ObjectRayDirection(), RayTCurrent(), ObjectToWorld3x4());
             }
             
             // [shader("anyhit")]

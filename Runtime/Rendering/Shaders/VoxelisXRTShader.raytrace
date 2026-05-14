@@ -49,6 +49,127 @@ float g_SkySunFlareRadius;
 
 #pragma max_recursion_depth 1
 
+struct VoxelisXPathState
+{
+    uint bounceIndex;
+    uint rngState;
+    int previousTransparentMaterial;
+    float k;
+    float3 albedo;
+    float3 emission;
+    float3 bounceRayOrigin;
+    float3 bounceRayDirection;
+    float3 worldNormal;
+    float3 prevWorldHitPosition;
+    uint voxelFaceHash;
+};
+
+inline void VoxelisXInitPathState(out VoxelisXPathState path, uint rngState)
+{
+    path.bounceIndex = 0u;
+    path.rngState = rngState;
+    path.previousTransparentMaterial = 0;
+    path.k = 1.0f;
+    path.albedo = float3(0.0f, 0.0f, 0.0f);
+    path.emission = float3(0.0f, 0.0f, 0.0f);
+    path.bounceRayOrigin = float3(0.0f, 0.0f, 0.0f);
+    path.bounceRayDirection = float3(0.0f, 0.0f, 1.0f);
+    path.worldNormal = float3(0.0f, 0.0f, 1.0f);
+    path.prevWorldHitPosition = float3(0.0f, 0.0f, 0.0f);
+    path.voxelFaceHash = 0u;
+}
+
+inline float3 VoxelisXSampleSkyRadiance(float3 direction)
+{
+    return g_Sky.SampleLevel(sampler_g_Sky, direction, 0).xyz * 4.0f;
+}
+
+inline void VoxelisXShadeVoxelHit(
+    RayPayload payload,
+    float3 worldRayOrigin,
+    float3 worldRayDirection,
+    inout VoxelisXPathState path,
+    out float3 worldHitPosition)
+{
+    int materialID = int((payload.materialID_voxelFaceHash >> 16) & 0xFFFFu);
+    VoxelMaterial material = GET_MATERIAL(materialID);
+
+    float currentRayT = payload.T;
+    worldHitPosition = worldRayOrigin + worldRayDirection * currentRayT;
+    float3 worldNormal = VoxelisXUnpackWorldNormal(payload.packedWorldNormal);
+
+    if (path.bounceIndex == 0u)
+    {
+        path.prevWorldHitPosition = worldHitPosition + VoxelisXUnpackFloat3FromHalf4(payload.packedPrevWorldOffset);
+        path.voxelFaceHash = payload.materialID_voxelFaceHash & 0xFFFFu;
+    }
+
+    bool hasPreviousTransparentMaterial = path.previousTransparentMaterial != 0;
+    VoxelMaterial previousTransparentMaterial = GET_MATERIAL(path.previousTransparentMaterial);
+    float3 ext = hasPreviousTransparentMaterial
+        ? exp(-(1.0f - previousTransparentMaterial.albedo.rgb) * currentRayT * previousTransparentMaterial.extinction)
+        : float3(1.0f, 1.0f, 1.0f);
+
+    if (IsOpaque(materialID))
+    {
+        path.albedo = material.albedo.rgb * ext;
+        path.emission = material.emission.rgb;
+        path.bounceIndex++;
+
+        float fresnelFactor = FresnelReflectAmountOpaque(1.0f, material.IOR, worldRayDirection, worldNormal);
+        float specularChance = lerp(material.metallic, 1.0f, fresnelFactor * material.smoothness);
+        float doSpecular = (RandomFloat01(path.rngState) < specularChance) ? 1.0f : 0.0f;
+
+        float3 diffuseRayDir = SafeNormalize(worldNormal + RandomUnitVector(path.rngState));
+        diffuseRayDir = (dot(diffuseRayDir, diffuseRayDir) > 0.0f) ? diffuseRayDir : worldNormal;
+        float3 specularRayDir = reflect(worldRayDirection, worldNormal);
+        specularRayDir = SafeNormalize(lerp(diffuseRayDir, specularRayDir, material.smoothness));
+        float3 reflectedRayDir = lerp(diffuseRayDir, specularRayDir, doSpecular);
+
+        path.k = (doSpecular == 1.0f) ? specularChance : 1.0f - specularChance;
+        path.bounceRayOrigin = worldHitPosition + K_RAY_ORIGIN_PUSH_OFF * worldNormal;
+        path.bounceRayDirection = reflectedRayDir;
+        path.worldNormal = worldNormal;
+    }
+    else
+    {
+        int sourceMaterialID = path.previousTransparentMaterial;
+        int destinationMaterialID = materialID;
+        bool hasDestinationTransparentMaterial = destinationMaterialID != 0;
+
+        float3 interfaceNormal = SafeNormalize(worldNormal);
+        if (dot(worldRayDirection, interfaceNormal) > 0.0f)
+        {
+            interfaceNormal = -interfaceNormal;
+        }
+
+        float sourceIOR = hasPreviousTransparentMaterial ? previousTransparentMaterial.IOR : 1.0f;
+        float destinationIOR = hasDestinationTransparentMaterial ? material.IOR : 1.0f;
+        float eta = sourceIOR / destinationIOR;
+
+        float3 reflectionRayDir = reflect(worldRayDirection, interfaceNormal);
+        float3 refractionRayDir = refract(worldRayDirection, interfaceNormal, eta);
+        bool canRefract = dot(refractionRayDir, refractionRayDir) > 0.000001f;
+
+        float fresnelFactor = canRefract
+            ? FresnelReflectAmountTransparent(sourceIOR, destinationIOR, worldRayDirection, interfaceNormal)
+            : 1.0f;
+
+        float doRefraction = (canRefract && RandomFloat01(path.rngState) >= fresnelFactor) ? 1.0f : 0.0f;
+        float3 bounceRayDir = SafeNormalize(lerp(reflectionRayDir, refractionRayDir, doRefraction));
+        float pushOff = doRefraction == 1.0f ? -K_RAY_ORIGIN_PUSH_OFF : K_RAY_ORIGIN_PUSH_OFF;
+
+        path.k = doRefraction == 1.0f ? 1.0f - fresnelFactor : fresnelFactor;
+        path.albedo = ext;
+        path.emission = material.emission.rgb;
+        path.bounceRayOrigin = worldHitPosition + pushOff * interfaceNormal;
+        path.bounceRayDirection = bounceRayDir;
+        path.worldNormal = interfaceNormal;
+        path.previousTransparentMaterial = doRefraction == 1.0f ? destinationMaterialID : sourceMaterialID;
+        path.bounceIndex++;
+    }
+}
+
 [shader("raygeneration")]
 void MainRayGenShader()
 {
@@ -95,11 +216,10 @@ void MainRayGenShader()
     ray.TMax = K_T_MAX;
 
     RayPayload payload;
-    payload.k = 1;
-    payload.T = 0;
-    payload.materialID_voxelFaceHash = 0u;
-    payload.worldNormal = half3(0, 0, 0);
-    payload.bounceIndexOpaque_Transparent_RNGState = 0u;
+    VoxelisXClearRayPayload(payload);
+
+    VoxelisXPathState path;
+    VoxelisXInitPathState(path, rngState);
 
     float2 currentUV = frameCoord / float2(launchDim.x - 1, launchDim.y - 1);
     float2 previousUV = currentUV;
@@ -127,14 +247,14 @@ void MainRayGenShader()
 
     TraceRay(g_AccelStruct, 0, 0xFF, 0, 1, missShaderIndex, ray, payload);
 
-    primaryEmissionRadiance = payload.emission;
-
     // Hit
-    if (payload.bounceIndexOpaque_Transparent_RNGState > 0)
+    if (VoxelisXRayPayloadHasHit(payload))
     {
-        wpos = payload.bounceRayOrigin;
-        normal = payload.worldNormal;
-        albedo = payload.albedo;
+        VoxelisXShadeVoxelHit(payload, ray.Origin, ray.Direction, path, wpos);
+
+        primaryEmissionRadiance = path.emission;
+        normal = path.worldNormal;
+        albedo = path.albedo;
         float3 viewForward = -normalize(g_CurrentCameraToWorld._m02_m12_m22);
         distanceFromCamera = dot(wpos - g_CameraWorldPosition, viewForward);
 
@@ -142,7 +262,7 @@ void MainRayGenShader()
         // Reprojection Data
         //////////////////////////////////////////
 
-        float3 prevViewPosition = mul(g_PrevWorldToCamera, float4(payload.prevWorldHitPosition, 1.0f)).xyz;
+        float3 prevViewPosition = mul(g_PrevWorldToCamera, float4(path.prevWorldHitPosition, 1.0f)).xyz;
         previousSurfaceViewDepth = -prevViewPosition.z;
 
         if (previousSurfaceViewDepth > 0.00001f)
@@ -160,19 +280,28 @@ void MainRayGenShader()
 #if VOXELISXRT_BOUNCE
         // Keep the primary albedo out of the temporal history. It is applied once
         // during final composition so replaced voxels can reuse lighting history.
-        throughput *= 1.0f / max(0.001, payload.k);
-        ray.Origin = payload.bounceRayOrigin;
-        ray.Direction = payload.bounceRayDirection;
+        throughput *= 1.0f / max(0.001, path.k);
+        ray.Origin = path.bounceRayOrigin;
+        ray.Direction = path.bounceRayDirection;
 
-        do
+        while ((path.bounceIndex <= g_BounceCountOpaque) && (++safeNet < 1000))
         {
-            // if(payload.bounceIndexOpaque==2) { ray.TMax = 20; }
+            VoxelisXClearRayPayload(payload);
             TraceRay(g_AccelStruct, 0, 0xFF, 0, 1, missShaderIndex, ray, payload);
 
-            indirectIncidentRadiance += payload.emission * throughput;
-            // indirectIncidentRadiance = payload.bounceRayDirection * 0.1f;
+            if (!VoxelisXRayPayloadHasHit(payload))
+            {
+                indirectIncidentRadiance += VoxelisXSampleSkyRadiance(ray.Direction) * throughput;
+                break;
+            }
 
-            throughput *= payload.albedo / max(0.001, payload.k);
+            float3 bounceHitPosition;
+            VoxelisXShadeVoxelHit(payload, ray.Origin, ray.Direction, path, bounceHitPosition);
+
+            indirectIncidentRadiance += path.emission * throughput;
+            // indirectIncidentRadiance = path.bounceRayDirection * 0.1f;
+
+            throughput *= path.albedo / max(0.001, path.k);
 
             float pathStopProbability = 1;
 
@@ -183,17 +312,15 @@ void MainRayGenShader()
             pathStopProbability = max(throughputAlbedo.r, max(throughputAlbedo.g, throughputAlbedo.b));
 
             // Dark colors have higher chance to terminate the path early.
-            if (pathStopProbability < RandomFloat01(payload.rngState))
+            if (pathStopProbability < RandomFloat01(path.rngState))
                 break;
     #endif
 
             throughput *= 1 / pathStopProbability;
 
-            ray.Origin = payload.bounceRayOrigin;
-            ray.Direction = payload.bounceRayDirection;
+            ray.Origin = path.bounceRayOrigin;
+            ray.Direction = path.bounceRayDirection;
         }
-        while ((payload.bounceIndexOpaque <= g_BounceCountOpaque) && (payload.bounceIndexTransparent <= g_BounceCountTransparent) && (++safeNet < 1000));
-        // while (false);
 #else
         indirectIncidentRadiance += 1.0f;
 #endif
@@ -201,6 +328,7 @@ void MainRayGenShader()
     // Miss
     else
     {
+        primaryEmissionRadiance = VoxelisXSampleSkyRadiance(ray.Direction);
         isSky = true;
     }
 
@@ -209,10 +337,10 @@ void MainRayGenShader()
 
     // DEBUG
     // DirectRadianceTarget[launchIndex] = float4(primaryEmissionRadiance + directRadiance, !isSky);
-    // DirectRadianceTarget[launchIndex] = float4(payload.bounceIndexTransparent / 4.0 * float3(1, 1, 1), !isSky);
+    // DirectRadianceTarget[launchIndex] = float4(path.bounceIndex / 4.0 * float3(1, 1, 1), !isSky);
     // IndirectRadianceTarget[launchIndex] = float4(0, 0, 0, 0);
-    // DirectRadianceTarget[launchIndex] = float4(payload.bounceIndexOpaque / 100.0 * float3(1, 1, 1), 1);
-    // DirectRadianceTarget[launchIndex] = float4(payload.albedo, 1);
+    // DirectRadianceTarget[launchIndex] = float4(path.bounceIndex / 100.0 * float3(1, 1, 1), 1);
+    // DirectRadianceTarget[launchIndex] = float4(path.albedo, 1);
 
     // Write G-Buffers
     // Calculate depth as distance along view direction (point-to-plane) from the near plane
@@ -221,7 +349,7 @@ void MainRayGenShader()
     DepthTarget[launchIndex] = depth;
     g_CurrentDepthHistory[launchIndex] = distanceFromCamera;
     float2 packedNormal = saturate(PackNormalOctQuadEncode(isSky ? float3(0, 0, 1) : normal) * 0.5f + 0.5f);
-    NormalTarget[launchIndex] = float4(packedNormal, isSky ? 0.0f : float(payload.voxelFaceHash), 0);
+    NormalTarget[launchIndex] = float4(packedNormal, isSky ? 0.0f : float(path.voxelFaceHash), 0);
     g_CurrentNormalHistory[launchIndex] = float4(packedNormal, 0, !isSky);
     AlbedoTarget[launchIndex] = float4(albedo, 1);
 
@@ -234,27 +362,5 @@ static float3 skyLow = float3(0.4, 0.5, 0.6);
 [shader("miss")]
 void MainMissShader0(inout RayPayload payload: SV_RayPayload)
 {
-    float3 skyRadiance = g_Sky.SampleLevel(sampler_g_Sky, WorldRayDirection(), 0).xyz;
-
-    // if (g_EnableSkySun != 0 && g_SkySunFlareRadius > 0.0f)
-    // {
-    //     Light mainLight = GetMainLight();
-    //     float diskRadius = max(g_SkySunDiskRadius, 0.0f);
-    //     float flareRadius = max(g_SkySunFlareRadius, diskRadius);
-    //     float raySunCos = dot(normalize(WorldRayDirection()), normalize(mainLight.direction));
-    //     float diskCos = cos(diskRadius);
-    //     float flareCos = cos(flareRadius);
-
-    //     if (raySunCos >= diskCos)
-    //     {
-    //         skyRadiance += g_mainLightColor.rgb;
-    //     }
-    //     else if (flareRadius > diskRadius && raySunCos >= flareCos)
-    //     {
-    //         float flare = smoothstep(flareCos, diskCos, raySunCos);
-    //         skyRadiance += g_mainLightColor.rgb * pow(flare, 4.0f);
-    //     }
-    // }
-
-    VoxelisXApplyVoxelMiss(payload, skyRadiance);
+    VoxelisXApplyVoxelMiss(payload);
 }
