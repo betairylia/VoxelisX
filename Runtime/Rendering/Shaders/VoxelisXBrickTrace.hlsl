@@ -97,9 +97,15 @@ struct VoxelisXBrickAABBCandidate
 struct VoxelisXBrickRayCursor
 {
     int3 cell;
-    bool3 axisMask;
+    float3 enteredSideDist;
     float localT;
     uint stepIndex;
+};
+
+struct VoxelisXBrickRayConstants
+{
+    float3 invDir;
+    float3 tStart;
 };
 
 struct VoxelisXBrickRayHit
@@ -221,11 +227,19 @@ inline VoxelisXBrickRayCursor VoxelisXCreateBrickRayCursor(float3 entryPositionI
     float3 entryPos = clamp(entryPositionInGrid, 0.0f, gridMax);
 
     cursor.cell = int3(floor(entryPos));
-    cursor.axisMask = bool3(false, false, false);
+    cursor.enteredSideDist = float3(0.0f, 0.0f, 0.0f);
     cursor.localT = 0.0f;
     cursor.stepIndex = 0u;
 
     return cursor;
+}
+
+inline VoxelisXBrickRayConstants VoxelisXCreateBrickRayConstants(float3 entryPositionInGrid, float3 rayDir)
+{
+    VoxelisXBrickRayConstants constants;
+    constants.invDir = VoxelisXBrickRaySafeInvDir(rayDir);
+    constants.tStart = (VoxelisXBrickRayBoundaryOffset(rayDir) - entryPositionInGrid) * constants.invDir;
+    return constants;
 }
 
 inline bool VoxelisXBrickRayIsInside(VoxelisXBrickRayCursor cursor, int gridSize)
@@ -241,14 +255,12 @@ inline bool3 VoxelisXBrickRayNextAxisMask(float3 sideDist, float nextT)
         nextT + BRICK_RAY_STEP_EPSILON);
 }
 
-inline void VoxelisXStepBrickRay(inout VoxelisXBrickRayCursor cursor, float3 entryPositionInGrid, float3 rayDir)
+inline void VoxelisXStepBrickRay(inout VoxelisXBrickRayCursor cursor, float3 entryPositionInGrid, float3 rayDir, VoxelisXBrickRayConstants constants)
 {
-    float3 invDir = VoxelisXBrickRaySafeInvDir(rayDir);
-    float3 tStart = (VoxelisXBrickRayBoundaryOffset(rayDir) - entryPositionInGrid) * invDir;
-    float3 sideDist = tStart + float3(cursor.cell) * invDir;
+    float3 sideDist = constants.tStart + float3(cursor.cell) * constants.invDir;
     float nextT = min(min(sideDist.x, sideDist.y), sideDist.z);
 
-    cursor.axisMask = VoxelisXBrickRayNextAxisMask(sideDist, nextT);
+    cursor.enteredSideDist = sideDist;
     cursor.localT = nextT;
     cursor.cell = int3(floor(entryPositionInGrid + (nextT + BRICK_RAY_STEP_EPSILON) * rayDir));
     cursor.stepIndex++;
@@ -261,9 +273,13 @@ inline float VoxelisXBrickRayCurrentT(VoxelisXBrickRayCursor cursor, float entry
 
 inline int3 VoxelisXBrickRayCurrentNormal(VoxelisXBrickRayCursor cursor, float3 rayDir, int3 entryNormal)
 {
-    return cursor.stepIndex == 0u
-        ? entryNormal
-        : VoxelisXBrickRayIntMask(cursor.axisMask) * -VoxelisXBrickRayStepDirection(rayDir);
+    if (cursor.stepIndex == 0u)
+    {
+        return entryNormal;
+    }
+
+    bool3 axisMask = VoxelisXBrickRayNextAxisMask(cursor.enteredSideDist, cursor.localT);
+    return VoxelisXBrickRayIntMask(axisMask) * -VoxelisXBrickRayStepDirection(rayDir);
 }
 
 inline void VoxelisXMakeBrickRayHit(VoxelisXBrickRayCursor cursor, float3 rayDir, float entryT, int3 entryNormal, out VoxelisXBrickRayHit hit)
@@ -406,6 +422,7 @@ inline bool VoxelisXTraceBrickRay(uint brickID, float3 entryPositionInBrick, flo
     uint brickBase = VoxelisXBrickBase(brickID);
     uint coarseOccupancy = VoxelisXGetCoarseOccupancy(g_bricks[brickBase]);
     VoxelisXBrickRayCursor cursor = VoxelisXCreateBrickRayCursor(entryPositionInBrick, SIZE_IN_BLOCKS);
+    VoxelisXBrickRayConstants rayConstants = VoxelisXCreateBrickRayConstants(entryPositionInBrick, rayDir);
     uint occLo = 0u;
     uint occHi = 0u;
     
@@ -425,7 +442,7 @@ inline bool VoxelisXTraceBrickRay(uint brickID, float3 entryPositionInBrick, flo
         if ((coarseOccupancy & (1u << coarseBit)) == 0u)
         {
             // Faster than compute the exact distance needed to jump multiple voxels
-            VoxelisXStepBrickRay(cursor, entryPositionInBrick, rayDir);
+            VoxelisXStepBrickRay(cursor, entryPositionInBrick, rayDir, rayConstants);
             continue;
         }
         
@@ -433,7 +450,7 @@ inline bool VoxelisXTraceBrickRay(uint brickID, float3 entryPositionInBrick, flo
         VoxelisXLoadMicroOccupancy(brickBase, coarseBit, occLo, occHi);
         if (!VoxelisXShouldTraceMicroOccupancy(occLo, occHi, rayDir))
         {
-            VoxelisXStepBrickRay(cursor, entryPositionInBrick, rayDir);
+            VoxelisXStepBrickRay(cursor, entryPositionInBrick, rayDir, rayConstants);
             continue;
         }
 
@@ -453,7 +470,7 @@ inline bool VoxelisXTraceBrickRay(uint brickID, float3 entryPositionInBrick, flo
             }
         }
 
-        VoxelisXStepBrickRay(cursor, entryPositionInBrick, rayDir);
+        VoxelisXStepBrickRay(cursor, entryPositionInBrick, rayDir, rayConstants);
     }
 
     return false;
