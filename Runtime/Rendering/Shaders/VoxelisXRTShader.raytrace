@@ -218,6 +218,17 @@ void MainRayGenShader()
     RayPayload payload;
     VoxelisXClearRayPayload(payload);
 
+    //////////////////////////////////////////
+    // Primary Ray
+    //////////////////////////////////////////
+
+    TraceRay(g_AccelStruct, 0, 0xFF, 0, 1, missShaderIndex, ray, payload);
+
+    // Safe net for when shaders have compilation errors and don't increase the bounce index, resulting in an infinite loop.
+    uint safeNet = 0;
+
+    float3 throughput = float3(1, 1, 1);
+
     VoxelisXPathState path;
     VoxelisXInitPathState(path, rngState);
 
@@ -235,17 +246,6 @@ void MainRayGenShader()
     bool isSky = false;
 
     Light mainLight = GetMainLight();
-
-    //////////////////////////////////////////
-    // Primary Ray
-    //////////////////////////////////////////
-
-    // Safe net for when shaders have compilation errors and don't increase the bounce index, resulting in an infinite loop.
-    uint safeNet = 0;
-
-    float3 throughput = float3(1, 1, 1);
-
-    TraceRay(g_AccelStruct, 0, 0xFF, 0, 1, missShaderIndex, ray, payload);
 
     // Hit
     if (VoxelisXRayPayloadHasHit(payload))

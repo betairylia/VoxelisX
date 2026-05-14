@@ -152,6 +152,7 @@ inline uint VoxelisXFaceID(int3 normal)
 
 inline uint VoxelisXMakeVoxelFaceHash(int3 sectorLocalVoxelPos, int3 normal)
 {
+    return 0u;
     uint voxelKey =
         uint(sectorLocalVoxelPos.x & 0x7F) |
         (uint(sectorLocalVoxelPos.y & 0x7F) << 7) |
