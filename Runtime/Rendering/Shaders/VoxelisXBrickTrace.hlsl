@@ -349,7 +349,7 @@ inline bool VoxelisXShouldTraceMicroOccupancy(uint occLo, uint occHi, float3 ray
 inline bool VoxelisXShouldTerminateBrickRay(int blockID, VoxelisXBrickRayCursor cursor, float3 rayDir, int3 entryNormal, float entryT)
 {
     bool shouldTerminate = IsOpaque(blockID);
-    if (shouldTerminate) return shouldTerminate;
+    UNITY_BRANCH if (shouldTerminate) return shouldTerminate;
     
     // Transparency
     if (cursor.stepIndex == 0 && entryT == 0) return false;

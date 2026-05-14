@@ -1,5 +1,3 @@
-#pragma enable_d3d11_debug_symbols
-
 // #include "UnityShaderVariables.cginc"
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
 #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Packing.hlsl"
@@ -11,7 +9,6 @@
 #include "Utils/BlueNoise.hlsl"
 #include "VoxelisXRayPayloadUtils.hlsl"
 
-#define VOXELISXRT_SHADOW 0
 #define VOXELISXRT_BOUNCE 1
 
 RaytracingAccelerationStructure g_AccelStruct : register(t0, space1);
@@ -48,7 +45,7 @@ float g_SkySunDiskRadius;
 float g_SkySunFlareRadius;
 
 // Uncomment this pragma for debugging the HLSL code in PIX. GPU performance will be impacted.
-//#pragma enable_ray_tracing_shader_debug_symbols
+#pragma enable_ray_tracing_shader_debug_symbols
 
 #pragma max_recursion_depth 1
 
@@ -166,44 +163,6 @@ void MainRayGenShader()
         }
 
         //////////////////////////////////////////
-        // Direct Lighting
-        //////////////////////////////////////////
-
-        // TODO: Use separated pass?
-
-        if (payload.bounceIndexOpaque == 1)
-        {
-#if VOXELISXRT_SHADOW
-            RayDesc shadowRay;
-            shadowRay.Origin = wpos;
-            shadowRay.Direction = mainLight.direction;
-            shadowRay.TMin = ray.TMin;
-            shadowRay.TMax = ray.TMax;
-
-            RayPayload shadowPayload;
-            shadowPayload.albedo = float3(1, 1, 1);
-            shadowPayload.emission = float3(0, 0, 0);
-            shadowPayload.rngState = rngState;
-            shadowPayload.bounceIndexOpaque = 0;
-            shadowPayload.bounceIndexTransparent = 0;
-            shadowPayload.worldNormal = half3(0, 0, 0);
-            shadowPayload.voxelFaceHash = 0u;
-            shadowPayload.bounceRayOrigin = float3(0, 0, 0);
-            shadowPayload.bounceRayDirection = float3(0, 0, 0);
-            shadowPayload.prevWorldHitPosition = float3(0, 0, 0);
-            shadowPayload.previousTransparentMaterial = 0;
-            shadowPayload.k = 1;
-
-            TraceRay(g_AccelStruct, 0, 0xFF, 0, 1, missShaderIndex, shadowRay, shadowPayload);
-
-            shadow = (shadowPayload.bounceIndexOpaque == 1) ? 0.0f : 1.0f;
-#endif
-
-            float nDotL = saturate(dot(normal, mainLight.direction));
-            directRadiance = g_mainLightColor.rgb * albedo * saturate(shadow * nDotL);
-        }
-
-        //////////////////////////////////////////
         // Indirect Lighting
         //////////////////////////////////////////
 
@@ -254,14 +213,17 @@ void MainRayGenShader()
         isSky = true;
     }
 
-    // DirectRadianceTarget[launchIndex] = float4(primaryEmissionRadiance + directRadiance, !isSky);
     DirectRadianceTarget[launchIndex] = float4(primaryEmissionRadiance, !isSky);
-    // DirectRadianceTarget[launchIndex] = float4(payload.bounceIndexTransparent / 4.0 * float3(1, 1, 1), !isSky);
     IndirectRadianceTarget[launchIndex] = float4(indirectIncidentRadiance, !isSky);
+
+    // DEBUG
+    // DirectRadianceTarget[launchIndex] = float4(primaryEmissionRadiance + directRadiance, !isSky);
+    // DirectRadianceTarget[launchIndex] = float4(payload.bounceIndexTransparent / 4.0 * float3(1, 1, 1), !isSky);
     // IndirectRadianceTarget[launchIndex] = float4(0, 0, 0, 0);
     // DirectRadianceTarget[launchIndex] = float4(payload.bounceIndexOpaque / 100.0 * float3(1, 1, 1), 1);
     // DirectRadianceTarget[launchIndex] = float4(payload.albedo, 1);
 
+    // Write G-Buffers
     // Calculate depth as distance along view direction (point-to-plane) from the near plane
     // float depthFromNearPlane = distanceFromCamera - _ProjectionParams.y; // _ProjectionParams.y is the near plane distance
     float depth = LinearEyeDepth(distanceFromCamera, _ZBufferParams);
@@ -283,25 +245,25 @@ void MainMissShader0(inout RayPayload payload: SV_RayPayload)
 {
     float3 skyRadiance = g_Sky.SampleLevel(sampler_g_Sky, WorldRayDirection(), 0).xyz;
 
-    if (g_EnableSkySun != 0 && g_SkySunFlareRadius > 0.0f)
-    {
-        Light mainLight = GetMainLight();
-        float diskRadius = max(g_SkySunDiskRadius, 0.0f);
-        float flareRadius = max(g_SkySunFlareRadius, diskRadius);
-        float raySunCos = dot(normalize(WorldRayDirection()), normalize(mainLight.direction));
-        float diskCos = cos(diskRadius);
-        float flareCos = cos(flareRadius);
+    // if (g_EnableSkySun != 0 && g_SkySunFlareRadius > 0.0f)
+    // {
+    //     Light mainLight = GetMainLight();
+    //     float diskRadius = max(g_SkySunDiskRadius, 0.0f);
+    //     float flareRadius = max(g_SkySunFlareRadius, diskRadius);
+    //     float raySunCos = dot(normalize(WorldRayDirection()), normalize(mainLight.direction));
+    //     float diskCos = cos(diskRadius);
+    //     float flareCos = cos(flareRadius);
 
-        if (raySunCos >= diskCos)
-        {
-            skyRadiance += g_mainLightColor.rgb;
-        }
-        else if (flareRadius > diskRadius && raySunCos >= flareCos)
-        {
-            float flare = smoothstep(flareCos, diskCos, raySunCos);
-            skyRadiance += g_mainLightColor.rgb * pow(flare, 4.0f);
-        }
-    }
+    //     if (raySunCos >= diskCos)
+    //     {
+    //         skyRadiance += g_mainLightColor.rgb;
+    //     }
+    //     else if (flareRadius > diskRadius && raySunCos >= flareCos)
+    //     {
+    //         float flare = smoothstep(flareCos, diskCos, raySunCos);
+    //         skyRadiance += g_mainLightColor.rgb * pow(flare, 4.0f);
+    //     }
+    // }
 
     VoxelisXApplyVoxelMiss(payload, skyRadiance);
 }

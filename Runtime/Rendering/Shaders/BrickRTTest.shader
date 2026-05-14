@@ -17,7 +17,7 @@ Shader "VoxelisX/BrickRTTest"
             }
             
             HLSLPROGRAM
-            #pragma enable_d3d11_debug_symbols
+            #pragma enable_ray_tracing_shader_debug_symbols
 
             #include "RayPayload.hlsl"
             #include "Utils.hlsl"
