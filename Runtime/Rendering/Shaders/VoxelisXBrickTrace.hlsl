@@ -79,9 +79,8 @@ struct VoxelisXBrickHit
 {
     bool hit;
     float t;
-    int materialID;
+    uint materialID_faceHash;
     half3 objectNormal;
-    uint faceHash;
 };
 
 struct VoxelisXBrickAABBCandidate
@@ -126,9 +125,8 @@ inline VoxelisXBrickHit VoxelisXMakeBrickMiss()
     VoxelisXBrickHit hit;
     hit.hit = false;
     hit.t = 0.0f;
-    hit.materialID = 0;
     hit.objectNormal = half3(0, 0, 0);
-    hit.faceHash = 0u;
+    hit.materialID_faceHash = 0u;
     return hit;
 }
 
@@ -161,7 +159,7 @@ inline uint VoxelisXMakeVoxelFaceHash(int3 sectorLocalVoxelPos, int3 normal)
         (VoxelisXFaceID(normal) << 21);
 
     uint hash = VoxelisXHashAvalanche(_SectorHashSeed ^ voxelKey) & VOXEL_FACE_HASH_MASK;
-    return hash == 0u ? 1u : hash;
+    return hash == 0u ? 1u : (hash & 0xFFFF);
 }
 
 inline int3 VoxelisXBrickRayIntMask(bool3 mask)
@@ -500,17 +498,35 @@ inline VoxelisXBrickHit VoxelisXTraceBrickPrimitive(VoxelisXBrickTraceContext co
     {
         result.hit = true;
         result.t = rayHit.t;
-        result.materialID = materialID;
+        result.materialID_faceHash = (materialID << 16) | VoxelisXMakeVoxelFaceHash(candidate.brickOrigin + rayHit.cell, rayHit.normal);
         result.objectNormal = half3(rayHit.normal);
-        result.faceHash = VoxelisXMakeVoxelFaceHash(candidate.brickOrigin + rayHit.cell, rayHit.normal);
     }
 
     return result;
 }
 
+inline void VoxelisXApplyVoxelClosestHitMinimumPayload(inout RayPayload payload, VoxelisXBrickHit hit)
+{
+    int materialID = hit.materialID_faceHash >> 16;
+    payload.worldNormal = mul((float3x3)ObjectToWorld3x4(), hit.objectNormal);
+    payload.T = RayTCurrent();
+    payload.materialID_voxelFaceHash = hit.materialID_faceHash;
+    
+    // Handle motion vectors
+    if (payload.bounceIndexOpaque_Transparent_RNGState == 0)
+    {
+        float3 objectHitPosition = ObjectRayOrigin() + ObjectRayDirection() * payload.T;
+        float3 worldHitPosition = WorldRayOrigin() + WorldRayDirection() * payload.T;
+        payload.prevWorldOffset = mul(_PrevObjectToWorld, float4(objectHitPosition, 1.0f)).xyz - worldHitPosition;
+    }
+    
+    // TODO: Separate Opaque / Transparent
+    payload.bounceIndexOpaque_Transparent_RNGState++;
+}
+
 inline void VoxelisXApplyVoxelClosestHit(inout RayPayload payload, VoxelisXBrickHit hit, float3 worldRayOrigin, float3 worldRayDirection, float3 objectRayOrigin, float3 objectRayDirection, float currentRayT, float3x4 objectToWorld)
 {
-    int materialID = hit.materialID;
+    int materialID = hit.materialID_faceHash >> 16;
     VoxelMaterial material = GET_MATERIAL(materialID);    
 
     float3 worldHitPosition = worldRayOrigin + worldRayDirection * currentRayT;

@@ -95,20 +95,11 @@ void MainRayGenShader()
     ray.TMax = K_T_MAX;
 
     RayPayload payload;
-    payload.albedo = float3(1, 1, 1);
-    payload.emission = float3(0, 0, 0);
-    payload.rngState = rngState;
-    payload.bounceIndexOpaque = 0;
-    payload.bounceIndexTransparent = 0;
-    payload.worldNormal = half3(0, 0, 0);
-    payload.voxelFaceHash = 0u;
-    payload.previousTransparentMaterial = 0;
-    // payload.bounceRayOrigin = float3(0, 0, 0);
-    // payload.bounceRayDirection = float3(0, 0, 0);
-    payload.bounceRayOrigin = g_CameraWorldPosition;
-    payload.bounceRayDirection = normalize(rayDirection);
-    payload.prevWorldHitPosition = float3(0, 0, 0);
     payload.k = 1;
+    payload.T = 0;
+    payload.materialID_voxelFaceHash = 0u;
+    payload.worldNormal = half3(0, 0, 0);
+    payload.bounceIndexOpaque_Transparent_RNGState = 0u;
 
     float2 currentUV = frameCoord / float2(launchDim.x - 1, launchDim.y - 1);
     float2 previousUV = currentUV;
@@ -139,7 +130,7 @@ void MainRayGenShader()
     primaryEmissionRadiance = payload.emission;
 
     // Hit
-    if((payload.bounceIndexOpaque | payload.bounceIndexTransparent) == 1)
+    if (payload.bounceIndexOpaque_Transparent_RNGState > 0)
     {
         wpos = payload.bounceRayOrigin;
         normal = payload.worldNormal;

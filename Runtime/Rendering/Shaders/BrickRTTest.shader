@@ -28,9 +28,8 @@ Shader "VoxelisX/BrickRTTest"
 
             struct AttributeData
             {
-                int matID;
+                uint matID_faceHash;
                 half3 normal;
-                uint faceHash;
             };
 
             float _Smoothness;
@@ -50,20 +49,13 @@ Shader "VoxelisX/BrickRTTest"
                 context.objectRayDirection = ObjectRayDirection();
                 context.currentRayT = RayTCurrent();
                 context.primitiveIndex = PrimitiveIndex();
-                
-                // AttributeData attrib;
-                // attrib.normal = float3(0, 1, 0);
-                // attrib.matID = PrimitiveIndex() % 0xFFFF;
-                // attrib.faceHash = 1;
-                // ReportHit(1, 0, attrib);
 
                 VoxelisXBrickHit hit = VoxelisXTraceBrickPrimitive(context);
                 if (hit.hit)
                 {
                     AttributeData attrib;
                     attrib.normal = hit.objectNormal;
-                    attrib.matID = hit.materialID;
-                    attrib.faceHash = hit.faceHash;
+                    attrib.matID_faceHash = hit.materialID_faceHash;
                     ReportHit(hit.t, 0, attrib);
                 }
             }
@@ -75,11 +67,11 @@ Shader "VoxelisX/BrickRTTest"
                 VoxelisXBrickHit hit;
                 hit.hit = true;
                 hit.t = RayTCurrent();
-                hit.materialID = attribs.matID;
+                hit.materialID_faceHash = attribs.matID_faceHash;
                 hit.objectNormal = attribs.normal;
-                hit.faceHash = attribs.faceHash;
 
-                VoxelisXApplyVoxelClosestHit(payload, hit, WorldRayOrigin(), WorldRayDirection(), ObjectRayOrigin(), ObjectRayDirection(), RayTCurrent(), ObjectToWorld3x4());
+                VoxelisXApplyVoxelClosestHitMinimumPayload(payload, hit);
+                // VoxelisXApplyVoxelClosestHit(payload, hit, WorldRayOrigin(), WorldRayDirection(), ObjectRayOrigin(), ObjectRayDirection(), RayTCurrent(), ObjectToWorld3x4());
             }
             
             // [shader("anyhit")]
