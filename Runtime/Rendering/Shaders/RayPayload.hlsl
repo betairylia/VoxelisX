@@ -1,13 +1,13 @@
 struct RayPayload
 {
     float k;                // Energy conservation constraint
-    float3 albedo;
-    float3 emission;
+    half3 albedo;
+    half3 emission;
     uint bounceIndexOpaque;
     uint bounceIndexTransparent;
     float3 bounceRayOrigin;
     float3 bounceRayDirection;
-    float3 prevWorldHitPosition;
+    half3 prevWorldHitPosition;
     half3 worldNormal;
     uint rngState;          // Random number generator state.
     uint voxelFaceHash;
