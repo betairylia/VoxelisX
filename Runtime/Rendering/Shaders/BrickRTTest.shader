@@ -18,7 +18,6 @@ Shader "VoxelisX/BrickRTTest"
             
             HLSLPROGRAM
 
-            #include "DDA.hlsl"
             #include "RayPayload.hlsl"
             #include "Utils.hlsl"
             #include "Assets/VoxelisX/VoxelMaterials.hlsl"

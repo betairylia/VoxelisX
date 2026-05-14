@@ -25,16 +25,16 @@
 #define SIZE_IN_BRICKS_SQUARED 256
 #endif
 
-#ifndef BRICK_DDA_MAX_STEPS
-#define BRICK_DDA_MAX_STEPS 22
+#ifndef BRICK_RAY_MAX_STEPS
+#define BRICK_RAY_MAX_STEPS 22
 #endif
 
-#ifndef BRICK_COARSE_DDA_MAX_STEPS
-#define BRICK_COARSE_DDA_MAX_STEPS 4
+#ifndef BRICK_COARSE_RAY_MAX_STEPS
+#define BRICK_COARSE_RAY_MAX_STEPS 4
 #endif
 
-#ifndef BRICK_MICRO_DDA_MAX_STEPS
-#define BRICK_MICRO_DDA_MAX_STEPS 10
+#ifndef BRICK_MICRO_RAY_MAX_STEPS
+#define BRICK_MICRO_RAY_MAX_STEPS 10
 #endif
 
 #define BRICK_INFO_WORDS 1
@@ -51,9 +51,20 @@
 
 #define VOXEL_FACE_HASH_MASK 0x3FFu
 
+#ifndef BRICK_RAY_GRID_EPSILON
+#define BRICK_RAY_GRID_EPSILON 0.0001f
+#endif
+
+#ifndef BRICK_RAY_STEP_EPSILON
+#define BRICK_RAY_STEP_EPSILON 0.001f
+#endif
+
+#ifndef BRICK_RAY_MIN_DIR
+#define BRICK_RAY_MIN_DIR 1e-20f
+#endif
+
 #include "VoxelisXUtils.hlsl"
 #include "Utils/BlueNoise.hlsl"
-#include "DDA.hlsl"
 #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
 
 struct VoxelisXBrickTraceContext
@@ -81,6 +92,23 @@ struct VoxelisXBrickAABBCandidate
     int3 brickOrigin;
     float t;
     int3 normal;
+};
+
+struct VoxelisXBrickRayCursor
+{
+    int3 cell;
+    bool3 axisMask;
+    float localT;
+    uint stepIndex;
+};
+
+struct VoxelisXBrickRayHit
+{
+    bool hit;
+    int3 cell;
+    int3 normal;
+    float t;
+    uint stepIndex;
 };
 
 StructuredBuffer<uint> g_bricks;
@@ -128,6 +156,123 @@ inline uint VoxelisXMakeVoxelFaceHash(int3 sectorLocalVoxelPos, int3 normal)
 
     uint hash = VoxelisXHashAvalanche(_SectorHashSeed ^ voxelKey) & VOXEL_FACE_HASH_MASK;
     return hash == 0u ? 1u : hash;
+}
+
+inline int3 VoxelisXBrickRayIntMask(bool3 mask)
+{
+    return int3(mask.x ? 1 : 0, mask.y ? 1 : 0, mask.z ? 1 : 0);
+}
+
+inline int VoxelisXBrickRayStepAxis(float direction)
+{
+    if (direction > 0.0f) return 1;
+    if (direction < 0.0f) return -1;
+    return 0;
+}
+
+inline int3 VoxelisXBrickRayStepDirection(float3 rayDir)
+{
+    return int3(
+        VoxelisXBrickRayStepAxis(rayDir.x),
+        VoxelisXBrickRayStepAxis(rayDir.y),
+        VoxelisXBrickRayStepAxis(rayDir.z));
+}
+
+inline float VoxelisXBrickRaySafeInvAxis(float direction)
+{
+    if (abs(direction) >= BRICK_RAY_MIN_DIR)
+    {
+        return 1.0f / direction;
+    }
+
+    return direction < 0.0f ? -1.0f / BRICK_RAY_MIN_DIR : 1.0f / BRICK_RAY_MIN_DIR;
+}
+
+inline float3 VoxelisXBrickRaySafeInvDir(float3 rayDir)
+{
+    return float3(
+        VoxelisXBrickRaySafeInvAxis(rayDir.x),
+        VoxelisXBrickRaySafeInvAxis(rayDir.y),
+        VoxelisXBrickRaySafeInvAxis(rayDir.z));
+}
+
+inline float3 VoxelisXBrickRayBoundaryOffset(float3 rayDir)
+{
+    return float3(
+        rayDir.x >= 0.0f ? 1.0f : 0.0f,
+        rayDir.y >= 0.0f ? 1.0f : 0.0f,
+        rayDir.z >= 0.0f ? 1.0f : 0.0f);
+}
+
+inline void VoxelisXClearBrickRayHit(out VoxelisXBrickRayHit hit)
+{
+    hit.hit = false;
+    hit.cell = int3(0, 0, 0);
+    hit.normal = int3(0, 0, 0);
+    hit.t = 0.0f;
+    hit.stepIndex = 0;
+}
+
+inline VoxelisXBrickRayCursor VoxelisXCreateBrickRayCursor(float3 entryPositionInGrid, int gridSize)
+{
+    VoxelisXBrickRayCursor cursor;
+
+    float3 gridMax = float3(gridSize, gridSize, gridSize) - BRICK_RAY_GRID_EPSILON;
+    float3 entryPos = clamp(entryPositionInGrid, 0.0f, gridMax);
+
+    cursor.cell = int3(floor(entryPos));
+    cursor.axisMask = bool3(false, false, false);
+    cursor.localT = 0.0f;
+    cursor.stepIndex = 0u;
+
+    return cursor;
+}
+
+inline bool VoxelisXBrickRayIsInside(VoxelisXBrickRayCursor cursor, int gridSize)
+{
+    return !any(uint3(cursor.cell) >= uint(gridSize));
+}
+
+inline bool3 VoxelisXBrickRayNextAxisMask(float3 sideDist, float nextT)
+{
+    return sideDist <= float3(
+        nextT + BRICK_RAY_STEP_EPSILON,
+        nextT + BRICK_RAY_STEP_EPSILON,
+        nextT + BRICK_RAY_STEP_EPSILON);
+}
+
+inline void VoxelisXStepBrickRay(inout VoxelisXBrickRayCursor cursor, float3 entryPositionInGrid, float3 rayDir)
+{
+    float3 invDir = VoxelisXBrickRaySafeInvDir(rayDir);
+    float3 tStart = (VoxelisXBrickRayBoundaryOffset(rayDir) - entryPositionInGrid) * invDir;
+    float3 sideDist = tStart + float3(cursor.cell) * invDir;
+    float nextT = min(min(sideDist.x, sideDist.y), sideDist.z);
+
+    cursor.axisMask = VoxelisXBrickRayNextAxisMask(sideDist, nextT);
+    cursor.localT = nextT;
+    cursor.cell = int3(floor(entryPositionInGrid + (nextT + BRICK_RAY_STEP_EPSILON) * rayDir));
+    cursor.stepIndex++;
+}
+
+inline float VoxelisXBrickRayCurrentT(VoxelisXBrickRayCursor cursor, float entryT)
+{
+    return entryT + cursor.localT;
+}
+
+inline int3 VoxelisXBrickRayCurrentNormal(VoxelisXBrickRayCursor cursor, float3 rayDir, int3 entryNormal)
+{
+    return cursor.stepIndex == 0u
+        ? entryNormal
+        : VoxelisXBrickRayIntMask(cursor.axisMask) * -VoxelisXBrickRayStepDirection(rayDir);
+}
+
+inline void VoxelisXMakeBrickRayHit(VoxelisXBrickRayCursor cursor, float3 rayDir, float entryT, int3 entryNormal, out VoxelisXBrickRayHit hit)
+{
+    hit.hit = true;
+    hit.cell = cursor.cell;
+    hit.normal = VoxelisXBrickRayCurrentNormal(cursor, rayDir, entryNormal);
+    hit.t = VoxelisXBrickRayCurrentT(cursor, entryT);
+    hit.stepIndex = cursor.stepIndex;
 }
 
 inline int VoxelisXReadBrick(uint brickBase, int3 localBlockPos)
@@ -180,14 +325,14 @@ inline bool VoxelisXShouldTraceMicroOccupancy(uint occLo, uint occHi, float3 ray
     return true;
 }
 
-inline bool VoxelisXShouldTerminateBrickDDA(int blockID, DDACursor cursor, int3 entryNormal, float entryT)
+inline bool VoxelisXShouldTerminateBrickRay(int blockID, VoxelisXBrickRayCursor cursor, float3 rayDir, int3 entryNormal, float entryT)
 {
     bool shouldTerminate = IsOpaque(blockID);
     if (shouldTerminate) return shouldTerminate;
     
     // Transparency
     if (cursor.stepIndex == 0 && entryT == 0) return false;
-    int3 normal = DDACurrentNormal(cursor, entryNormal);
+    int3 normal = VoxelisXBrickRayCurrentNormal(cursor, rayDir, entryNormal);
     int sign = normal.x + normal.y + normal.z;
     int faceBit = dot(abs(normal), int3(0, 2, 4)) + ((1 - sign) >> 1);
     shouldTerminate = GetFaceBits(blockID) & (1 << faceBit);
@@ -253,25 +398,24 @@ inline bool VoxelisXIntersectBrickAABB(VoxelisXBrickTraceContext context, out Vo
     return true;
 }
 
-inline bool VoxelisXTraceBrickDDA(uint brickID, float3 entryPositionInBrick, float3 rayDir, float entryT, int3 entryNormal, out DDAHit hit, out int materialID)
+inline bool VoxelisXTraceBrickRay(uint brickID, float3 entryPositionInBrick, float3 rayDir, float entryT, int3 entryNormal, out VoxelisXBrickRayHit hit, out int materialID)
 {
-    DDAClearHit(hit);
+    VoxelisXClearBrickRayHit(hit);
     materialID = 0;
 
     uint brickBase = VoxelisXBrickBase(brickID);
     uint coarseOccupancy = VoxelisXGetCoarseOccupancy(g_bricks[brickBase]);
-    DDACursor cursor = DDACreateCursor(entryPositionInBrick, rayDir, SIZE_IN_BLOCKS);
+    VoxelisXBrickRayCursor cursor = VoxelisXCreateBrickRayCursor(entryPositionInBrick, SIZE_IN_BLOCKS);
     uint occLo = 0u;
     uint occHi = 0u;
-    int prevTransparentBlock = -1;
     
     // materialID = coarseOccupancy;
-    // DDAMakeHit(cursor, entryT, entryNormal, hit);
+    // VoxelisXMakeBrickRayHit(cursor, rayDir, entryT, entryNormal, hit);
     // return true;
 
-    [loop] for (int ddaStep = 0; ddaStep < BRICK_DDA_MAX_STEPS; ddaStep++)
+    [loop] for (int rayStep = 0; rayStep < BRICK_RAY_MAX_STEPS; rayStep++)
     {
-        if (!DDAIsInside(cursor, SIZE_IN_BLOCKS))
+        if (!VoxelisXBrickRayIsInside(cursor, SIZE_IN_BLOCKS))
         {
             break;
         }
@@ -281,7 +425,7 @@ inline bool VoxelisXTraceBrickDDA(uint brickID, float3 entryPositionInBrick, flo
         if ((coarseOccupancy & (1u << coarseBit)) == 0u)
         {
             // Faster than compute the exact distance needed to jump multiple voxels
-            DDAStep(cursor);
+            VoxelisXStepBrickRay(cursor, entryPositionInBrick, rayDir);
             continue;
         }
         
@@ -289,7 +433,7 @@ inline bool VoxelisXTraceBrickDDA(uint brickID, float3 entryPositionInBrick, flo
         VoxelisXLoadMicroOccupancy(brickBase, coarseBit, occLo, occHi);
         if (!VoxelisXShouldTraceMicroOccupancy(occLo, occHi, rayDir))
         {
-            DDAStep(cursor);
+            VoxelisXStepBrickRay(cursor, entryPositionInBrick, rayDir);
             continue;
         }
 
@@ -298,18 +442,18 @@ inline bool VoxelisXTraceBrickDDA(uint brickID, float3 entryPositionInBrick, flo
         if (VoxelisXIsMicroOccupied(occLo, occHi, microBit))
         {
             int blockID = VoxelisXReadBrick(brickBase + BRICK_BLOCK_DATA_OFFSET, cursor.cell);
-            bool shouldTerminate = VoxelisXShouldTerminateBrickDDA(
-                blockID, cursor, entryNormal, entryT);
+            bool shouldTerminate = VoxelisXShouldTerminateBrickRay(
+                blockID, cursor, rayDir, entryNormal, entryT);
 
             if (shouldTerminate)
             {
                 materialID = blockID;
-                DDAMakeHit(cursor, entryT, entryNormal, hit);
+                VoxelisXMakeBrickRayHit(cursor, rayDir, entryT, entryNormal, hit);
                 return true;
             }
         }
 
-        DDAStep(cursor);
+        VoxelisXStepBrickRay(cursor, entryPositionInBrick, rayDir);
     }
 
     return false;
@@ -327,15 +471,15 @@ inline VoxelisXBrickHit VoxelisXTraceBrickPrimitive(VoxelisXBrickTraceContext co
 
     float3 entryPositionInBrick = context.objectRayOrigin + context.objectRayDirection * candidate.t - float3(candidate.brickOrigin);
 
-    DDAHit ddaHit;
+    VoxelisXBrickRayHit rayHit;
     int materialID;
-    if (VoxelisXTraceBrickDDA(candidate.brickID, entryPositionInBrick, context.objectRayDirection, candidate.t, candidate.normal, ddaHit, materialID))
+    if (VoxelisXTraceBrickRay(candidate.brickID, entryPositionInBrick, context.objectRayDirection, candidate.t, candidate.normal, rayHit, materialID))
     {
         result.hit = true;
-        result.t = ddaHit.t;
+        result.t = rayHit.t;
         result.materialID = materialID;
-        result.objectNormal = half3(ddaHit.normal);
-        result.faceHash = VoxelisXMakeVoxelFaceHash(candidate.brickOrigin + ddaHit.cell, ddaHit.normal);
+        result.objectNormal = half3(rayHit.normal);
+        result.faceHash = VoxelisXMakeVoxelFaceHash(candidate.brickOrigin + rayHit.cell, rayHit.normal);
     }
 
     return result;
