@@ -56,7 +56,7 @@
 #endif
 
 #ifndef BRICK_RAY_STEP_EPSILON
-#define BRICK_RAY_STEP_EPSILON 0.001f
+#define BRICK_RAY_STEP_EPSILON 0.0001f
 #endif
 
 #ifndef BRICK_RAY_MIN_DIR
@@ -67,14 +67,6 @@
 #include "VoxelisXUtils.hlsl"
 #include "Utils/BlueNoise.hlsl"
 #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
-
-struct VoxelisXBrickTraceContext
-{
-    float3 objectRayOrigin;
-    float3 objectRayDirection;
-    float currentRayT;
-    uint primitiveIndex;
-};
 
 /*
 float t
@@ -140,6 +132,7 @@ inline uint VoxelisXHashAvalanche(uint value)
 
 inline uint VoxelisXFaceID(int3 normal)
 {
+    // TODO: FIXME: bruh
     if (normal.x > 0) return 0u;
     if (normal.x < 0) return 1u;
     if (normal.y > 0) return 2u;
@@ -246,7 +239,7 @@ inline void VoxelisXJumpBrickRay(inout VoxelisXBrickRayCursor cursor, float3 ray
     cursor.cell = lerp(cursor.cell | mask, cursor.cell & (~mask), rayDir < 0);
 }
 
-inline void VoxelisXStepBrickRay(inout VoxelisXBrickRayCursor cursor, float3 entryPositionInGrid, half3 rayDir, VoxelisXBrickRayConstants constants)
+inline void VoxelisXStepBrickRay(inout VoxelisXBrickRayCursor cursor, float3 entryPositionInGrid, float3 rayDir, VoxelisXBrickRayConstants constants)
 {
     float3 sideDist = constants.tStart + float3(cursor.cell) * constants.invDir;
     float nextT = min(min(sideDist.x, sideDist.y), sideDist.z);
@@ -293,11 +286,6 @@ inline uint VoxelisXBrickBase(uint brickID)
 inline uint VoxelisXGetCoarseOccupancy(uint brickInfo)
 {
     return (brickInfo >> BRICK_INFO_COARSE_OCCUPANCY_SHIFT) & BRICK_INFO_COARSE_OCCUPANCY_MASK;
-}
-
-inline uint VoxelisXCoarseOccupancyBit(int3 coarseCell)
-{
-    return uint(coarseCell.x | (coarseCell.y << 1) | (coarseCell.z << 2));
 }
 
 inline uint VoxelisXMicroOccupancyBit(int3 microCell)
@@ -361,7 +349,7 @@ inline bool VoxelisXTraceBrickRay(float3 entryPositionInBrick, float3 rayDir, fl
         }
 
         int3 coarseCell = cursor.cell >> BRICK_MICRO_SHIFT;
-        uint coarseBit = VoxelisXCoarseOccupancyBit(coarseCell);
+        uint coarseBit = uint(coarseCell.x | (coarseCell.y << 1) | (coarseCell.z << 2));
         if ((entryNormal_coarseOccupancy & (1u << coarseBit)) == 0u)
         {
             // Faster than compute the exact distance needed to jump multiple voxels

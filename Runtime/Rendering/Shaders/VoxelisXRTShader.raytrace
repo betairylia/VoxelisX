@@ -62,7 +62,7 @@ struct VoxelisXPathState
     half3 albedo;
     half3 emission;
     float3 bounceRayOrigin;
-    half3 bounceRayDirection;
+    float3 bounceRayDirection;
     half3 worldNormal;
     float3 prevWorldHitPosition;
     uint voxelFaceHash;
@@ -73,12 +73,12 @@ inline void VoxelisXInitPathState(out VoxelisXPathState path, uint rngState)
     path.bounceIndex = 0u;
     path.rngState = rngState;
     path.previousTransparentMaterial = 0;
-    path.k = 1.0f;
-    path.albedo = float3(0.0f, 0.0f, 0.0f);
-    path.emission = float3(0.0f, 0.0f, 0.0f);
+    path.k = 1.0h;
+    path.albedo = float3(0.0h, 0.0h, 0.0h);
+    path.emission = float3(0.0h, 0.0h, 0.0h);
     path.bounceRayOrigin = float3(0.0f, 0.0f, 0.0f);
     path.bounceRayDirection = float3(0.0f, 0.0f, 1.0f);
-    path.worldNormal = float3(0.0f, 0.0f, 1.0f);
+    path.worldNormal = float3(0.0h, 0.0h, 1.0h);
     path.prevWorldHitPosition = float3(0.0f, 0.0f, 0.0f);
     path.voxelFaceHash = 0u;
 }
