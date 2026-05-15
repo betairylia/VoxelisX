@@ -276,7 +276,18 @@ inline uint VoxelisXBrickRayNormalFlags(VoxelisXBrickRayCursor cursor, float3 ra
     }
 
     bool3 axisMask = VoxelisXBrickRayNextAxisMask(cursor.enteredSideDist, cursor.localT);
-    return dot(axisMask, int3(0, 2, 4)) + ((1 - dot(axisMask, VoxelisXBrickRayStepDirection(rayDir))) >> 1);
+    // This is brutal. Ideas?
+    // Ties can happen on voxel edges/corners. Pick one face deterministically,
+    // matching the X/Y/Z priority used by the brick AABB entry normal.
+    uint xUse = axisMask.x ? 0xFFFFFFFFu : 0u;
+    uint yUse = (axisMask.y ? 0xFFFFFFFFu : 0u) & ~xUse;
+    uint zUse = ~(xUse | yUse);
+
+    uint xFlag = rayDir.x > 0.0f ? 0b000010 : 0b000001;
+    uint yFlag = rayDir.y > 0.0f ? 0b001000 : 0b000100;
+    uint zFlag = rayDir.z > 0.0f ? 0b100000 : 0b010000;
+
+    return (xFlag & xUse) | (yFlag & yUse) | (zFlag & zUse);
 }
 
 inline int VoxelisXReadBrick(uint brickBase, int3 localBlockPos)
