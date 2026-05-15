@@ -17,7 +17,7 @@ Shader "VoxelisX/BrickRTTest"
             }
             
             HLSLPROGRAM
-            #pragma enable_ray_tracing_shader_debug_symbols
+            // #pragma enable_ray_tracing_shader_debug_symbols
             #pragma target 6.2
             #pragma use_dxc
 
