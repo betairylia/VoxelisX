@@ -63,6 +63,7 @@
 #define BRICK_RAY_MIN_DIR 1e-20f
 #endif
 
+#include "RayPayload.hlsl"
 #include "VoxelisXUtils.hlsl"
 #include "Utils/BlueNoise.hlsl"
 #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
@@ -75,22 +76,25 @@ struct VoxelisXBrickTraceContext
     uint primitiveIndex;
 };
 
+/*
+float t
+6bit normal
+16bit matID
+normalFlags: 0b000000 -> <0/low> X+ X- Y+ Y- Z+ Z- <5/high>, only 1 bit set; 0 means miss
+*/
 struct VoxelisXBrickHit
 {
-    bool hit;
     float t;
-    uint materialID_faceHash;
-    half3 objectNormal;
+    uint materialID_faceNormal;
 };
 
 struct VoxelisXBrickAABBCandidate
 {
-    bool hit;
+    uint normalFlags;
     uint brickID;
     uint coarseOccupancy;
     int3 brickOrigin;
     float t;
-    int3 normal;
 };
 
 struct VoxelisXBrickRayCursor
@@ -107,14 +111,19 @@ struct VoxelisXBrickRayConstants
     float3 tStart;
 };
 
-struct VoxelisXBrickRayHit
-{
-    bool hit;
-    int3 cell;
-    int3 normal;
-    float t;
-    uint stepIndex;
+static half3 objectNormals[6] = {
+    half3( 1, 0, 0),
+    half3(-1, 0, 0),
+    half3(0,  1, 0),
+    half3(0, -1, 0),
+    half3(0, 0,  1),
+    half3(0, 0, -1),
 };
+
+inline half3 UnpackObjectNormal(uint normalFlag)
+{
+    return objectNormals[firstbitlow(normalFlag)];
+}
 
 StructuredBuffer<uint> g_bricks;
 float4x4 _PrevObjectToWorld;
@@ -123,10 +132,8 @@ uint _SectorHashSeed;
 inline VoxelisXBrickHit VoxelisXMakeBrickMiss()
 {
     VoxelisXBrickHit hit;
-    hit.hit = false;
     hit.t = 0.0f;
-    hit.objectNormal = half3(0, 0, 0);
-    hit.materialID_faceHash = 0u;
+    hit.materialID_faceNormal = 0u;
     return hit;
 }
 
@@ -209,15 +216,6 @@ inline float3 VoxelisXBrickRayBoundaryOffset(float3 rayDir)
         rayDir.z >= 0.0f ? 1.0f : 0.0f);
 }
 
-inline void VoxelisXClearBrickRayHit(out VoxelisXBrickRayHit hit)
-{
-    hit.hit = false;
-    hit.cell = int3(0, 0, 0);
-    hit.normal = int3(0, 0, 0);
-    hit.t = 0.0f;
-    hit.stepIndex = 0;
-}
-
 inline VoxelisXBrickRayCursor VoxelisXCreateBrickRayCursor(float3 entryPositionInGrid, int gridSize)
 {
     VoxelisXBrickRayCursor cursor;
@@ -270,29 +268,15 @@ inline void VoxelisXStepBrickRay(inout VoxelisXBrickRayCursor cursor, float3 ent
     cursor.stepIndex++;
 }
 
-inline float VoxelisXBrickRayCurrentT(VoxelisXBrickRayCursor cursor, float entryT)
-{
-    return entryT + cursor.localT;
-}
-
-inline int3 VoxelisXBrickRayCurrentNormal(VoxelisXBrickRayCursor cursor, float3 rayDir, int3 entryNormal)
+inline uint VoxelisXBrickRayNormalFlags(VoxelisXBrickRayCursor cursor, float3 rayDir, uint entryNormalFlags)
 {
     if (cursor.stepIndex == 0u)
     {
-        return entryNormal;
+        return entryNormalFlags;
     }
 
     bool3 axisMask = VoxelisXBrickRayNextAxisMask(cursor.enteredSideDist, cursor.localT);
-    return VoxelisXBrickRayIntMask(axisMask) * -VoxelisXBrickRayStepDirection(rayDir);
-}
-
-inline void VoxelisXMakeBrickRayHit(VoxelisXBrickRayCursor cursor, float3 rayDir, float entryT, int3 entryNormal, out VoxelisXBrickRayHit hit)
-{
-    hit.hit = true;
-    hit.cell = cursor.cell;
-    hit.normal = VoxelisXBrickRayCurrentNormal(cursor, rayDir, entryNormal);
-    hit.t = VoxelisXBrickRayCurrentT(cursor, entryT);
-    hit.stepIndex = cursor.stepIndex;
+    return dot(axisMask, int3(0, 2, 4)) + ((1 - dot(axisMask, VoxelisXBrickRayStepDirection(rayDir))) >> 1);
 }
 
 inline int VoxelisXReadBrick(uint brickBase, int3 localBlockPos)
@@ -345,17 +329,14 @@ inline bool VoxelisXShouldTraceMicroOccupancy(uint occLo, uint occHi, float3 ray
     return true;
 }
 
-inline bool VoxelisXShouldTerminateBrickRay(int blockID, VoxelisXBrickRayCursor cursor, float3 rayDir, int3 entryNormal, float entryT)
+inline bool VoxelisXShouldTerminateBrickRay(int blockID, VoxelisXBrickRayCursor cursor, float3 rayDir, uint entryNormalFlags, float entryT)
 {
     bool shouldTerminate = IsOpaque(blockID);
     UNITY_BRANCH if (shouldTerminate) return shouldTerminate;
     
     // Transparency
     if (cursor.stepIndex == 0 && entryT == 0) return false;
-    int3 normal = VoxelisXBrickRayCurrentNormal(cursor, rayDir, entryNormal);
-    int sign = normal.x + normal.y + normal.z;
-    int faceBit = dot(abs(normal), int3(0, 2, 4)) + ((1 - sign) >> 1);
-    shouldTerminate = GetFaceBits(blockID) & (1 << faceBit);
+    shouldTerminate = GetFaceBits(blockID) & VoxelisXBrickRayNormalFlags(cursor, rayDir, entryNormalFlags);
     return shouldTerminate;
 }
 
@@ -400,29 +381,24 @@ inline bool VoxelisXIntersectBrickAABB(VoxelisXBrickTraceContext context, out Vo
     int3 hitNormal;
     if (largestTmin == tmin.x)
     {
-        hitNormal = int3(context.objectRayDirection.x > 0 ? -1 : 1, 0, 0);
+        candidate.normalFlags = context.objectRayDirection.x > 0 ? 0b000010 : 0b000001;
     }
     else if (largestTmin == tmin.y)
     {
-        hitNormal = int3(0, context.objectRayDirection.y > 0 ? -1 : 1, 0);
+        candidate.normalFlags = context.objectRayDirection.y > 0 ? 0b001000 : 0b000100;
     }
     else
     {
-        hitNormal = int3(0, 0, context.objectRayDirection.z > 0 ? -1 : 1);
+        candidate.normalFlags = context.objectRayDirection.z > 0 ? 0b100000 : 0b010000;
     }
 
-    candidate.hit = true;
     candidate.brickOrigin = int3(bX, bY, bZ);
     candidate.t = max(0, largestTmin);
-    candidate.normal = hitNormal;
     return true;
 }
 
-inline bool VoxelisXTraceBrickRay(uint brickID, float3 entryPositionInBrick, float3 rayDir, float entryT, int3 entryNormal, out VoxelisXBrickRayHit hit, out int materialID)
+inline bool VoxelisXTraceBrickRay(uint brickID, float3 entryPositionInBrick, float3 rayDir, float entryT, uint entryNormalFlags, out VoxelisXBrickHit hit)
 {
-    VoxelisXClearBrickRayHit(hit);
-    materialID = 0;
-
     uint brickBase = VoxelisXBrickBase(brickID);
     uint coarseOccupancy = VoxelisXGetCoarseOccupancy(g_bricks[brickBase]);
     VoxelisXBrickRayCursor cursor = VoxelisXCreateBrickRayCursor(entryPositionInBrick, SIZE_IN_BLOCKS);
@@ -465,12 +441,12 @@ inline bool VoxelisXTraceBrickRay(uint brickID, float3 entryPositionInBrick, flo
         {
             int blockID = VoxelisXReadBrick(brickBase + BRICK_BLOCK_DATA_OFFSET, cursor.cell);
             bool shouldTerminate = VoxelisXShouldTerminateBrickRay(
-                blockID, cursor, rayDir, entryNormal, entryT);
+                blockID, cursor, rayDir, entryNormalFlags, entryT);
 
             if (shouldTerminate)
             {
-                materialID = blockID;
-                VoxelisXMakeBrickRayHit(cursor, rayDir, entryT, entryNormal, hit);
+                hit.t = entryT + cursor.localT;
+                hit.materialID_faceNormal = (blockID << 16) + VoxelisXBrickRayNormalFlags(cursor, rayDir, entryNormalFlags);
                 return true;
             }
         }
@@ -493,15 +469,7 @@ inline VoxelisXBrickHit VoxelisXTraceBrickPrimitive(VoxelisXBrickTraceContext co
 
     float3 entryPositionInBrick = context.objectRayOrigin + context.objectRayDirection * candidate.t - float3(candidate.brickOrigin);
 
-    VoxelisXBrickRayHit rayHit;
-    int materialID;
-    if (VoxelisXTraceBrickRay(candidate.brickID, entryPositionInBrick, context.objectRayDirection, candidate.t, candidate.normal, rayHit, materialID))
-    {
-        result.hit = true;
-        result.t = rayHit.t;
-        result.materialID_faceHash = (materialID << 16) | VoxelisXMakeVoxelFaceHash(candidate.brickOrigin + rayHit.cell, rayHit.normal);
-        result.objectNormal = half3(rayHit.normal);
-    }
+    VoxelisXTraceBrickRay(candidate.brickID, entryPositionInBrick, context.objectRayDirection, candidate.t, candidate.normalFlags, result);
 
     return result;
 }
@@ -509,8 +477,8 @@ inline VoxelisXBrickHit VoxelisXTraceBrickPrimitive(VoxelisXBrickTraceContext co
 inline void VoxelisXApplyVoxelClosestHitMinimumPayload(inout RayPayload payload, VoxelisXBrickHit hit)
 {
     payload.T = RayTCurrent();
-    payload.materialID_voxelFaceHash = hit.materialID_faceHash;
-    payload.packedWorldNormal = VoxelisXPackWorldNormal(mul((float3x3)ObjectToWorld3x4(), hit.objectNormal));
+    payload.materialID_voxelFaceHash = hit.materialID_faceNormal;
+    payload.packedWorldNormal = VoxelisXPackWorldNormal(mul((float3x3)ObjectToWorld3x4(), UnpackObjectNormal(hit.materialID_faceNormal)));
 
     float3 objectHitPosition = ObjectRayOrigin() + ObjectRayDirection() * payload.T;
     float3 worldHitPosition = WorldRayOrigin() + WorldRayDirection() * payload.T;

@@ -28,8 +28,7 @@ Shader "VoxelisX/BrickRTTest"
 
             struct AttributeData
             {
-                uint matID_faceHash;
-                half3 normal;
+                uint matID_faceNormal;
             };
 
             float _Smoothness;
@@ -51,11 +50,10 @@ Shader "VoxelisX/BrickRTTest"
                 context.primitiveIndex = PrimitiveIndex();
 
                 VoxelisXBrickHit hit = VoxelisXTraceBrickPrimitive(context);
-                if (hit.hit)
+                if (hit.materialID_faceNormal)
                 {
                     AttributeData attrib;
-                    attrib.normal = hit.objectNormal;
-                    attrib.matID_faceHash = hit.materialID_faceHash;
+                    attrib.matID_faceNormal = hit.materialID_faceNormal;
                     ReportHit(hit.t, 0, attrib);
                 }
             }
@@ -65,10 +63,8 @@ Shader "VoxelisX/BrickRTTest"
             void ClosestHitMain(inout RayPayload payload : SV_RayPayload, AttributeData attribs : SV_IntersectionAttributes)
             {
                 VoxelisXBrickHit hit;
-                hit.hit = true;
                 hit.t = RayTCurrent();
-                hit.materialID_faceHash = attribs.matID_faceHash;
-                hit.objectNormal = attribs.normal;
+                hit.materialID_faceNormal = attribs.matID_faceNormal;
 
                 VoxelisXApplyVoxelClosestHitMinimumPayload(payload, hit);
             }
