@@ -27,13 +27,7 @@ Shader "VoxelisX/BrickRTTest"
             #include "Utils/BlueNoise.hlsl"
 
             #include "VoxelisXBrickTrace.hlsl"
-
-            struct AttributeData
-            {
-                // (31) [matID:16] [reserved] [faceNormalFlags:6] (0)
-                uint matID_faceNormal;
-            };
-
+            
             float _Smoothness;
             float _Metallic;
             float _IOR;
@@ -46,13 +40,8 @@ Shader "VoxelisX/BrickRTTest"
             [shader("intersection")]
             void IntersectionMain()
             {
-                float T;
                 AttributeData attrib;
-                {
-                    VoxelisXBrickHit hit = VoxelisXTraceBrickPrimitive();
-                    T = hit.t;
-                    attrib.matID_faceNormal = hit.materialID_faceNormal;
-                }
+                float T = VoxelisXTraceBrickPrimitive(attrib);
                 
                 if (attrib.matID_faceNormal)
                 {

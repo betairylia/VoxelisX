@@ -80,18 +80,10 @@ struct VoxelisXBrickHit
     uint materialID_faceNormal;
 };
 
-struct VoxelisXBrickRayCursor
+struct AttributeData
 {
-    int3 cell;
-    float3 enteredSideDist;
-    float localT;
-    uint stepIndex;
-};
-
-struct VoxelisXBrickRayConstants
-{
-    half3 invDir;
-    float3 tStart;
+    // (31) [matID:16] [reserved] [faceNormalFlags:6] (0)
+    uint matID_faceNormal;
 };
 
 static half3 objectNormals[6] = {
@@ -164,15 +156,7 @@ inline int VoxelisXBrickRayStepAxis(half direction)
     return direction > 0.0h ? 1 : -1;
 }
 
-inline int3 VoxelisXBrickRayStepDirection(half3 rayDir)
-{
-    return int3(
-        VoxelisXBrickRayStepAxis(rayDir.x),
-        VoxelisXBrickRayStepAxis(rayDir.y),
-        VoxelisXBrickRayStepAxis(rayDir.z));
-}
-
-inline half VoxelisXBrickRaySafeInvAxis(float direction)
+inline float VoxelisXBrickRaySafeInvAxis(float direction)
 {
     if (abs(direction) >= BRICK_RAY_MIN_DIR)
     {
@@ -182,9 +166,9 @@ inline half VoxelisXBrickRaySafeInvAxis(float direction)
     return direction < 0.0f ? -1.0f / BRICK_RAY_MIN_DIR : 1.0f / BRICK_RAY_MIN_DIR;
 }
 
-inline half3 VoxelisXBrickRaySafeInvDir(float3 rayDir)
+inline float3 VoxelisXBrickRaySafeInvDir(float3 rayDir)
 {
-    return half3(
+    return float3(
         VoxelisXBrickRaySafeInvAxis(rayDir.x),
         VoxelisXBrickRaySafeInvAxis(rayDir.y),
         VoxelisXBrickRaySafeInvAxis(rayDir.z));
@@ -328,12 +312,9 @@ inline bool VoxelisXShouldTerminateBrickRay(int blockID, VoxelisXBrickRayCursor 
     return shouldTerminate;
 }
 
-inline bool VoxelisXTraceBrickRay(float3 entryPositionInBrick, float3 rayDir, float entryT, uint entryNormalFlags, out VoxelisXBrickHit hit)
+inline float VoxelisXTraceBrickRay(float3 entryPositionInBrick, float3 rayDir, float entryT, uint entryNormal_coarseOccupancy, out AttributeData attrib)
 {
-    uint entryNormal_coarseOccupancy = (entryNormalFlags << 26) | VoxelisXGetCoarseOccupancy(
-        g_bricks[VoxelisXBrickBase(PrimitiveIndex())]);
-    VoxelisXBrickRayCursor cursor = VoxelisXCreateBrickRayCursor(entryPositionInBrick, SIZE_IN_BLOCKS);
-    VoxelisXBrickRayConstants rayConstants = VoxelisXCreateBrickRayConstants(entryPositionInBrick, rayDir);
+    uint entryNormal_coarseOccupancy = (entryNormalFlags << 26)
     uint occLo = 0u;
     uint occHi = 0u;
     
@@ -376,19 +357,20 @@ inline bool VoxelisXTraceBrickRay(float3 entryPositionInBrick, float3 rayDir, fl
 
             if (shouldTerminate)
             {
-                hit.t = entryT + cursor.localT;
-                hit.materialID_faceNormal = (blockID << 16) + VoxelisXBrickRayNormalFlags(cursor, rayDir, (entryNormal_coarseOccupancy >> 26));
-                return true;
+                attrib.matID_faceNormal = (blockID << 16) + VoxelisXBrickRayNormalFlags(cursor, rayDir, (entryNormal_coarseOccupancy >> 26));
+                return entryT + cursor.localT;
             }
         }
 
         VoxelisXStepBrickRay(cursor, entryPositionInBrick, rayDir, rayConstants);
     }
 
-    return false;
+    // no hit
+    attrib.matID_faceNormal = 0u;
+    return 0;
 }
 
-inline VoxelisXBrickHit VoxelisXTraceBrickPrimitive()
+inline float VoxelisXTraceBrickPrimitive(out AttributeData attrib)
 {
     uint brickInfo = g_bricks[VoxelisXBrickBase(PrimitiveIndex())];
     
@@ -420,8 +402,8 @@ inline VoxelisXBrickHit VoxelisXTraceBrickPrimitive()
 
     if (largestTmin > smallestTmax || smallestTmax < 0 || largestTmin > RayTCurrent())
     {
-        VoxelisXBrickHit result = VoxelisXMakeBrickMiss();
-        return result;
+        attrib.matID_faceNormal = 0;
+        return 0;
     }
     
     float t = max(0, largestTmin);
@@ -446,9 +428,10 @@ inline VoxelisXBrickHit VoxelisXTraceBrickPrimitive()
     }
 
     VoxelisXBrickHit result = VoxelisXMakeBrickMiss();
-    VoxelisXTraceBrickRay(entryPositionInBrick, rayDir, t, normalFlags, result);
-
-    return result;
+    return VoxelisXTraceBrickRay(entryPositionInBrick, rayDir, t,
+        (normalFlags << 26)  | VoxelisXGetCoarseOccupancy(
+            g_bricks[VoxelisXBrickBase(PrimitiveIndex())]),
+        attrib);
 }
 
 #endif
