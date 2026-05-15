@@ -188,6 +188,7 @@ inline uint VoxelisXBrickRayNormalFlags(uint index, int3 cell, float3 tStart, ha
 {
     if (index == 0u)
     {
+        T = 0;
         return entryNormalFlags;
     }
     

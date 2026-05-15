@@ -1,4 +1,4 @@
-#pragma target 6.2
+#pragma target 6.6
 #pragma use_dxc
 
 // Uncomment this pragma for debugging the HLSL code in PIX. GPU performance will be impacted.
