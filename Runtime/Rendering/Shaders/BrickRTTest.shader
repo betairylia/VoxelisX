@@ -18,6 +18,7 @@ Shader "VoxelisX/BrickRTTest"
             
             HLSLPROGRAM
             #pragma enable_ray_tracing_shader_debug_symbols
+            #pragma use_dxc
 
             #include "RayPayload.hlsl"
             #include "Utils.hlsl"
@@ -28,6 +29,7 @@ Shader "VoxelisX/BrickRTTest"
 
             struct AttributeData
             {
+                // (31) [matID:16] [reserved] [faceNormalFlags:6] (0)
                 uint matID_faceNormal;
             };
 
@@ -43,18 +45,18 @@ Shader "VoxelisX/BrickRTTest"
             [shader("intersection")]
             void IntersectionMain()
             {
-                VoxelisXBrickTraceContext context;
-                context.objectRayOrigin = ObjectRayOrigin();
-                context.objectRayDirection = ObjectRayDirection();
-                context.currentRayT = RayTCurrent();
-                context.primitiveIndex = PrimitiveIndex();
-
-                VoxelisXBrickHit hit = VoxelisXTraceBrickPrimitive(context);
-                if (hit.materialID_faceNormal)
+                float T;
+                AttributeData attrib;
                 {
-                    AttributeData attrib;
+                    VoxelisXBrickHit hit = VoxelisXTraceBrickPrimitive();
+                    T = hit.t;
                     attrib.matID_faceNormal = hit.materialID_faceNormal;
-                    ReportHit(hit.t, 0, attrib);
+                }
+                
+                if (attrib.matID_faceNormal)
+                {
+                    ReportHit(T, 0, attrib);
+                    return;
                 }
             }
             #endif
@@ -63,10 +65,14 @@ Shader "VoxelisX/BrickRTTest"
             void ClosestHitMain(inout RayPayload payload : SV_RayPayload, AttributeData attribs : SV_IntersectionAttributes)
             {
                 VoxelisXBrickHit hit;
-                hit.t = RayTCurrent();
-                hit.materialID_faceNormal = attribs.matID_faceNormal;
+                payload.T = RayTCurrent();
+                payload.materialID_voxelFaceHash = attribs.matID_faceNormal;
+                payload.packedWorldNormal = VoxelisXPackWorldNormal(mul((float3x3)ObjectToWorld3x4(), UnpackObjectNormal(attribs.matID_faceNormal)));
 
-                VoxelisXApplyVoxelClosestHitMinimumPayload(payload, hit);
+                float3 objectHitPosition = ObjectRayOrigin() + ObjectRayDirection() * payload.T;
+                float3 worldHitPosition = WorldRayOrigin() + WorldRayDirection() * payload.T;
+                // payload.packedPrevWorldOffset = VoxelisXPackFloat3ToHalf4(
+                //     mul(_PrevObjectToWorld, float4(objectHitPosition, 1.0f)).xyz - worldHitPosition);
             }
             
             // [shader("anyhit")]

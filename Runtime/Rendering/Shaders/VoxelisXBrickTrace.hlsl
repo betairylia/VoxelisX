@@ -88,15 +88,6 @@ struct VoxelisXBrickHit
     uint materialID_faceNormal;
 };
 
-struct VoxelisXBrickAABBCandidate
-{
-    uint normalFlags;
-    uint brickID;
-    uint coarseOccupancy;
-    int3 brickOrigin;
-    float t;
-};
-
 struct VoxelisXBrickRayCursor
 {
     int3 cell;
@@ -351,66 +342,9 @@ inline bool VoxelisXShouldTerminateBrickRay(int blockID, VoxelisXBrickRayCursor 
     return shouldTerminate;
 }
 
-inline bool VoxelisXIntersectBrickAABB(VoxelisXBrickTraceContext context, out VoxelisXBrickAABBCandidate candidate)
+inline bool VoxelisXTraceBrickRay(float3 entryPositionInBrick, float3 rayDir, float entryT, uint entryNormalFlags, out VoxelisXBrickHit hit)
 {
-    candidate.brickID = context.primitiveIndex;
-
-    uint brickInfo = g_bricks[VoxelisXBrickBase(candidate.brickID)];
-    
-    // Empty brick
-    if(VoxelisXGetCoarseOccupancy(brickInfo) == 0)
-    {
-        return false;
-    }
-
-    uint idx = brickInfo & BRICK_INFO_ABSOLUTE_INDEX_MASK;
-    int bX = int((idx & BRICK_POS_MASK) << SHIFT_SIZE_IN_BLOCKS);
-    int bY = int(((idx >> SHIFT_SIZE_IN_BRICKS) & BRICK_POS_MASK) << SHIFT_SIZE_IN_BLOCKS);
-    int bZ = int((idx >> (SHIFT_SIZE_IN_BRICKS + SHIFT_SIZE_IN_BRICKS)) << SHIFT_SIZE_IN_BLOCKS);
-
-    float3 aabbMin = float3(bX, bY, bZ);
-    float3 aabbMax = float3(bX + SIZE_IN_BLOCKS, bY + SIZE_IN_BLOCKS, bZ + SIZE_IN_BLOCKS);
-
-    float3 invDir = 1.0f / context.objectRayDirection;
-    float3 t0 = (aabbMin - context.objectRayOrigin) * invDir;
-    float3 t1 = (aabbMax - context.objectRayOrigin) * invDir;
-
-    float3 tmin = min(t0, t1);
-    float3 tmax = max(t0, t1);
-
-    float largestTmin = max(max(tmin.x, tmin.y), tmin.z);
-    float smallestTmax = min(min(tmax.x, tmax.y), tmax.z);
-
-    if (largestTmin > smallestTmax || smallestTmax < 0 || largestTmin > context.currentRayT)
-    {
-        return false;
-    }
-    
-    // TODO: Do coarse bit (2x2x2) early reject here? 
-    // VoxelisXGetCoarseOccupancy(brickInfo)
-
-    int3 hitNormal;
-    if (largestTmin == tmin.x)
-    {
-        candidate.normalFlags = context.objectRayDirection.x > 0 ? 0b000010 : 0b000001;
-    }
-    else if (largestTmin == tmin.y)
-    {
-        candidate.normalFlags = context.objectRayDirection.y > 0 ? 0b001000 : 0b000100;
-    }
-    else
-    {
-        candidate.normalFlags = context.objectRayDirection.z > 0 ? 0b100000 : 0b010000;
-    }
-
-    candidate.brickOrigin = int3(bX, bY, bZ);
-    candidate.t = max(0, largestTmin);
-    return true;
-}
-
-inline bool VoxelisXTraceBrickRay(uint brickID, float3 entryPositionInBrick, float3 rayDir, float entryT, uint entryNormalFlags, out VoxelisXBrickHit hit)
-{
-    uint brickBase = VoxelisXBrickBase(brickID);
+    uint brickBase = VoxelisXBrickBase(PrimitiveIndex());
     uint coarseOccupancy = VoxelisXGetCoarseOccupancy(g_bricks[brickBase]);
     VoxelisXBrickRayCursor cursor = VoxelisXCreateBrickRayCursor(entryPositionInBrick, SIZE_IN_BLOCKS);
     VoxelisXBrickRayConstants rayConstants = VoxelisXCreateBrickRayConstants(entryPositionInBrick, rayDir);
@@ -468,33 +402,65 @@ inline bool VoxelisXTraceBrickRay(uint brickID, float3 entryPositionInBrick, flo
     return false;
 }
 
-inline VoxelisXBrickHit VoxelisXTraceBrickPrimitive(VoxelisXBrickTraceContext context)
+inline VoxelisXBrickHit VoxelisXTraceBrickPrimitive()
 {
     VoxelisXBrickHit result = VoxelisXMakeBrickMiss();
+    
+    uint brickInfo = g_bricks[VoxelisXBrickBase(PrimitiveIndex())];
+    
+    // Empty brick
+    // if(VoxelisXGetCoarseOccupancy(brickInfo) == 0)
+    // {
+    //     return false;
+    // }
 
-    VoxelisXBrickAABBCandidate candidate;
-    if (!VoxelisXIntersectBrickAABB(context, candidate))
+    // AABB Intersection
+    uint idx = brickInfo & BRICK_INFO_ABSOLUTE_INDEX_MASK;
+    int bX = int((idx & BRICK_POS_MASK) << SHIFT_SIZE_IN_BLOCKS);
+    int bY = int(((idx >> SHIFT_SIZE_IN_BRICKS) & BRICK_POS_MASK) << SHIFT_SIZE_IN_BLOCKS);
+    int bZ = int((idx >> (SHIFT_SIZE_IN_BRICKS + SHIFT_SIZE_IN_BRICKS)) << SHIFT_SIZE_IN_BLOCKS);
+
+    float3 aabbMin = float3(bX, bY, bZ);
+    float3 aabbMax = float3(bX + SIZE_IN_BLOCKS, bY + SIZE_IN_BLOCKS, bZ + SIZE_IN_BLOCKS);
+
+    float3 invDir = 1.0f / ObjectRayDirection();
+    float3 t0 = (aabbMin - ObjectRayOrigin()) * invDir;
+    float3 t1 = (aabbMax - ObjectRayOrigin()) * invDir;
+
+    float3 tmin = min(t0, t1);
+    float3 tmax = max(t0, t1);
+
+    float largestTmin = max(max(tmin.x, tmin.y), tmin.z);
+    float smallestTmax = min(min(tmax.x, tmax.y), tmax.z);
+
+    if (largestTmin > smallestTmax || smallestTmax < 0 || largestTmin > RayTCurrent())
     {
         return result;
     }
+    
+    float t = max(0, largestTmin);
+    half3 entryPositionInBrick = ObjectRayOrigin() + ObjectRayDirection() * t - float3(bX, bY, bZ);
+    
+    // TODO: Do coarse bit (2x2x2) early reject here? 
+    // VoxelisXGetCoarseOccupancy(brickInfo)
 
-    float3 entryPositionInBrick = context.objectRayOrigin + context.objectRayDirection * candidate.t - float3(candidate.brickOrigin);
+    uint normalFlags;
+    if (largestTmin == tmin.x)
+    {
+        normalFlags = ObjectRayDirection().x > 0 ? 0b000010 : 0b000001;
+    }
+    else if (largestTmin == tmin.y)
+    {
+        normalFlags = ObjectRayDirection().y > 0 ? 0b001000 : 0b000100;
+    }
+    else
+    {
+        normalFlags = ObjectRayDirection().z > 0 ? 0b100000 : 0b010000;
+    }
 
-    VoxelisXTraceBrickRay(candidate.brickID, entryPositionInBrick, context.objectRayDirection, candidate.t, candidate.normalFlags, result);
+    VoxelisXTraceBrickRay(entryPositionInBrick, ObjectRayDirection(), t, normalFlags, result);
 
     return result;
-}
-
-inline void VoxelisXApplyVoxelClosestHitMinimumPayload(inout RayPayload payload, VoxelisXBrickHit hit)
-{
-    payload.T = RayTCurrent();
-    payload.materialID_voxelFaceHash = hit.materialID_faceNormal;
-    payload.packedWorldNormal = VoxelisXPackWorldNormal(mul((float3x3)ObjectToWorld3x4(), UnpackObjectNormal(hit.materialID_faceNormal)));
-
-    float3 objectHitPosition = ObjectRayOrigin() + ObjectRayDirection() * payload.T;
-    float3 worldHitPosition = WorldRayOrigin() + WorldRayDirection() * payload.T;
-    payload.packedPrevWorldOffset = VoxelisXPackFloat3ToHalf4(
-        mul(_PrevObjectToWorld, float4(objectHitPosition, 1.0f)).xyz - worldHitPosition);
 }
 
 #endif
