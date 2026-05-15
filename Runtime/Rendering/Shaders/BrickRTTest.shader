@@ -18,6 +18,7 @@ Shader "VoxelisX/BrickRTTest"
             
             HLSLPROGRAM
             #pragma enable_ray_tracing_shader_debug_symbols
+            #pragma target 6.2
             #pragma use_dxc
 
             #include "RayPayload.hlsl"
@@ -71,8 +72,8 @@ Shader "VoxelisX/BrickRTTest"
 
                 float3 objectHitPosition = ObjectRayOrigin() + ObjectRayDirection() * payload.T;
                 float3 worldHitPosition = WorldRayOrigin() + WorldRayDirection() * payload.T;
-                // payload.packedPrevWorldOffset = VoxelisXPackFloat3ToHalf4(
-                //     mul(_PrevObjectToWorld, float4(objectHitPosition, 1.0f)).xyz - worldHitPosition);
+                payload.packedPrevWorldOffset = VoxelisXPackFloat3ToHalf4(
+                mul(_PrevObjectToWorld, float4(objectHitPosition, 1.0f)).xyz - worldHitPosition);
             }
             
             // [shader("anyhit")]

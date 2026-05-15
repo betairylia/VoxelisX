@@ -9,7 +9,7 @@ struct RayPayload
     float T;
     uint materialID_voxelFaceHash;
     uint packedWorldNormal;
-    // uint2 packedPrevWorldOffset;
+    uint2 packedPrevWorldOffset;
 };
 
 inline void VoxelisXClearRayPayload(out RayPayload payload)

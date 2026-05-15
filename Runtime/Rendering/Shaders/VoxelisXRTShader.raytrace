@@ -1,3 +1,9 @@
+#pragma target 6.2
+#pragma use_dxc
+
+// Uncomment this pragma for debugging the HLSL code in PIX. GPU performance will be impacted.
+// #pragma enable_ray_tracing_shader_debug_symbols
+
 // #include "UnityShaderVariables.cginc"
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
 #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Packing.hlsl"
@@ -8,6 +14,7 @@
 #include "Utils.hlsl"
 #include "Utils/BlueNoise.hlsl"
 #include "VoxelisXRayPayloadUtils.hlsl"
+#include "VoxelisXUtils.hlsl"
 
 #define VOXELISXRT_BOUNCE 1
 
@@ -44,10 +51,6 @@ uint g_EnableSkySun;
 float g_SkySunDiskRadius;
 float g_SkySunFlareRadius;
 
-// Uncomment this pragma for debugging the HLSL code in PIX. GPU performance will be impacted.
-// #pragma enable_ray_tracing_shader_debug_symbols
-#pragma use_dxc
-
 #pragma max_recursion_depth 1
 
 struct VoxelisXPathState
@@ -55,12 +58,12 @@ struct VoxelisXPathState
     uint bounceIndex;
     uint rngState;
     int previousTransparentMaterial;
-    float k;
-    float3 albedo;
-    float3 emission;
+    half k;
+    half3 albedo;
+    half3 emission;
     float3 bounceRayOrigin;
-    float3 bounceRayDirection;
-    float3 worldNormal;
+    half3 bounceRayDirection;
+    half3 worldNormal;
     float3 prevWorldHitPosition;
     uint voxelFaceHash;
 };
@@ -101,8 +104,8 @@ inline void VoxelisXShadeVoxelHit(
 
     if (path.bounceIndex == 0u)
     {
-        // path.prevWorldHitPosition = worldHitPosition + VoxelisXUnpackFloat3FromHalf4(payload.packedPrevWorldOffset);
-        path.prevWorldHitPosition = worldHitPosition;
+        path.prevWorldHitPosition = worldHitPosition + VoxelisXUnpackFloat3FromHalf4(payload.packedPrevWorldOffset);
+        // path.prevWorldHitPosition = worldHitPosition;
         path.voxelFaceHash = payload.materialID_voxelFaceHash & 0xFFFFu;
     }
 
