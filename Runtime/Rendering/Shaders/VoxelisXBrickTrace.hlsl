@@ -3,10 +3,12 @@
 
 #ifndef SHIFT_SIZE_IN_BLOCKS
 #define SHIFT_SIZE_IN_BLOCKS 3
+#define SHIFT_SIZE_IN_BLOCKS_U 3u
 #endif
 
 #ifndef SIZE_IN_BLOCKS
 #define SIZE_IN_BLOCKS (1 << SHIFT_SIZE_IN_BLOCKS)
+#define SIZE_IN_BLOCKS_U (1u << SHIFT_SIZE_IN_BLOCKS_U)
 #endif
 
 #ifndef SHIFT_SIZE_IN_BRICKS
@@ -182,69 +184,25 @@ inline float3 VoxelisXBrickRayBoundaryOffset(float3 rayDir)
         rayDir.z >= 0.0f ? 1.0f : 0.0f);
 }
 
-inline VoxelisXBrickRayCursor VoxelisXCreateBrickRayCursor(float3 entryPositionInGrid, int gridSize)
+inline uint VoxelisXBrickRayNormalFlags(uint index, int3 cell, float3 tStart, half3 rayDir, half3 invDir, uint entryNormalFlags)
 {
-    VoxelisXBrickRayCursor cursor;
-
-    float3 gridMax = float3(gridSize, gridSize, gridSize) - BRICK_RAY_GRID_EPSILON;
-    float3 entryPos = clamp(entryPositionInGrid, 0.0f, gridMax);
-
-    cursor.cell = int3(floor(entryPos));
-    cursor.enteredSideDist = float3(0.0f, 0.0f, 0.0f);
-    cursor.localT = 0.0f;
-    cursor.stepIndex = 0u;
-
-    return cursor;
-}
-
-inline VoxelisXBrickRayConstants VoxelisXCreateBrickRayConstants(float3 entryPositionInGrid, float3 rayDir)
-{
-    VoxelisXBrickRayConstants constants;
-    constants.invDir = VoxelisXBrickRaySafeInvDir(rayDir);
-    constants.tStart = (VoxelisXBrickRayBoundaryOffset(rayDir) - entryPositionInGrid) * constants.invDir;
-    return constants;
-}
-
-inline bool VoxelisXBrickRayIsInside(VoxelisXBrickRayCursor cursor, int gridSize)
-{
-    return !any(uint3(cursor.cell) >= uint(gridSize));
-}
-
-inline bool3 VoxelisXBrickRayNextAxisMask(float3 sideDist, float nextT)
-{
-    return sideDist <= float3(
-        nextT + BRICK_RAY_STEP_EPSILON,
-        nextT + BRICK_RAY_STEP_EPSILON,
-        nextT + BRICK_RAY_STEP_EPSILON);
-}
-
-inline void VoxelisXJumpBrickRay(inout VoxelisXBrickRayCursor cursor, float3 rayDir, int mask)
-{
-    cursor.cell = lerp(cursor.cell | mask, cursor.cell & (~mask), rayDir < 0);
-}
-
-inline void VoxelisXStepBrickRay(inout VoxelisXBrickRayCursor cursor, float3 entryPositionInGrid, float3 rayDir, VoxelisXBrickRayConstants constants)
-{
-    float3 sideDist = constants.tStart + float3(cursor.cell) * constants.invDir;
-    float nextT = min(min(sideDist.x, sideDist.y), sideDist.z);
-
-    cursor.enteredSideDist = sideDist;
-    cursor.localT = nextT;
-    cursor.cell = int3(floor(entryPositionInGrid + (nextT + BRICK_RAY_STEP_EPSILON) * rayDir));
-    cursor.stepIndex++;
-}
-
-inline uint VoxelisXBrickRayNormalFlags(VoxelisXBrickRayCursor cursor, half3 rayDir, uint entryNormalFlags)
-{
-    if (cursor.stepIndex == 0u)
+    if (index == 0u)
     {
         return entryNormalFlags;
     }
-
-    bool3 axisMask = VoxelisXBrickRayNextAxisMask(cursor.enteredSideDist, cursor.localT);
+    
     // This is brutal. Ideas?
     // Ties can happen on voxel edges/corners. Pick one face deterministically,
     // matching the X/Y/Z priority used by the brick AABB entry normal.
+    
+    float3 sideDist = tStart + float3(cell) * invDir;
+    float T = min(min(sideDist.x, sideDist.y), sideDist.z);
+
+    bool3 axisMask = sideDist <= float3(
+        T + BRICK_RAY_STEP_EPSILON,
+        T + BRICK_RAY_STEP_EPSILON,
+        T + BRICK_RAY_STEP_EPSILON);
+    
     uint xUse = axisMask.x ? 0xFFFFFFFFu : 0u;
     uint yUse = (axisMask.y ? 0xFFFFFFFFu : 0u) & ~xUse;
     uint zUse = ~(xUse | yUse);
@@ -301,41 +259,56 @@ inline bool VoxelisXShouldTraceMicroOccupancy(uint occLo, uint occHi, half3 rayD
     return true;
 }
 
-inline bool VoxelisXShouldTerminateBrickRay(int blockID, VoxelisXBrickRayCursor cursor, half3 rayDir, uint entryNormalFlags, float entryT)
+inline bool VoxelisXShouldTerminateBrickRay(uint index, int blockID, uint normalFlags, float entryT)
 {
     bool shouldTerminate = IsOpaque(blockID);
     UNITY_BRANCH if (shouldTerminate) return shouldTerminate;
     
     // Transparency
-    if (cursor.stepIndex == 0 && entryT == 0) return false;
-    shouldTerminate = GetFaceBits(blockID) & VoxelisXBrickRayNormalFlags(cursor, rayDir, entryNormalFlags);
+    if (index == 0 && entryT == 0) return false;
+    shouldTerminate = GetFaceBits(blockID) & normalFlags;
     return shouldTerminate;
+}
+
+inline int3 VRTJump(int3 cell, float3 rayDir, uint mask)
+{
+    return lerp(cell | mask, cell & (~mask), rayDir < 0);
+}
+
+inline int3 VRTStep(int3 cell, float3 tStart, float3 origin, float3 rayDir, half3 invDir)
+{
+    float3 sideDist = tStart + float3(cell) * invDir;
+    float tmin = min(min(sideDist.x, sideDist.y), sideDist.z) + BRICK_RAY_STEP_EPSILON;
+    float3 currPos = origin + tmin * rayDir;
+    return int3(floor(currPos));
 }
 
 inline float VoxelisXTraceBrickRay(float3 entryPositionInBrick, float3 rayDir, float entryT, uint entryNormal_coarseOccupancy, out AttributeData attrib)
 {
-    uint entryNormal_coarseOccupancy = (entryNormalFlags << 26)
     uint occLo = 0u;
     uint occHi = 0u;
+    
+    half3 invDir = VoxelisXBrickRaySafeInvDir(rayDir);
+    float3 tStart = (VoxelisXBrickRayBoundaryOffset(rayDir) - entryPositionInBrick) * invDir;
+    int3 cell = int3(floor(entryPositionInBrick));
     
     // hit.t = entryT;
     // hit.materialID_faceNormal = ((entryNormal_coarseOccupancy & 0xFFFF) << 16) + (entryNormal_coarseOccupancy >> 26);
     // return true;
 
-    [loop] for (int rayStep = 0; rayStep < BRICK_RAY_MAX_STEPS; rayStep++)
+    [loop] for (uint rayStep = 0; rayStep < BRICK_RAY_MAX_STEPS; rayStep++)
     {
-        if (!VoxelisXBrickRayIsInside(cursor, SIZE_IN_BLOCKS))
-        {
-            break;
-        }
+        // Out of bounds
+        if (any(uint3(cell) >= SIZE_IN_BLOCKS)) { break; }
 
-        int3 coarseCell = cursor.cell >> BRICK_MICRO_SHIFT;
+        // Coarse jumps
+        uint3 coarseCell = cell >> BRICK_MICRO_SHIFT;
         uint coarseBit = uint(coarseCell.x | (coarseCell.y << 1) | (coarseCell.z << 2));
         if ((entryNormal_coarseOccupancy & (1u << coarseBit)) == 0u)
         {
             // Faster than compute the exact distance needed to jump multiple voxels
-            VoxelisXJumpBrickRay(cursor, rayDir, 3u);
-            VoxelisXStepBrickRay(cursor, entryPositionInBrick, rayDir, rayConstants);
+            cell = VRTJump(cell, rayDir, 3u);
+            cell = VRTStep(cell, tStart, entryPositionInBrick, rayDir, invDir);
             continue;
         }
         
@@ -343,26 +316,29 @@ inline float VoxelisXTraceBrickRay(float3 entryPositionInBrick, float3 rayDir, f
         VoxelisXLoadMicroOccupancy(VoxelisXBrickBase(PrimitiveIndex()), coarseBit, occLo, occHi);
         if (!VoxelisXShouldTraceMicroOccupancy(occLo, occHi, rayDir))
         {
-            VoxelisXStepBrickRay(cursor, entryPositionInBrick, rayDir, rayConstants);
+            cell = VRTStep(cell, tStart, entryPositionInBrick, rayDir, invDir);
             continue;
         }
 
-        int3 microCell = cursor.cell & BRICK_MICRO_MASK;
+        int3 microCell = cell & BRICK_MICRO_MASK;
         uint microBit = VoxelisXMicroOccupancyBit(microCell);
         if (VoxelisXIsMicroOccupied(occLo, occHi, microBit))
         {
-            int blockID = VoxelisXReadBrick(VoxelisXBrickBase(PrimitiveIndex()) + BRICK_BLOCK_DATA_OFFSET, cursor.cell);
+            int blockID = VoxelisXReadBrick(VoxelisXBrickBase(PrimitiveIndex()) + BRICK_BLOCK_DATA_OFFSET, cell);
+            uint normalFlags = VoxelisXBrickRayNormalFlags(rayStep, cell, tStart, rayDir, invDir, (entryNormal_coarseOccupancy >> 26));
             bool shouldTerminate = VoxelisXShouldTerminateBrickRay(
-                blockID, cursor, rayDir, (entryNormal_coarseOccupancy >> 26), entryT);
+                rayStep, blockID, normalFlags, entryT);
 
             if (shouldTerminate)
             {
-                attrib.matID_faceNormal = (blockID << 16) + VoxelisXBrickRayNormalFlags(cursor, rayDir, (entryNormal_coarseOccupancy >> 26));
-                return entryT + cursor.localT;
+                attrib.matID_faceNormal = (blockID << 16) + normalFlags;
+                float3 sideDist = tStart + float3(cell) * invDir;
+                float tmin = min(min(sideDist.x, sideDist.y), sideDist.z) + BRICK_RAY_STEP_EPSILON;
+                return entryT + tmin;
             }
         }
 
-        VoxelisXStepBrickRay(cursor, entryPositionInBrick, rayDir, rayConstants);
+        cell = VRTStep(cell, tStart, entryPositionInBrick, rayDir, invDir);
     }
 
     // no hit
