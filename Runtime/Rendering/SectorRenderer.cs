@@ -191,7 +191,7 @@ namespace Voxelis.Rendering
 
             var new_brickBuffer =
                 new GraphicsBuffer(
-                    GraphicsBuffer.Target.Structured, 
+                    GraphicsBuffer.Target.Raw, 
                     requestedCapacity * BRICK_DATA_LENGTH, 4);
             
             brickBuffer?.Dispose();
