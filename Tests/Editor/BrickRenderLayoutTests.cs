@@ -8,16 +8,16 @@ namespace VoxelisX.Tests
         [Test]
         public void BrickRenderRecordUsesHeaderOccupancyAndBlockPayload()
         {
-            Assert.That(SectorRenderer.BRICK_INFO_WORDS, Is.EqualTo(1));
+            Assert.That(SectorRenderer.BRICK_INFO_WORDS, Is.EqualTo(2));
             Assert.That(SectorRenderer.BRICK_OCCUPANCY_WORDS, Is.EqualTo(16));
-            Assert.That(SectorRenderer.BRICK_BLOCK_DATA_OFFSET, Is.EqualTo(17));
-            Assert.That(SectorRenderer.BRICK_DATA_LENGTH, Is.EqualTo(273));
+            Assert.That(SectorRenderer.BRICK_BLOCK_DATA_OFFSET, Is.EqualTo(18));
+            Assert.That(SectorRenderer.BRICK_DATA_LENGTH, Is.EqualTo(274));
         }
 
-        [TestCase(0, 0, 0, 0, 0, 1)]
-        [TestCase(3, 3, 3, 0, 63, 2)]
-        [TestCase(4, 0, 0, 1, 0, 3)]
-        [TestCase(7, 7, 7, 7, 63, 16)]
+        [TestCase(0, 0, 0, 0, 0, 2)]
+        [TestCase(3, 3, 3, 0, 63, 3)]
+        [TestCase(4, 0, 0, 1, 0, 4)]
+        [TestCase(7, 7, 7, 7, 63, 17)]
         public void OccupancyIndicesMatchBrickQuadrants(int x, int y, int z, int coarseBit, int microBit, int wordOffset)
         {
             Assert.That(SectorRenderer.ToCoarseOccupancyBit(x, y, z), Is.EqualTo(coarseBit));

@@ -37,7 +37,8 @@ namespace Voxelis.Rendering
             internal Vector3 max;
         }
 
-        public const int BRICK_INFO_WORDS = 1;
+        // One metadata word plus one padding word so uint64 occupancy loads are 8-byte aligned.
+        public const int BRICK_INFO_WORDS = 2;
         public const int BRICK_OCCUPANCY_WORDS = 16;
         public const int BRICK_BLOCK_DATA_OFFSET = BRICK_INFO_WORDS + BRICK_OCCUPANCY_WORDS;
         public const int BRICK_BLOCK_DATA_WORDS = Sector.BLOCKS_IN_BRICK / 2;

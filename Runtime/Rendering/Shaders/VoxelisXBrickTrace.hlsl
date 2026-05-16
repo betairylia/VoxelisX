@@ -39,10 +39,11 @@
 #define BRICK_MICRO_RAY_MAX_STEPS 10
 #endif
 
-#define BRICK_INFO_WORDS 1
+// One metadata word plus one padding word so uint64_t occupancy loads are 8-byte aligned.
+#define BRICK_INFO_WORDS 2
 #define BRICK_OCCUPANCY_WORDS 16
-#define BRICK_BLOCK_DATA_OFFSET 17
-#define BRICK_DATA_LENGTH 273
+#define BRICK_BLOCK_DATA_OFFSET 18
+#define BRICK_DATA_LENGTH 274
 #define BRICK_INFO_ABSOLUTE_INDEX_MASK 0xFFFu
 #define BRICK_INFO_COARSE_OCCUPANCY_SHIFT 16u
 #define BRICK_INFO_COARSE_OCCUPANCY_MASK 0xFFu
