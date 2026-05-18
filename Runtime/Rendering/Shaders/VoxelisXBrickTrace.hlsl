@@ -286,6 +286,7 @@ inline float VoxelisXTraceBrickRay(float3 entryPositionInBrick, float3 rayDir, f
 {
     uint64_t occ = 0ull;
     
+    uint brickBase = VoxelisXBrickBase(PrimitiveIndex());
     half3 invDir = VoxelisXBrickRaySafeInvDir(rayDir);
     float3 tStart = (VoxelisXBrickRayBoundaryOffset(rayDir) - entryPositionInBrick) * invDir;
     float3 origin = clamp(entryPositionInBrick, 0.0f, float3(SIZE_IN_BLOCKS, SIZE_IN_BLOCKS, SIZE_IN_BLOCKS) - BRICK_RAY_GRID_EPSILON);
@@ -314,7 +315,8 @@ inline float VoxelisXTraceBrickRay(float3 entryPositionInBrick, float3 rayDir, f
         }
         
         // Let L1 Cache do its job
-        VoxelisXLoadMicroOccupancy(VoxelisXBrickBase(PrimitiveIndex()), coarseBit, occ);
+        // TODO: Cache prev coarsebit or something?
+        VoxelisXLoadMicroOccupancy(brickBase, coarseBit, occ);
         if (!VoxelisXShouldTraceMicroOccupancy(occ, rayDir))
         {
             prevCell = cell;
@@ -407,8 +409,7 @@ inline float VoxelisXTraceBrickPrimitive(out AttributeData attrib)
 
     VoxelisXBrickHit result = VoxelisXMakeBrickMiss();
     return VoxelisXTraceBrickRay(entryPositionInBrick, rayDir, t,
-        (normalFlags << 26)  | VoxelisXGetCoarseOccupancy(
-            g_bricks.Load(VoxelisXBrickBase(PrimitiveIndex()) << 2)),
+        (normalFlags << 26)  | VoxelisXGetCoarseOccupancy(brickInfo),
         attrib);
 }
 
