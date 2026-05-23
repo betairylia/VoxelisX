@@ -2,7 +2,7 @@
 #pragma use_dxc
 
 // Uncomment this pragma for debugging the HLSL code in PIX. GPU performance will be impacted.
-// #pragma enable_ray_tracing_shader_debug_symbols
+#pragma enable_ray_tracing_shader_debug_symbols
 
 // #include "UnityShaderVariables.cginc"
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
@@ -250,8 +250,8 @@ void MainRayGenShader()
 #if VOXELISXRT_BOUNCE
         // Keep the primary albedo out of the temporal history. It is applied once
         // during final composition so replaced voxels can reuse lighting history.
-        float3 indirectIncidentRadiance = float3(0, 0, 0);
-        float3 throughput = 1.0f / max(0.001, primaryK);
+        half3 indirectIncidentRadiance = half3(0, 0, 0);
+        half3 throughput = 1.0f / max(0.001, primaryK);
         RayDesc bounceRay;
         bounceRay.Origin = primaryBounceRayOrigin;
         bounceRay.Direction = primaryBounceRayDirection;
@@ -270,37 +270,39 @@ void MainRayGenShader()
                 break;
             }
 
-            VoxelisXShadeResult bounceShade;
-            float3 bounceHitPosition;
-            VoxelisXShadeVoxelHit(bouncePayload, bounceRay.Origin, bounceRay.Direction, path, bounceHitPosition, bounceShade);
-            half bounceK = bounceShade.k;
-            half3 bounceAlbedo = bounceShade.albedo;
-            half3 bounceEmission = bounceShade.emission;
-            float3 nextBounceRayOrigin = bounceShade.bounceRayOrigin;
-            float3 nextBounceRayDirection = bounceShade.bounceRayDirection;
+            {
+                VoxelisXShadeResult bounceShade;
+                float3 bounceHitPosition;
+                VoxelisXShadeVoxelHit(bouncePayload, bounceRay.Origin, bounceRay.Direction, path, bounceHitPosition, bounceShade);
+                half bounceK = bounceShade.k;
+                half3 bounceAlbedo = bounceShade.albedo;
+                half3 bounceEmission = bounceShade.emission;
+                float3 nextBounceRayOrigin = bounceShade.bounceRayOrigin;
+                float3 nextBounceRayDirection = bounceShade.bounceRayDirection;
 
-            indirectIncidentRadiance += bounceEmission * throughput;
-            // indirectIncidentRadiance = nextBounceRayDirection * 0.1f;
+                indirectIncidentRadiance += bounceEmission * throughput;
+                // indirectIncidentRadiance = nextBounceRayDirection * 0.1f;
 
-            throughput *= bounceAlbedo / max(0.001, bounceK);
+                throughput *= bounceAlbedo / max(0.001h, bounceK);
 
-            float pathStopProbability = 1;
+                half pathStopProbability = 1;
 
-    #define ENABLE_RUSSIAN_ROULETTE 1
+        #define ENABLE_RUSSIAN_ROULETTE 1
 
-    #if ENABLE_RUSSIAN_ROULETTE
-            float3 throughputAlbedo = throughput;
-            pathStopProbability = max(throughputAlbedo.r, max(throughputAlbedo.g, throughputAlbedo.b));
+        #if ENABLE_RUSSIAN_ROULETTE
+                half3 throughputAlbedo = throughput;
+                pathStopProbability = max(throughputAlbedo.r, max(throughputAlbedo.g, throughputAlbedo.b));
 
-            // Dark colors have higher chance to terminate the path early.
-            if (pathStopProbability < RandomFloat01(path.rngState))
-                break;
-    #endif
+                // Dark colors have higher chance to terminate the path early.
+                if (pathStopProbability < RandomFloat01(path.rngState))
+                    break;
+        #endif
 
-            throughput *= 1 / pathStopProbability;
+                throughput *= 1 / pathStopProbability;
 
-            bounceRay.Origin = nextBounceRayOrigin;
-            bounceRay.Direction = nextBounceRayDirection;
+                bounceRay.Origin = nextBounceRayOrigin;
+                bounceRay.Direction = nextBounceRayDirection;
+            }
         }
 
         uint2 indirectDispatchIndex = DispatchRaysIndex().xy;
