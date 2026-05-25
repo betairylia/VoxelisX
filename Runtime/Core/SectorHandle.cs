@@ -70,12 +70,32 @@ namespace Voxelis
             return _ptr->GetBlock(x, y, z);
         }
 
+        public Meta GetMeta(int x, int y, int z)
+        {
+            return _ptr->GetMeta(x, y, z);
+        }
+
+        public T GetSlot<T>(SectorSlotId slotId, int x, int y, int z) where T : unmanaged
+        {
+            return _ptr->GetSlot<T>(slotId, x, y, z);
+        }
+
         /// <summary>
         /// Sets the block at the specified position within the sector.
         /// </summary>
         public void SetBlock(int x, int y, int z, Block block)
         {
             _ptr->SetBlock(x, y, z, block);
+        }
+
+        public void SetMeta(int x, int y, int z, Meta meta)
+        {
+            _ptr->SetMeta(x, y, z, meta);
+        }
+
+        public void SetSlot<T>(SectorSlotId slotId, int x, int y, int z, T value) where T : unmanaged
+        {
+            _ptr->SetSlot(slotId, x, y, z, value);
         }
 
         /// <summary>

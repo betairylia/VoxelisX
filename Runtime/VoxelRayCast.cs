@@ -39,7 +39,7 @@ namespace Voxelis
         /// The block type ID currently held by the player for placement.
         /// </summary>
         [Tooltip("Block ID to place when right-clicking")]
-        public uint handblock;
+        public ushort handblock;
 
         /// <summary>
         /// Maximum distance in world units that raycasting will check.
@@ -405,7 +405,7 @@ namespace Voxelis
             if (shouldPlace)
             {
                 int3 placePosition = hit + hitNormal;
-                hitTarget.SetBlock(placePosition, new Block { data = handblock });
+                hitTarget.SetBlock(placePosition, new Block(handblock));
             }
 
             // Middle click: pick block

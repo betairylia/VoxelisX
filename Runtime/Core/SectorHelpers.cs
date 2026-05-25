@@ -17,7 +17,7 @@ namespace Voxelis
     /// making it much more efficient than iterating through all possible block positions.
     /// </remarks>
     [BurstCompile]
-    public struct SectorNonEmptyBlockEnumerator : IEnumerator<BlockIterator>
+    public unsafe struct SectorNonEmptyBlockEnumerator : IEnumerator<BlockIterator>
     {
         private Sector sector;
 
@@ -25,7 +25,8 @@ namespace Voxelis
         private int x, y, z;
         private int3 blockPosition;
 
-        private int sectorBrickIndex, sectorBlockIndex;
+        private short sectorBrickIndex, sectorBlockIndex;
+        private Block* currentBrick;
 
         /// <summary>
         /// Constructs a new sector enumerator for the specified sector.
@@ -46,6 +47,7 @@ namespace Voxelis
 
             sectorBlockIndex = 0;
             sectorBrickIndex = 0;
+            currentBrick = null;
             blockPosition = new int3(-1, -1, -1);
         }
 
@@ -73,19 +75,20 @@ namespace Voxelis
                     do
                     {
                         brick_acce_id++;
-                        if (brick_acce_id >= sector.NonEmptyBrickCount) return false;
+                        if (brick_acce_id >= sector.NonEmptyBricks.Length) return false;
                         absolute_bid = sector.NonEmptyBricks[brick_acce_id];
                         sectorBrickIndex = sector.brickIdx[absolute_bid];
-                    }while(sectorBrickIndex == Sector.BRICKID_EMPTY);
+                        currentBrick = sector.GetBrick(sectorBrickIndex);
+                    }while(sectorBrickIndex == Sector.BRICKID_EMPTY || currentBrick == null);
 
                     bX = absolute_bid & Sector.SECTOR_MASK;
                     bY = (absolute_bid >> Sector.SHIFT_IN_BRICKS) & Sector.SECTOR_MASK;
                     bZ = (absolute_bid >> (Sector.SHIFT_IN_BRICKS << 1)) & Sector.SECTOR_MASK;
                 }
 
-                sectorBlockIndex = (sectorBrickIndex << (Sector.SHIFT_IN_BLOCKS * 3))
-                                   + Sector.ToBlockIdx(x, y, z);
-            }while(sector.voxels[sectorBlockIndex].isEmpty);
+                sectorBlockIndex = (short)((sectorBrickIndex << (Sector.SHIFT_IN_BLOCKS * 3))
+                                   + Sector.ToBlockIdx(x, y, z));
+            }while(currentBrick[Sector.ToBlockIdx(x, y, z)].isEmpty);
 
             blockPosition = new int3(
                 (bX << Sector.SHIFT_IN_BLOCKS) + x,
@@ -110,12 +113,13 @@ namespace Voxelis
 
             sectorBlockIndex = 0;
             sectorBrickIndex = 0;
+            currentBrick = null;
         }
 
         /// <summary>
         /// Gets the current block and its position in the enumeration.
         /// </summary>
-        public BlockIterator Current => new() { block = sector.voxels[sectorBlockIndex], position = blockPosition };
+        public BlockIterator Current => new() { block = currentBrick[Sector.ToBlockIdx(x, y, z)], position = blockPosition };
 
         /// <summary>
         /// Gets the current element (non-generic version).
@@ -199,7 +203,7 @@ namespace Voxelis
                 do
                 {
                     brick_acce_id++;
-                    if (brick_acce_id >= sector.NonEmptyBrickCount) return false;
+                    if (brick_acce_id >= sector.NonEmptyBricks.Length) return false;
                     absolute_bid = sector.NonEmptyBricks[brick_acce_id];
                     sectorBrickIndex = sector.brickIdx[absolute_bid];
                 } while (sectorBrickIndex == Sector.BRICKID_EMPTY

@@ -39,6 +39,24 @@ namespace VoxelisX.Tests
         }
 
         [Test]
+        public void SnapshotCanCreateMetaOnlyBrickBeforeApply()
+        {
+            using var scope = new SectorTestScope();
+            var meta = new Meta { data = 0xBEEF };
+
+            scope.Handle.ActivateSnapshot();
+            scope.Handle.SetMeta(127, 127, 127, meta);
+
+            Assert.That(scope.Handle.GetMeta(127, 127, 127), Is.EqualTo(Meta.Empty));
+            Assert.That(scope.Handle.GetBlock(127, 127, 127), Is.EqualTo(Block.Empty));
+
+            scope.Handle.ApplySnapshot();
+
+            Assert.That(scope.Handle.GetMeta(127, 127, 127), Is.EqualTo(meta));
+            Assert.That(scope.Handle.GetBlock(127, 127, 127), Is.EqualTo(Block.Empty));
+        }
+
+        [Test]
         public void RepeatedActivateSnapshotBeforeApplyIsIdempotent()
         {
             using var scope = new SectorTestScope();

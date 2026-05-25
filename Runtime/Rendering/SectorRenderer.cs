@@ -140,7 +140,7 @@ namespace Voxelis.Rendering
         /// <param name="sector">The sector to prepare buffers for.</param>
         public void PreallocateBuffers(Sector sector)
         {
-            if (sector.NonEmptyBrickCount == 0) return;
+            if (sector.RendererNonEmptyBrickCount == 0) return;
 
             int requestedCapacity = 0;
 #if VOXELISX_RENDER_DISABLE_CULLING

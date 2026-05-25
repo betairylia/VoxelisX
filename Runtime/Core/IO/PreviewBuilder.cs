@@ -26,6 +26,12 @@ namespace Voxelis.IO
                 }
 
                 Block* brick = sector->GetBrick(bid);
+                if (brick == null)
+                {
+                    dst[brickAbsIdx] = 0u;
+                    continue;
+                }
+
                 uint occupancy = 0, emission = 0;
                 ulong sumR = 0, sumG = 0, sumB = 0;
                 int count = 0;

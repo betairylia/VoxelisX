@@ -98,6 +98,7 @@ namespace Voxelis.Rendering
                         // Check if brick exists (not empty)
                         short bid = sector.brickIdx[brickIdxAbs];
                         if (bid == Sector.BRICKID_EMPTY) continue;
+                        if (!sector.HasSlotBrick(SectorSlotId.Block, bid)) continue;
 
                         // Create record for this brick
                         var record = new BrickUpdateInfo()
@@ -119,6 +120,11 @@ namespace Voxelis.Rendering
                 int3 brickPos = Sector.ToBrickPos(record.brickIdxAbsolute);
                 int3 brickBlockPos = brickPos * Sector.SIZE_IN_BLOCKS;
                 ref Sector sector = ref sectorHandle.Get();
+                Block* brick = sector.GetBrick(bid);
+                if (brick == null)
+                {
+                    return;
+                }
 
                 bool isAdded = record.type == BrickUpdateInfo.Type.Added;
                 
@@ -138,8 +144,8 @@ namespace Voxelis.Rendering
 
                         for (int bx = 0; bx < Sector.SIZE_IN_BLOCKS; bx += 2)
                         {
-                            Block block0 = sector.voxels[blockStart + bx];
-                            Block block1 = sector.voxels[blockStart + bx + 1];
+                            Block block0 = brick[Sector.ToBlockIdx(bx, by, bz)];
+                            Block block1 = brick[Sector.ToBlockIdx(bx + 1, by, bz)];
                             
                             int rendererBlockIdx = Sector.ToBlockIdx(bx, by, bz) / 2;
                             

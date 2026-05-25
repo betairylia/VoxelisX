@@ -31,6 +31,45 @@ namespace VoxelisX.Tests
             scope.Handle.SetBlock(x, y, z, block);
 
             Assert.That(scope.Handle.GetBlock(x, y, z), Is.EqualTo(block));
+            Assert.That(scope.Handle.GetSlot<Block>(SectorSlotId.Block, x, y, z), Is.EqualTo(block));
+        }
+
+        [Test]
+        public void MetaDefaultsAndRoundTripsIndependentlyFromBlock()
+        {
+            using var scope = new SectorTestScope();
+            var block = new Block(37);
+            var meta = new Meta { data = 0xCAFE };
+
+            Assert.That(scope.Handle.GetMeta(1, 2, 3), Is.EqualTo(Meta.Empty));
+
+            scope.Handle.SetBlock(1, 2, 3, block);
+            scope.Handle.SetMeta(1, 2, 3, meta);
+
+            Assert.That(scope.Handle.GetBlock(1, 2, 3), Is.EqualTo(block));
+            Assert.That(scope.Handle.GetMeta(1, 2, 3), Is.EqualTo(meta));
+
+            scope.Handle.SetBlock(1, 2, 3, Block.Empty);
+
+            Assert.That(scope.Handle.GetBlock(1, 2, 3), Is.EqualTo(Block.Empty));
+            Assert.That(scope.Handle.GetMeta(1, 2, 3), Is.EqualTo(meta));
+        }
+
+        [Test]
+        public void SetMetaCanAllocateSharedBrickWithoutVisibleBlock()
+        {
+            using var scope = new SectorTestScope();
+
+            scope.Handle.SetMeta(8, 0, 0, new Meta { data = 7 });
+
+            Assert.That(scope.Handle.NonEmptyBrickCount, Is.EqualTo(1));
+            Assert.That(scope.Handle.GetBlock(8, 0, 0), Is.EqualTo(Block.Empty));
+            Assert.That(scope.Handle.GetMeta(8, 0, 0), Is.EqualTo(new Meta { data = 7 }));
+            Assert.That(scope.Handle.IsRendererEmpty, Is.True);
+            Assert.That(scope.Handle.IsRendererDirty, Is.False);
+
+            scope.Sector.UpdateNonEmptyBricks();
+            Assert.That(scope.Sector.NonEmptyBricks.Length, Is.EqualTo(0));
         }
 
         [Test]

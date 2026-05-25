@@ -4,42 +4,32 @@ using Unity.Mathematics;
 namespace Voxelis
 {
     /// <summary>
-    /// Represents a single voxel block with encoded color and material data.
-    /// Uses a 32-bit packed format for efficient storage and rendering.
+    /// Represents a single visible voxel block with encoded color and material data.
+    /// Uses a 16-bit packed format for efficient storage and rendering.
     /// </summary>
     /// <remarks>
     /// The block data is encoded as follows:
-    /// - Bits 16-31: Block ID (includes RGB color and emission flag)
-    /// - Bits 0-15: Metadata
-    /// The block ID encodes RGB555 color (5 bits per channel) plus 1 emission bit.
+    /// The block data encodes RGB555 color (5 bits per channel) plus 1 emission bit.
+    /// Metadata lives in the sector's <see cref="Meta"/> slot, not in <see cref="Block"/>.
     /// </remarks>
     public struct Block : IEquatable<Block>
     {
         /// <summary>
-        /// The packed 32-bit data representing this block.
+        /// The packed 16-bit visible block value.
         /// </summary>
-        public uint data;
+        public ushort data;
 
-        private const uint IDMask    = 0xFFFF0000;
-        private const  int IDShift   = 16;
         // Perhaps we can just use a LUT and free those bits
         // private const uint PhaseMask = 0xC0000000; // 00 - Gas; 01 - Liquid; 10 - Powder; 11 - Solid
         // private const uint PhaseShift= 30;
         private const  int OpaqueMask= 0x8000;
         private const uint TransMask = 0x01FF;      // Transparent blocks have 0~1FF (512) valid blockID slots
         private const  int TFaceShift= 9;           // 6 bits for transparent blocks will be used to represent boundaries
-        private const uint MetaMask  = 0x0000FFFF;
-        private const  int MetaShift = 0;
 
         /// <summary>
         /// Gets the block ID portion of the packed data.
         /// </summary>
-        public ushort id => (ushort)((data & IDMask) >> IDShift);
-
-        /// <summary>
-        /// Gets the metadata portion of the packed data.
-        /// </summary>
-        public ushort meta => (ushort)((data & MetaMask) >> MetaShift);
+        public ushort id => data;
 
         /// <summary>
         /// Returns true if this block is empty (all data is zero).
@@ -66,7 +56,7 @@ namespace Voxelis
         /// <param name="id">The block ID to use.</param>
         public Block(ushort id)
         {
-            data = (((uint)id) << IDShift) + 0;
+            data = id;
         }
 
         /// <summary>
@@ -79,7 +69,7 @@ namespace Voxelis
         public Block(int r, int g, int b, bool emission)
         {
             int id = (r << 11) | (g << 6) | (b << 1) | (emission ? 1 : 0);
-            data = ((uint)id << IDShift);
+            data = (ushort)id;
         }
 
         /// <summary>
@@ -97,7 +87,7 @@ namespace Voxelis
             bool emi = emission > 0;
 
             int id = (rr << 11) | (gg << 6) | (bb << 1) | (emi ? 1 : 0);
-            data = ((uint)id << IDShift);
+            data = (ushort)id;
         }
 
         /// <summary>
@@ -122,6 +112,28 @@ namespace Voxelis
         {
             return (int)data;
         }
+    }
+
+    public enum SectorSlotId : byte
+    {
+        Block = 0,
+        Meta = 1,
+    }
+
+    public struct Meta : IEquatable<Meta>
+    {
+        public ushort data;
+
+        public bool isEmpty => data == 0;
+
+        public static readonly Meta Empty = new Meta { data = 0 };
+
+        public static bool operator ==(Meta a, Meta b) => a.data == b.data;
+        public static bool operator !=(Meta a, Meta b) => a.data != b.data;
+
+        public bool Equals(Meta other) => data == other.data;
+        public override bool Equals(object obj) => obj is Meta other && Equals(other);
+        public override int GetHashCode() => data;
     }
 
     /// <summary>

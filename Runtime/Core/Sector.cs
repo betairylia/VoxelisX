@@ -11,6 +11,141 @@ using UnityEngine;
 
 namespace Voxelis
 {
+    public unsafe struct SectorSlotStorage
+    {
+        public UnsafeList<byte> data;
+        public UnsafeList<byte> brickPresent;
+        public int stride;
+        public int presentCount;
+
+        public bool IsCreated
+        {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => data.IsCreated;
+        }
+
+        public int BrickCapacity
+        {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => brickPresent.IsCreated ? brickPresent.Length : 0;
+        }
+
+        public static SectorSlotStorage New(int stride, int initialBrickCapacity, Allocator allocator)
+        {
+            int byteCapacity = math.max(1, initialBrickCapacity) * Sector.BLOCKS_IN_BRICK * stride;
+            var storage = new SectorSlotStorage
+            {
+                data = new UnsafeList<byte>(byteCapacity, allocator),
+                brickPresent = new UnsafeList<byte>(math.max(1, initialBrickCapacity), allocator),
+                stride = stride,
+                presentCount = 0,
+            };
+
+            if (initialBrickCapacity > 0)
+            {
+                storage.EnsureBrickCapacity(initialBrickCapacity);
+            }
+
+            return storage;
+        }
+
+        public SectorSlotStorage Clone(Allocator allocator)
+        {
+            var clone = New(stride, BrickCapacity, allocator);
+            clone.presentCount = presentCount;
+
+            if (brickPresent.Length > 0)
+            {
+                clone.brickPresent.Resize(brickPresent.Length, NativeArrayOptions.UninitializedMemory);
+                UnsafeUtility.MemCpy(clone.brickPresent.Ptr, brickPresent.Ptr, brickPresent.Length);
+            }
+
+            if (data.Length > 0)
+            {
+                clone.data.Resize(data.Length, NativeArrayOptions.UninitializedMemory);
+                UnsafeUtility.MemCpy(clone.data.Ptr, data.Ptr, data.Length);
+            }
+
+            return clone;
+        }
+
+        public void Dispose()
+        {
+            if (data.IsCreated) data.Dispose();
+            if (brickPresent.IsCreated) brickPresent.Dispose();
+            presentCount = 0;
+            stride = 0;
+        }
+
+        public void EnsureBrickCapacity(int brickCapacity)
+        {
+            if (brickCapacity <= BrickCapacity) return;
+
+            brickPresent.Resize(brickCapacity, NativeArrayOptions.ClearMemory);
+            data.Resize(brickCapacity * Sector.BLOCKS_IN_BRICK * stride, NativeArrayOptions.ClearMemory);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool HasBrick(short bid)
+        {
+            return bid >= 0 && bid < brickPresent.Length && brickPresent[bid] != 0;
+        }
+
+        public void ClearBrick(short bid)
+        {
+            if (bid < 0) return;
+            EnsureBrickCapacity(bid + 1);
+
+            if (brickPresent[bid] != 0)
+            {
+                brickPresent[bid] = 0;
+                presentCount--;
+            }
+
+            UnsafeUtility.MemClear(data.Ptr + bid * Sector.BLOCKS_IN_BRICK * stride, Sector.BLOCKS_IN_BRICK * stride);
+        }
+
+        public void EnsureBrickPresent(short bid)
+        {
+            EnsureBrickCapacity(bid + 1);
+            if (brickPresent[bid] != 0) return;
+
+            brickPresent[bid] = 1;
+            presentCount++;
+            UnsafeUtility.MemClear(data.Ptr + bid * Sector.BLOCKS_IN_BRICK * stride, Sector.BLOCKS_IN_BRICK * stride);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public T Get<T>(short bid, int voxelIdxInBrick) where T : unmanaged
+        {
+            if (!HasBrick(bid))
+            {
+                return default;
+            }
+
+            int byteOffset = (bid * Sector.BLOCKS_IN_BRICK + voxelIdxInBrick) * stride;
+            return UnsafeUtility.ReadArrayElement<T>(data.Ptr + byteOffset, 0);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void Set<T>(short bid, int voxelIdxInBrick, T value) where T : unmanaged
+        {
+            int byteOffset = (bid * Sector.BLOCKS_IN_BRICK + voxelIdxInBrick) * stride;
+            UnsafeUtility.WriteArrayElement(data.Ptr + byteOffset, 0, value);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void* GetBrickPtr(short bid)
+        {
+            if (!HasBrick(bid))
+            {
+                return null;
+            }
+
+            return data.Ptr + bid * Sector.BLOCKS_IN_BRICK * stride;
+        }
+    }
+
     /// <summary>
     /// Information about a brick update for renderer synchronization.
     /// Tracks whether a brick was added, removed, or modified.
@@ -89,12 +224,13 @@ namespace Voxelis
 
         /// <summary>Sentinel value for an unallocated brick slot in <see cref="brickIdx"/>.</summary>
         public const short BRICKID_EMPTY = SparseBrickIdTable.EMPTY;
+        public const int MAX_SLOTS = 16;
 
         /// <summary>
-        /// Flattened array of all block data for non-empty bricks.
-        /// Bricks are stored contiguously, with each brick containing BLOCKS_IN_BRICK elements.
+        /// Fixed table of enum-addressed slot storage. Slot data uses the shared <see cref="brickMap"/>
+        /// namespace, but each slot tracks whether it has data for a shared brick ID.
         /// </summary>
-        public UnsafeList<Block> voxels;
+        public UnsafeList<SectorSlotStorage> slots;
 
         public SparseBrickIdTable brickMap;
         public short* brickIdx
@@ -121,6 +257,7 @@ namespace Voxelis
 
         // Lock for brick-thread-safe write
         private long _sectorAllocLock, _sectorSetDirtyLock;
+        private Allocator _allocator;
 
         /// <summary>
         /// Gets the number of non-empty bricks allocated in this sector.
@@ -130,17 +267,34 @@ namespace Voxelis
         /// <summary>
         /// Gets the number of non-empty bricks allocated in this sector for rendering.
         /// </summary>
-        public int RendererNonEmptyBrickCount => brickMap.Count;
+        public int RendererNonEmptyBrickCount => CountSlotBricks(SectorSlotId.Block);
 
         /// <summary>
         /// Returns true if the sector contains no allocated bricks.
         /// </summary>
-        public bool IsRendererEmpty => brickMap.Count == 0;
+        public bool IsRendererEmpty => RendererNonEmptyBrickCount == 0;
 
         /// <summary>
         /// Gets the approximate host memory usage of this sector in bytes.
         /// </summary>
-        public int MemoryUsage => voxels.Capacity * UnsafeUtility.SizeOf(typeof(Block));
+        public int MemoryUsage
+        {
+            get
+            {
+                int total = 0;
+                if (!slots.IsCreated) return total;
+
+                for (int i = 0; i < slots.Length; i++)
+                {
+                    SectorSlotStorage slot = slots[i];
+                    if (!slot.IsCreated) continue;
+                    total += slot.data.Capacity;
+                    total += slot.brickPresent.Capacity;
+                }
+
+                return total;
+            }
+        }
 
         /// <summary>
         /// Creates a new sector with the specified allocator and initial brick capacity.
@@ -153,13 +307,14 @@ namespace Voxelis
             Allocator allocator,
             int initialBricks = 1,
             NativeArrayOptions options = NativeArrayOptions.ClearMemory,
-            SparseBrickIdTable? copyFrom = null)
+            SparseBrickIdTable? copyFrom = null,
+            bool createBlockSlot = true)
         {
             int totalBricks = BRICKS_IN_SECTOR;
 
             Sector s = new Sector()
             {
-                voxels = new UnsafeList<Block>(initialBricks * BLOCKS_IN_BRICK, allocator),
+                slots = new UnsafeList<SectorSlotStorage>(MAX_SLOTS, allocator),
                 brickMap = (copyFrom == null ? SparseBrickIdTable.New(allocator) : copyFrom.Value.Clone(allocator)),
                 brickDirtyFlags = (ushort*)UnsafeUtility.Malloc(totalBricks * sizeof(ushort), UnsafeUtility.AlignOf<ushort>(), allocator),
                 brickRequireUpdateFlags = (ushort*)UnsafeUtility.Malloc(totalBricks * sizeof(ushort), UnsafeUtility.AlignOf<ushort>(), allocator),
@@ -169,7 +324,14 @@ namespace Voxelis
                 sectorRequireUpdateFlags = 0,
                 sectorNeighborsToCreate = 0,
                 _snapshot_enabled = false,
+                _allocator = allocator,
             };
+
+            s.slots.Resize(MAX_SLOTS, NativeArrayOptions.ClearMemory);
+            if (createBlockSlot)
+            {
+                s.CreateSlot(SectorSlotId.Block, UnsafeUtility.SizeOf<Block>(), allocator);
+            }
 
             if (options == NativeArrayOptions.ClearMemory)
             {
@@ -210,9 +372,10 @@ namespace Voxelis
                 allocator,
                 from.NonEmptyBrickCount,
                 NativeArrayOptions.UninitializedMemory,
-                copyFrom: from.brickMap);
+                copyFrom: from.brickMap,
+                createBlockSlot: false);
 
-            s.voxels.AddRange(from.voxels);
+            s.CloneSlotsFrom(in from, allocator);
 
             return s;
         }
@@ -222,8 +385,8 @@ namespace Voxelis
         /// </summary>
         public void Dispose(Allocator allocator)
         {
-            if (voxels.IsCreated) voxels.Dispose();
-            if (_snapshot_voxels.IsCreated) _snapshot_voxels.Dispose();
+            DisposeSlotTable(ref slots);
+            DisposeSlotTable(ref _snapshot_slots);
             if (brickMap.IsCreated) brickMap.Dispose();
             if (_snapshot_brickMap.IsCreated) _snapshot_brickMap.Dispose();
             if (NonEmptyBricks.IsCreated) NonEmptyBricks.Dispose();
@@ -307,6 +470,156 @@ namespace Voxelis
             return NeighborhoodSettings.s_brickSectorNeighborMasks[brickIdx];
         }
 
+        private static int SlotIndex(SectorSlotId slotId) => (byte)slotId;
+
+        private static int DefaultStrideForSlot(SectorSlotId slotId)
+        {
+            switch (slotId)
+            {
+                case SectorSlotId.Block:
+                    return UnsafeUtility.SizeOf<Block>();
+                case SectorSlotId.Meta:
+                    return UnsafeUtility.SizeOf<Meta>();
+                default:
+                    return 0;
+            }
+        }
+
+        private static bool IsDefaultValue<T>(ref T value) where T : unmanaged
+        {
+            T defaultValue = default;
+            return UnsafeUtility.MemCmp(
+                UnsafeUtility.AddressOf(ref value),
+                UnsafeUtility.AddressOf(ref defaultValue),
+                UnsafeUtility.SizeOf<T>()) == 0;
+        }
+
+        private static bool ValuesEqual<T>(ref T a, ref T b) where T : unmanaged
+        {
+            return UnsafeUtility.MemCmp(
+                UnsafeUtility.AddressOf(ref a),
+                UnsafeUtility.AddressOf(ref b),
+                UnsafeUtility.SizeOf<T>()) == 0;
+        }
+
+        private void CreateSlot(SectorSlotId slotId, int stride, Allocator allocator)
+        {
+            int slotIndex = SlotIndex(slotId);
+            SectorSlotStorage* slot = slots.Ptr + slotIndex;
+            if (slot->IsCreated) return;
+
+            *slot = SectorSlotStorage.New(stride, brickMap.Capacity, allocator);
+        }
+
+        private void EnsureSlot(SectorSlotId slotId, int stride, Allocator allocator)
+        {
+            CreateSlot(slotId, stride, allocator);
+            (slots.Ptr + SlotIndex(slotId))->EnsureBrickCapacity(brickMap.Capacity);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private SectorSlotStorage* GetSlotStorage(SectorSlotId slotId)
+        {
+            int slotIndex = SlotIndex(slotId);
+            if (!slots.IsCreated || slotIndex < 0 || slotIndex >= slots.Length)
+            {
+                return null;
+            }
+
+            SectorSlotStorage* slot = slots.Ptr + slotIndex;
+            return slot->IsCreated ? slot : null;
+        }
+
+        private void ExtendCreatedSlots(int brickCapacity)
+        {
+            for (int i = 0; i < slots.Length; i++)
+            {
+                SectorSlotStorage* slot = slots.Ptr + i;
+                if (slot->IsCreated)
+                {
+                    slot->EnsureBrickCapacity(brickCapacity);
+                }
+            }
+        }
+
+        private void ClearSlotBrick(short bid)
+        {
+            for (int i = 0; i < slots.Length; i++)
+            {
+                SectorSlotStorage* slot = slots.Ptr + i;
+                if (slot->IsCreated)
+                {
+                    slot->ClearBrick(bid);
+                }
+            }
+        }
+
+        private void CloneSlotsFrom(in Sector from, Allocator allocator)
+        {
+            DisposeSlotTable(ref slots);
+            slots = new UnsafeList<SectorSlotStorage>(MAX_SLOTS, allocator);
+            slots.Resize(MAX_SLOTS, NativeArrayOptions.ClearMemory);
+
+            if (!from.slots.IsCreated) return;
+
+            for (int i = 0; i < math.min(from.slots.Length, MAX_SLOTS); i++)
+            {
+                SectorSlotStorage source = from.slots[i];
+                if (source.IsCreated)
+                {
+                    *(slots.Ptr + i) = source.Clone(allocator);
+                }
+            }
+        }
+
+        private static void DisposeSlotTable(ref UnsafeList<SectorSlotStorage> slotTable)
+        {
+            if (!slotTable.IsCreated) return;
+
+            for (int i = 0; i < slotTable.Length; i++)
+            {
+                SectorSlotStorage slot = slotTable[i];
+                if (slot.IsCreated)
+                {
+                    slot.Dispose();
+                }
+            }
+
+            slotTable.Dispose();
+        }
+
+        public bool IsSlotCreated(SectorSlotId slotId)
+        {
+            return GetSlotStorage(slotId) != null;
+        }
+
+        public int CountSlotBricks(SectorSlotId slotId)
+        {
+            SectorSlotStorage* slot = GetSlotStorage(slotId);
+            if (slot == null)
+            {
+                return 0;
+            }
+
+            int count = 0;
+            for (int i = 0; i < BRICKS_IN_SECTOR; i++)
+            {
+                short bid = brickIdx[i];
+                if (bid != BRICKID_EMPTY && slot->HasBrick(bid))
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        public bool HasSlotBrick(SectorSlotId slotId, short bid)
+        {
+            SectorSlotStorage* slot = GetSlotStorage(slotId);
+            return slot != null && slot->HasBrick(bid);
+        }
+
         /// <summary>
         /// Gets a slice of the voxel array representing a specific brick.
         /// </summary>
@@ -328,7 +641,9 @@ namespace Voxelis
             {
                 return null;
             }
-            return voxels.Ptr + (bid * BLOCKS_IN_BRICK);
+
+            SectorSlotStorage* blockSlot = GetSlotStorage(SectorSlotId.Block);
+            return blockSlot == null ? null : (Block*)blockSlot->GetBrickPtr(bid);
         }
 
         /// <summary>
@@ -340,6 +655,12 @@ namespace Voxelis
         /// <returns>The block at the specified position, or Block.Empty if the brick is not allocated.</returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public Block GetBlock(int x, int y, int z)
+            => GetSlot<Block>(SectorSlotId.Block, x, y, z);
+
+        public Meta GetMeta(int x, int y, int z)
+            => GetSlot<Meta>(SectorSlotId.Meta, x, y, z);
+
+        public T GetSlot<T>(SectorSlotId slotId, int x, int y, int z) where T : unmanaged
         {
             int brick_sector_index_id =
                 ToBrickIdx(x >> SHIFT_IN_BLOCKS, y >> SHIFT_IN_BLOCKS, z >> SHIFT_IN_BLOCKS);
@@ -347,25 +668,30 @@ namespace Voxelis
 
             if (bid == BRICKID_EMPTY)
             {
-                return Block.Empty;
+                return default;
             }
 
-            return voxels[
-                bid * BLOCKS_IN_BRICK
-                + ToBlockIdx(
+            SectorSlotStorage* slot = GetSlotStorage(slotId);
+            if (slot == null)
+            {
+                return default;
+            }
+
+            return slot->Get<T>(
+                bid,
+                ToBlockIdx(
                     x & BRICK_MASK,
                     y & BRICK_MASK,
-                    z & BRICK_MASK)
-            ];
+                    z & BRICK_MASK));
         }
 
         #region Snapshots
 
         /// <summary>
-        /// Backbuffer version of voxels for read access during double-buffered updates (e.g., cellular automata).
+        /// Backbuffer version of slot storage for read access during double-buffered updates (e.g., cellular automata).
         /// </summary>
         [NativeDisableUnsafePtrRestriction]
-        public UnsafeList<Block> _snapshot_voxels;
+        public UnsafeList<SectorSlotStorage> _snapshot_slots;
 
         /// <summary>
         /// Backbuffer version of <see cref="brickMap"/> for read access during double-buffered updates.
@@ -394,18 +720,26 @@ namespace Voxelis
                 return;
             }
 
-            if (!_snapshot_voxels.IsCreated)
-            {
-                _snapshot_voxels = new UnsafeList<Block>(voxels.Capacity, allocator);
-            }
-
             if (!_snapshot_brickMap.IsCreated)
             {
                 _snapshot_brickMap = SparseBrickIdTable.New(allocator);
             }
 
-            _snapshot_voxels.Clear();
-            _snapshot_voxels.AddRange(voxels);
+            DisposeSlotTable(ref _snapshot_slots);
+            _snapshot_slots = new UnsafeList<SectorSlotStorage>(MAX_SLOTS, allocator);
+            _snapshot_slots.Resize(MAX_SLOTS, NativeArrayOptions.ClearMemory);
+            if (slots.IsCreated)
+            {
+                for (int i = 0; i < slots.Length; i++)
+                {
+                    SectorSlotStorage source = slots[i];
+                    if (source.IsCreated)
+                    {
+                        *(_snapshot_slots.Ptr + i) = source.Clone(allocator);
+                    }
+                }
+            }
+
             _snapshot_brickMap.CopyFrom(brickMap);
 
             _snapshot_enabled = true;
@@ -425,10 +759,10 @@ namespace Voxelis
             // Apply only if previously activated
             if (!_snapshot_enabled) return;
 
-            // Swap voxels buffers
-            var tempVoxels = voxels;
-            voxels = _snapshot_voxels;
-            _snapshot_voxels = tempVoxels;
+            // Swap slot buffers
+            var tempSlots = slots;
+            slots = _snapshot_slots;
+            _snapshot_slots = tempSlots;
 
             // Swap brick maps (struct swap moves the underlying pointers wholesale)
             var tempBrickMap = brickMap;
@@ -454,18 +788,39 @@ namespace Voxelis
         /// </remarks>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void SetBlock(int x, int y, int z, Block b)
+            => SetSlot(SectorSlotId.Block, x, y, z, b);
+
+        public void SetMeta(int x, int y, int z, Meta meta)
+            => SetSlot(SectorSlotId.Meta, x, y, z, meta);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void SetSlot<T>(SectorSlotId slotId, int x, int y, int z, T value) where T : unmanaged
         {
             ref SparseBrickIdTable targetBrickMap = ref(_snapshot_enabled ? ref _snapshot_brickMap : ref brickMap);
-            ref UnsafeList<Block> targetVoxels = ref(_snapshot_enabled ? ref _snapshot_voxels : ref voxels);
+            ref UnsafeList<SectorSlotStorage> targetSlots = ref(_snapshot_enabled ? ref _snapshot_slots : ref slots);
 
             int bx = x >> SHIFT_IN_BLOCKS;
             int by = y >> SHIFT_IN_BLOCKS;
             int bz = z >> SHIFT_IN_BLOCKS;
             int brick_sector_index_id = ToBrickIdx(bx, by, bz);
             short bid = targetBrickMap.indices[brick_sector_index_id];
+            bool valueIsDefault = IsDefaultValue(ref value);
 
-            // Skip setting empty to empty bricks
-            if (bid == BRICKID_EMPTY && b.isEmpty)
+            // Skip setting default data to absent shared bricks or absent slot bricks.
+            if (bid == BRICKID_EMPTY && valueIsDefault)
+            {
+                return;
+            }
+
+            int slotIndex = SlotIndex(slotId);
+            int slotStride = UnsafeUtility.SizeOf<T>();
+            SectorSlotStorage* targetSlot = null;
+            if (targetSlots.IsCreated && slotIndex >= 0 && slotIndex < targetSlots.Length)
+            {
+                targetSlot = targetSlots.Ptr + slotIndex;
+            }
+
+            if ((targetSlot == null || !targetSlot->IsCreated) && valueIsDefault)
             {
                 return;
             }
@@ -483,33 +838,76 @@ namespace Voxelis
 
                 if (exceedsCapacity)
                 {
-                    // Fresh high-water-mark id: extend the voxels list to hold the new brick.
-                    targetVoxels.AddReplicate(Block.Empty, BLOCKS_IN_BRICK);
+                    for (int i = 0; i < targetSlots.Length; i++)
+                    {
+                        SectorSlotStorage* slot = targetSlots.Ptr + i;
+                        if (slot->IsCreated)
+                        {
+                            slot->EnsureBrickCapacity(targetBrickMap.Capacity);
+                        }
+                    }
                 }
-#if VOXELISX_CLEAR_NEW_BRICK
                 else
                 {
-                    // Reused id from the free list: clear the stale voxels left by the previous occupant.
-                    int start = newId * BLOCKS_IN_BRICK;
-                    for (int i = 0; i < BLOCKS_IN_BRICK; i++) targetVoxels[start + i] = Block.Empty;
+                    for (int i = 0; i < targetSlots.Length; i++)
+                    {
+                        SectorSlotStorage* slot = targetSlots.Ptr + i;
+                        if (slot->IsCreated)
+                        {
+                            slot->ClearBrick(bid);
+                        }
+                    }
                 }
-#endif
 
-                MarkBrickDirty(brick_sector_index_id, DirtyFlags.BrickAdded, 0);
+                if (slotId == SectorSlotId.Block)
+                {
+                    MarkBrickDirty(brick_sector_index_id, DirtyFlags.BrickAdded, 0);
+                }
 
                 Interlocked.Decrement(ref _sectorAllocLock);
             }
 
-            // Set the block in target brick
-            int voxelIdxInBrick = ToBlockIdx(x & BRICK_MASK, y & BRICK_MASK, z & BRICK_MASK);
-            int vid = bid * BLOCKS_IN_BRICK + voxelIdxInBrick;
+            if (targetSlot == null || !targetSlot->IsCreated)
+            {
+                int stride = DefaultStrideForSlot(slotId);
+                if (stride == 0)
+                {
+                    stride = slotStride;
+                }
 
-            if (targetVoxels[vid] != b)
+                if (!targetSlots.IsCreated)
+                {
+                    targetSlots = new UnsafeList<SectorSlotStorage>(MAX_SLOTS, _allocator);
+                    targetSlots.Resize(MAX_SLOTS, NativeArrayOptions.ClearMemory);
+                }
+
+                targetSlot = targetSlots.Ptr + slotIndex;
+                *targetSlot = SectorSlotStorage.New(stride, targetBrickMap.Capacity, _allocator);
+            }
+
+            if (valueIsDefault && !targetSlot->HasBrick(bid))
+            {
+                return;
+            }
+
+            if (!targetSlot->HasBrick(bid))
+            {
+                targetSlot->EnsureBrickPresent(bid);
+            }
+
+            // Set the slot value in target brick
+            int voxelIdxInBrick = ToBlockIdx(x & BRICK_MASK, y & BRICK_MASK, z & BRICK_MASK);
+            T previous = targetSlot->Get<T>(bid, voxelIdxInBrick);
+
+            if (!ValuesEqual(ref previous, ref value))
             {
                 // Use precomputed lookup table for propagation direction mask
                 uint directionMask = GetVoxelPropagationMask(voxelIdxInBrick);
-                MarkBrickDirty(brick_sector_index_id, DirtyPropagationSettings.DefaultSetBlockFlags, directionMask);
-                targetVoxels[vid] = b;
+                DirtyFlags dirtyFlags = slotId == SectorSlotId.Block
+                    ? DirtyPropagationSettings.DefaultSetBlockFlags
+                    : DirtyFlags.GeneralAutomata;
+                MarkBrickDirty(brick_sector_index_id, dirtyFlags, directionMask);
+                targetSlot->Set(bid, voxelIdxInBrick, value);
             }
         }
 
@@ -671,9 +1069,16 @@ namespace Voxelis
         public void UpdateNonEmptyBricks()
         {
             NonEmptyBricks.Clear();
+            SectorSlotStorage* blockSlot = GetSlotStorage(SectorSlotId.Block);
+            if (blockSlot == null)
+            {
+                return;
+            }
+
             for (short i = 0; i < SIZE_IN_BRICKS * SIZE_IN_BRICKS * SIZE_IN_BRICKS; i++)
             {
-                if (brickIdx[i] != BRICKID_EMPTY)
+                short bid = brickIdx[i];
+                if (bid != BRICKID_EMPTY && blockSlot->HasBrick(bid))
                 {
                     NonEmptyBricks.Add(i);
                 }

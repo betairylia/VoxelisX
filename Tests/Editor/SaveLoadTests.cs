@@ -84,6 +84,22 @@ namespace VoxelisX.Tests
         }
 
         [Test]
+        public void MetaOnlyBrickProducesZeroPreview()
+        {
+            var handle = SectorHandle.AllocEmpty();
+            try
+            {
+                handle.SetMeta(0, 0, 0, new Meta { data = 3 });
+
+                uint[] preview = new uint[Sector.BRICKS_IN_SECTOR];
+                PreviewBuilder.Build(handle.Ptr, preview);
+
+                Assert.That(preview[Sector.ToBrickIdx(0, 0, 0)], Is.EqualTo(0u));
+            }
+            finally { handle.Dispose(Allocator.Persistent); }
+        }
+
+        [Test]
         public void BlockInOppositeSubBrickCornerSetsBit7()
         {
             var handle = SectorHandle.AllocEmpty();
@@ -174,6 +190,8 @@ namespace VoxelisX.Tests
                 handle.SetBlock(64, 64, 64, b2);
                 handle.SetBlock(127, 127, 127, b3);
                 handle.SetBlock(8, 0, 0, b1);
+                handle.SetMeta(8, 0, 0, new Meta { data = 0x1234 });
+                handle.SetMeta(16, 0, 0, new Meta { data = 0xBEEF });
 
                 ref Sector source = ref handle.Get();
                 int sourceCount = source.brickMap.Count;
@@ -190,6 +208,9 @@ namespace VoxelisX.Tests
                     Assert.That(loaded.GetBlock(127, 127, 127), Is.EqualTo(b3));
                     Assert.That(loaded.GetBlock(8, 0, 0), Is.EqualTo(b1));
                     Assert.That(loaded.GetBlock(1, 1, 1), Is.EqualTo(Block.Empty));
+                    Assert.That(loaded.GetMeta(8, 0, 0), Is.EqualTo(new Meta { data = 0x1234 }));
+                    Assert.That(loaded.GetMeta(16, 0, 0), Is.EqualTo(new Meta { data = 0xBEEF }));
+                    Assert.That(loaded.GetBlock(16, 0, 0), Is.EqualTo(Block.Empty));
                 }
                 finally { loaded.Dispose(Allocator.Persistent); }
             }
@@ -272,7 +293,7 @@ namespace VoxelisX.Tests
 
                 ref Sector source = ref handle.Get();
                 byte[] packed = SectorSerializer.Pack(in source);
-                int rawBytes = source.brickMap.Capacity * Sector.BLOCKS_IN_BRICK * sizeof(uint)
+                int rawBytes = source.brickMap.Capacity * Sector.BLOCKS_IN_BRICK * sizeof(ushort)
                                + Sector.BRICKS_IN_SECTOR * sizeof(short)
                                + Sector.BRICKS_IN_SECTOR * sizeof(ushort)
                                + 14;

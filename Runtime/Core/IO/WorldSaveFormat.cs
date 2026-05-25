@@ -38,7 +38,7 @@ namespace Voxelis.IO
         /// <summary>Magic value for the file header: "VXLS" interpreted as little-endian u32.</summary>
         public const uint Magic = 0x534C5856u;
 
-        public const ushort CurrentVersion = 1;
+        public const ushort CurrentVersion = 2;
         public const int HeaderBytes = 64;
 
         /// <summary>Size in bytes of the uncompressed per-sector preview blob (u32 per brick).</summary>

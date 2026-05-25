@@ -1,65 +1,64 @@
 using NUnit.Framework;
+using Unity.Collections.LowLevel.Unsafe;
 using Voxelis;
 
 namespace VoxelisX.Tests
 {
-    public class BlockPackingTests
+    public unsafe class BlockPackingTests
     {
         [Test]
         public void DefaultBlockIsEmpty()
         {
             var block = new Block();
 
-            Assert.That(block.data, Is.EqualTo(0u));
+            Assert.That(UnsafeUtility.SizeOf<Block>(), Is.EqualTo(sizeof(ushort)));
+            Assert.That(block.data, Is.EqualTo((ushort)0));
             Assert.That(block.id, Is.EqualTo(0));
-            Assert.That(block.meta, Is.EqualTo(0));
             Assert.That(block.isEmpty, Is.True);
         }
 
         [Test]
-        public void IdConstructorStoresIdInUpperBits()
+        public void IdConstructorStoresVisibleValue()
         {
             var block = new Block(0x1234);
 
-            Assert.That(block.data, Is.EqualTo(0x12340000u));
+            Assert.That(block.data, Is.EqualTo((ushort)0x1234));
             Assert.That(block.id, Is.EqualTo(0x1234));
-            Assert.That(block.meta, Is.EqualTo(0));
         }
 
         [Test]
-        public void RawDataExposesIdAndMeta()
+        public void MetaIsSeparateFixedSizeSlotValue()
         {
-            var block = new Block { data = 0xABCD1357u };
+            var block = new Block { data = 0xABCD };
+            var meta = new Meta { data = 0x1357 };
 
             Assert.That(block.id, Is.EqualTo(0xABCD));
-            Assert.That(block.meta, Is.EqualTo(0x1357));
+            Assert.That(UnsafeUtility.SizeOf<Meta>(), Is.EqualTo(sizeof(ushort)));
+            Assert.That(meta.data, Is.EqualTo(0x1357));
         }
 
         [Test]
         public void IsEmptyRequiresAllDataBitsToBeZero()
         {
-            var metadataOnly = new Block { data = 1u };
+            var visible = new Block { data = 1 };
 
             Assert.That(Block.Empty.isEmpty, Is.True);
-            Assert.That(metadataOnly.isEmpty, Is.False);
+            Assert.That(visible.isEmpty, Is.False);
         }
 
         [Test]
         public void IsRendererEmptyUsesBlockIdOnly()
         {
-            var metadataOnly = new Block { data = 1u };
-
             Assert.That(Block.Empty.isRendererEmpty, Is.True);
-            Assert.That(metadataOnly.isRendererEmpty, Is.True);
             Assert.That(new Block(1).isRendererEmpty, Is.False);
         }
 
         [Test]
         public void EqualityAndHashCodeUsePackedData()
         {
-            var a = new Block { data = 0x00010002u };
-            var b = new Block { data = 0x00010002u };
-            var c = new Block { data = 0x00010003u };
+            var a = new Block { data = 0x1002 };
+            var b = new Block { data = 0x1002 };
+            var c = new Block { data = 0x1003 };
 
             Assert.That(a, Is.EqualTo(b));
             Assert.That(a == b, Is.True);
@@ -74,7 +73,6 @@ namespace VoxelisX.Tests
             ushort expectedId = (ushort)((3 << 11) | (4 << 6) | (5 << 1) | 1);
 
             Assert.That(block.id, Is.EqualTo(expectedId));
-            Assert.That(block.meta, Is.EqualTo(0));
         }
     }
 }

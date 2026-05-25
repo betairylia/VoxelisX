@@ -11,6 +11,7 @@ namespace Voxelis.IO
     /// load/save of individual sectors needs no global state.
     ///
     /// Uncompressed payload layout (little-endian, matches <c>BinaryWriter</c> defaults):
+    ///   u32   magic ('VXS2')
     ///   u32   brickMapCapacity
     ///   u32   brickMapCount       (sanity check; recomputable from indices)
     ///   u32   freeCount
@@ -18,10 +19,18 @@ namespace Voxelis.IO
     ///   i16   freelist[freeCount]
     ///   u16   sectorRequireUpdateFlags
     ///   u16   brickRequireUpdateFlags[Sector.BRICKS_IN_SECTOR]
-    ///   u32   voxels[brickMapCapacity * Sector.BLOCKS_IN_BRICK]
+    ///   u32   slotRecordCount
+    ///   repeated slot records:
+    ///     u8    slotId
+    ///     u16   stride
+    ///     u32   presentCount
+    ///     u8    brickPresent[brickMapCapacity]
+    ///     u8    rawSlotData[brickMapCapacity * Sector.BLOCKS_IN_BRICK * stride]
     /// </summary>
     public static class SectorSerializer
     {
+        private const uint Magic = 0x32535856u; // VXS2, little-endian
+
         public static unsafe byte[] Pack(in Sector sector)
         {
             using var rawMs = new MemoryStream();
@@ -31,6 +40,7 @@ namespace Voxelis.IO
                 int count = sector.brickMap.Count;
                 int freeCount = sector.brickMap.FreeCount;
 
+                bw.Write(Magic);
                 bw.Write((uint)capacity);
                 bw.Write((uint)count);
                 bw.Write((uint)freeCount);
@@ -45,10 +55,37 @@ namespace Voxelis.IO
                 bw.Write(sector.sectorRequireUpdateFlags);
                 WriteRawBytes(bw, sector.brickRequireUpdateFlags, Sector.BRICKS_IN_SECTOR * sizeof(ushort));
 
-                int voxelCount = capacity * Sector.BLOCKS_IN_BRICK;
-                if (voxelCount > 0)
+                int slotRecordCount = 0;
+                if (sector.slots.IsCreated)
                 {
-                    WriteRawBytes(bw, sector.voxels.Ptr, voxelCount * sizeof(uint));
+                    for (int i = 0; i < sector.slots.Length; i++)
+                    {
+                        if (sector.slots[i].IsCreated)
+                        {
+                            slotRecordCount++;
+                        }
+                    }
+                }
+
+                bw.Write((uint)slotRecordCount);
+
+                if (sector.slots.IsCreated)
+                {
+                    for (int i = 0; i < sector.slots.Length; i++)
+                    {
+                        SectorSlotStorage slot = sector.slots[i];
+                        if (!slot.IsCreated) continue;
+
+                        bw.Write((byte)i);
+                        bw.Write((ushort)slot.stride);
+                        bw.Write((uint)slot.presentCount);
+
+                        if (capacity > 0)
+                        {
+                            WriteRawBytes(bw, slot.brickPresent.Ptr, capacity);
+                            WriteRawBytes(bw, slot.data.Ptr, capacity * Sector.BLOCKS_IN_BRICK * slot.stride);
+                        }
+                    }
                 }
             }
 
@@ -71,13 +108,19 @@ namespace Voxelis.IO
 
             using var br = new BinaryReader(rawMs);
 
+            uint magic = br.ReadUInt32();
+            if (magic != Magic)
+            {
+                throw new InvalidDataException("Unsupported sector payload format.");
+            }
+
             int capacity = (int)br.ReadUInt32();
             int count = (int)br.ReadUInt32();
             int freeCount = (int)br.ReadUInt32();
 
             // Allocate the sector with enough initial brick capacity to avoid a resize.
             int initialBricks = capacity > 0 ? capacity : 1;
-            var sector = Sector.New(allocator, initialBricks, NativeArrayOptions.UninitializedMemory);
+            var sector = Sector.New(allocator, initialBricks, NativeArrayOptions.UninitializedMemory, createBlockSlot: false);
 
             ReadRawBytes(br, sector.brickMap.indices, Sector.BRICKS_IN_SECTOR * sizeof(short));
 
@@ -91,11 +134,23 @@ namespace Voxelis.IO
             sector.sectorRequireUpdateFlags = br.ReadUInt16();
             ReadRawBytes(br, sector.brickRequireUpdateFlags, Sector.BRICKS_IN_SECTOR * sizeof(ushort));
 
-            int voxelCount = capacity * Sector.BLOCKS_IN_BRICK;
-            if (voxelCount > 0)
+            int slotRecordCount = (int)br.ReadUInt32();
+            for (int i = 0; i < slotRecordCount; i++)
             {
-                sector.voxels.Resize(voxelCount, NativeArrayOptions.UninitializedMemory);
-                ReadRawBytes(br, sector.voxels.Ptr, voxelCount * sizeof(uint));
+                int slotId = br.ReadByte();
+                int stride = br.ReadUInt16();
+                int presentCount = (int)br.ReadUInt32();
+
+                var slot = SectorSlotStorage.New(stride, capacity, allocator);
+                slot.presentCount = presentCount;
+
+                if (capacity > 0)
+                {
+                    ReadRawBytes(br, slot.brickPresent.Ptr, capacity);
+                    ReadRawBytes(br, slot.data.Ptr, capacity * Sector.BLOCKS_IN_BRICK * stride);
+                }
+
+                *(sector.slots.Ptr + slotId) = slot;
             }
 
             // Dirty/runtime-only buffers stay zero-initialized — Sector.New already cleared them
