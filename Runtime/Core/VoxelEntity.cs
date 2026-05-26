@@ -197,6 +197,36 @@ namespace Voxelis
                 b
             );
         }
+        
+        /// TODO: automatic configuration pipelines
+        /// <summary>
+        /// Sets the meta at the specified world position. Creates a new sector if one doesn't exist.
+        /// </summary>
+        /// <param name="pos">World position of the block in block coordinates.</param>
+        /// <param name="b">The block data to set.</param>
+        /// <remarks>
+        /// If the sector doesn't exist at the calculated sector position, a new sector will be automatically created.
+        /// </remarks>
+        public void SetMeta(int3 pos, Meta m)
+        {
+            int3 sectorPos = new int3(
+                pos.x >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS),
+                pos.y >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS),
+                pos.z >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS));
+
+            if (!sectors.ContainsKey(sectorPos))
+            {
+                AddEmptySectorAt(sectorPos);
+            }
+
+            // Modify sector directly in dictionary
+            sectors[sectorPos].SetMeta(
+                pos.x & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
+                pos.y & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
+                pos.z & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
+                m
+            );
+        }
 
         /// <summary>
         /// Calculates the total host (CPU) memory usage of all sectors in this entity.
@@ -628,6 +658,11 @@ namespace Voxelis
         public void SetBlock(int3 pos, Block b)
         {
             data.SetBlock(pos, b);
+        }
+        
+        public void SetMeta(int3 pos, Meta m)
+        {
+            data.SetMeta(pos, m);
         }
 
         /// <summary>

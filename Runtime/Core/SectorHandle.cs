@@ -93,11 +93,6 @@ namespace Voxelis
             _ptr->SetMeta(x, y, z, meta);
         }
 
-        public void SetSlot<T>(SectorSlotId slotId, int x, int y, int z, T value) where T : unmanaged
-        {
-            _ptr->SetSlot(slotId, x, y, z, value);
-        }
-
         /// <summary>
         /// Gets a pointer to a brick within the sector.
         /// </summary>

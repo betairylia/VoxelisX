@@ -23,8 +23,6 @@ namespace Voxelis.IO
     ///   repeated slot records:
     ///     u8    slotId
     ///     u16   stride
-    ///     u32   presentCount
-    ///     u8    brickPresent[brickMapCapacity]
     ///     u8    rawSlotData[brickMapCapacity * Sector.BLOCKS_IN_BRICK * stride]
     /// </summary>
     public static class SectorSerializer
@@ -78,11 +76,9 @@ namespace Voxelis.IO
 
                         bw.Write((byte)i);
                         bw.Write((ushort)slot.stride);
-                        bw.Write((uint)slot.presentCount);
 
                         if (capacity > 0)
                         {
-                            WriteRawBytes(bw, slot.brickPresent.Ptr, capacity);
                             WriteRawBytes(bw, slot.data.Ptr, capacity * Sector.BLOCKS_IN_BRICK * slot.stride);
                         }
                     }
@@ -120,7 +116,7 @@ namespace Voxelis.IO
 
             // Allocate the sector with enough initial brick capacity to avoid a resize.
             int initialBricks = capacity > 0 ? capacity : 1;
-            var sector = Sector.New(allocator, initialBricks, NativeArrayOptions.UninitializedMemory, createBlockSlot: false);
+            var sector = Sector.New(allocator, initialBricks, NativeArrayOptions.UninitializedMemory, createDefaultSlots: false);
 
             ReadRawBytes(br, sector.brickMap.indices, Sector.BRICKS_IN_SECTOR * sizeof(short));
 
@@ -139,14 +135,11 @@ namespace Voxelis.IO
             {
                 int slotId = br.ReadByte();
                 int stride = br.ReadUInt16();
-                int presentCount = (int)br.ReadUInt32();
 
                 var slot = SectorSlotStorage.New(stride, capacity, allocator);
-                slot.presentCount = presentCount;
 
                 if (capacity > 0)
                 {
-                    ReadRawBytes(br, slot.brickPresent.Ptr, capacity);
                     ReadRawBytes(br, slot.data.Ptr, capacity * Sector.BLOCKS_IN_BRICK * stride);
                 }
 

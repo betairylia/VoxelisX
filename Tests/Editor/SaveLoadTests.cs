@@ -84,22 +84,6 @@ namespace VoxelisX.Tests
         }
 
         [Test]
-        public void MetaOnlyBrickProducesZeroPreview()
-        {
-            var handle = SectorHandle.AllocEmpty();
-            try
-            {
-                handle.SetMeta(0, 0, 0, new Meta { data = 3 });
-
-                uint[] preview = new uint[Sector.BRICKS_IN_SECTOR];
-                PreviewBuilder.Build(handle.Ptr, preview);
-
-                Assert.That(preview[Sector.ToBrickIdx(0, 0, 0)], Is.EqualTo(0u));
-            }
-            finally { handle.Dispose(Allocator.Persistent); }
-        }
-
-        [Test]
         public void BlockInOppositeSubBrickCornerSetsBit7()
         {
             var handle = SectorHandle.AllocEmpty();

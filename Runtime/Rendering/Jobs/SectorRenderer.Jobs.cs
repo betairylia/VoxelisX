@@ -98,7 +98,6 @@ namespace Voxelis.Rendering
                         // Check if brick exists (not empty)
                         short bid = sector.brickIdx[brickIdxAbs];
                         if (bid == Sector.BRICKID_EMPTY) continue;
-                        if (!sector.HasSlotBrick(SectorSlotId.Block, bid)) continue;
 
                         // Create record for this brick
                         var record = new BrickUpdateInfo()
