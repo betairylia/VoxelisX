@@ -72,7 +72,7 @@ namespace Voxelis
         /// <summary>
         /// Copies a sector and adds it at the specified position.
         /// </summary>
-        public void CopyAndAddSectorAt(int3 pos, Sector sector)
+        public void ShallowCopyAndAddSectorAt(int3 pos, Sector sector)
         {
             // Allocate memory for the Sector struct itself
             Sector* sectorPtr = (Sector*)UnsafeUtility.Malloc(
@@ -537,9 +537,9 @@ namespace Voxelis
         /// <summary>
         /// Copies a sector and adds it at the specified position.
         /// </summary>
-        public void CopyAndAddSectorAt(int3 pos, Sector sector)
+        public void ShallowCopyAndAddSectorAt(int3 pos, Sector sector)
         {
-            data.CopyAndAddSectorAt(pos, sector);
+            data.ShallowCopyAndAddSectorAt(pos, sector);
         }
 
         /// <summary>

@@ -331,11 +331,13 @@ namespace VoxelisX.Tests
 
             using (var writer = SingleFileSaveStorage.OpenWrite(_tempPath))
             {
-                writer.BeginEntity(entityGuid, transform, entityFlags);
-                writer.WriteSector(coordA, previewA, payloadA);
-                writer.WriteSector(coordB, previewB, payloadB);
-                writer.EndEntity();
-                writer.Finish();
+                var entityRecord = new EntityRecord(entityGuid, transform, entityFlags);
+                writer.WriteEntity(in entityRecord, new[]
+                {
+                    new SectorWriteRecord(coordA, previewA, payloadA),
+                    new SectorWriteRecord(coordB, previewB, payloadB),
+                });
+                writer.Commit();
             }
 
             using var reader = SingleFileSaveStorage.OpenRead(_tempPath);
@@ -369,6 +371,30 @@ namespace VoxelisX.Tests
         }
 
         [Test]
+        public void OpenRead_RejectsSaveWithoutDeflateFlag()
+        {
+            WriteMinimalSave();
+            OverwriteSaveFlags(SaveFlags.None);
+
+            Assert.Throws<InvalidDataException>(() =>
+            {
+                using var _ = SingleFileSaveStorage.OpenRead(_tempPath);
+            });
+        }
+
+        [Test]
+        public void OpenRead_RejectsUnknownSaveFlags()
+        {
+            WriteMinimalSave();
+            OverwriteSaveFlags(SaveFlags.Deflate | (SaveFlags)0x8000);
+
+            Assert.Throws<InvalidDataException>(() =>
+            {
+                using var _ = SingleFileSaveStorage.OpenRead(_tempPath);
+            });
+        }
+
+        [Test]
         public void ReadPreview_DoesNotRequirePayloadAccess()
         {
             // Write a sector with a recognizable preview and a deliberately non-trivial payload,
@@ -383,10 +409,12 @@ namespace VoxelisX.Tests
 
             using (var writer = SingleFileSaveStorage.OpenWrite(_tempPath))
             {
-                writer.BeginEntity(Guid.NewGuid(), default, 0);
-                writer.WriteSector(coord, preview, payload);
-                writer.EndEntity();
-                writer.Finish();
+                var entityRecord = new EntityRecord(Guid.NewGuid(), default, 0);
+                writer.WriteEntity(in entityRecord, new[]
+                {
+                    new SectorWriteRecord(coord, preview, payload),
+                });
+                writer.Commit();
             }
 
             using var reader = SingleFileSaveStorage.OpenRead(_tempPath);
@@ -415,10 +443,12 @@ namespace VoxelisX.Tests
                 int3 coord = new int3(0, 0, 0);
                 using (var writer = SingleFileSaveStorage.OpenWrite(_tempPath))
                 {
-                    writer.BeginEntity(Guid.NewGuid(), default, 0);
-                    writer.WriteSector(coord, preview, payload);
-                    writer.EndEntity();
-                    writer.Finish();
+                    var entityRecord = new EntityRecord(Guid.NewGuid(), default, 0);
+                    writer.WriteEntity(in entityRecord, new[]
+                    {
+                        new SectorWriteRecord(coord, preview, payload),
+                    });
+                    writer.Commit();
                 }
 
                 using var reader = SingleFileSaveStorage.OpenRead(_tempPath);
@@ -433,6 +463,27 @@ namespace VoxelisX.Tests
                 finally { loaded.Dispose(Allocator.Persistent); }
             }
             finally { handle.Dispose(Allocator.Persistent); }
+        }
+
+        private void WriteMinimalSave()
+        {
+            uint[] preview = new uint[Sector.BRICKS_IN_SECTOR];
+            byte[] payload = new byte[] { 1, 2, 3 };
+            using var writer = SingleFileSaveStorage.OpenWrite(_tempPath);
+            var entityRecord = new EntityRecord(Guid.NewGuid(), default, 0);
+            writer.WriteEntity(in entityRecord, new[]
+            {
+                new SectorWriteRecord(new int3(0, 0, 0), preview, payload),
+            });
+            writer.Commit();
+        }
+
+        private void OverwriteSaveFlags(SaveFlags flags)
+        {
+            using var fs = new FileStream(_tempPath, FileMode.Open, FileAccess.Write, FileShare.None);
+            using var bw = new BinaryWriter(fs);
+            fs.Position = sizeof(uint) + sizeof(ushort);
+            bw.Write((ushort)flags);
         }
     }
 }

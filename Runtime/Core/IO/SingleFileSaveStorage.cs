@@ -7,7 +7,7 @@ namespace Voxelis.IO
 {
     /// <summary>
     /// Single-file <c>.vxw</c> implementation of <see cref="IWorldSaveWriter"/> / <see cref="IWorldSaveReader"/>.
-    /// Writes are atomic: a <c>.tmp</c> sibling is written and then renamed in place on <see cref="IWorldSaveWriter.Finish"/>.
+    /// Writes are atomic: a <c>.tmp</c> sibling is written and then renamed in place on <see cref="IWorldSaveWriter.Commit"/>.
     /// </summary>
     public sealed class SingleFileSaveStorage : IWorldSaveWriter, IWorldSaveReader
     {
@@ -17,15 +17,11 @@ namespace Voxelis.IO
         private FileStream _stream;
         private BinaryWriter _writer;
         private BinaryReader _reader;
+        private bool _committed;
 
         // Write state
         private readonly List<EntityRecord> _entityRecords = new();
         private readonly List<(long IndexOffset, int SectorCount)> _entityIndexLocations = new();
-        private readonly List<SectorIndexEntry> _currentSectorEntries = new();
-        private bool _entityOpen;
-        private Guid _pendingGuid;
-        private EntityTransformRecord _pendingTransform;
-        private ushort _pendingFlags;
 
         // Read state
         private SaveHeader _header;
@@ -35,16 +31,12 @@ namespace Voxelis.IO
 
         public static SingleFileSaveStorage OpenWrite(string path)
         {
-            var s = new SingleFileSaveStorage(path, isWrite: true);
-            s.ReserveHeader();
-            return s;
+            return new SingleFileSaveStorage(path, isWrite: true);
         }
 
         public static SingleFileSaveStorage OpenRead(string path)
         {
-            var s = new SingleFileSaveStorage(path, isWrite: false);
-            s.LoadIndex();
-            return s;
+            return new SingleFileSaveStorage(path, isWrite: false);
         }
 
         private SingleFileSaveStorage(string path, bool isWrite)
@@ -52,44 +44,66 @@ namespace Voxelis.IO
             _path = path;
             _isWriting = isWrite;
 
-            if (isWrite)
+            try
             {
-                _tmpPath = path + ".tmp";
-                string dir = Path.GetDirectoryName(path);
-                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-                _stream = new FileStream(_tmpPath, FileMode.Create, FileAccess.Write, FileShare.None);
-                _writer = new BinaryWriter(_stream);
+                if (isWrite)
+                {
+                    _tmpPath = path + ".tmp";
+                    string dir = Path.GetDirectoryName(path);
+                    if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+                    _stream = new FileStream(_tmpPath, FileMode.Create, FileAccess.Write, FileShare.None);
+                    _writer = new BinaryWriter(_stream);
+                    _writer.Write(new byte[WorldSaveFormat.HeaderBytes]);
+                }
+                else
+                {
+                    _stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+                    _reader = new BinaryReader(_stream);
+                    LoadIndex();
+                }
             }
-            else
+            catch
             {
-                _stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-                _reader = new BinaryReader(_stream);
+                Dispose();
+                throw;
             }
-        }
-
-        private void ReserveHeader()
-        {
-            byte[] zeros = new byte[WorldSaveFormat.HeaderBytes];
-            _writer.Write(zeros);
         }
 
         // ---------- Write ----------
 
-        public void BeginEntity(Guid guid, in EntityTransformRecord transform, ushort entityRequireUpdateFlags)
+        public void WriteEntity(in EntityRecord entity, IEnumerable<SectorWriteRecord> sectors)
         {
             EnsureWriting();
-            if (_entityOpen) throw new InvalidOperationException("Previous entity not ended.");
-            _entityOpen = true;
-            _currentSectorEntries.Clear();
-            _pendingGuid = guid;
-            _pendingTransform = transform;
-            _pendingFlags = entityRequireUpdateFlags;
+            if (sectors == null) throw new ArgumentNullException(nameof(sectors));
+
+            var sectorEntries = new List<SectorIndexEntry>();
+            foreach (var sector in sectors)
+            {
+                WriteSectorRegion(sector.Coord, sector.Preview, sector.CompressedPayload, sectorEntries);
+            }
+
+            long indexOffset = _stream.Position;
+            int sectorCount = sectorEntries.Count;
+            for (int i = 0; i < sectorCount; i++)
+            {
+                var e = sectorEntries[i];
+                _writer.Write(e.Coord.x);
+                _writer.Write(e.Coord.y);
+                _writer.Write(e.Coord.z);
+                _writer.Write(e.RegionOffset);
+                _writer.Write(e.RegionSize);
+            }
+
+            _entityRecords.Add(entity);
+            _entityIndexLocations.Add((indexOffset, sectorCount));
         }
 
-        public void WriteSector(int3 coord, uint[] preview, byte[] compressedPayload)
+        private void WriteSectorRegion(
+            int3 coord,
+            uint[] preview,
+            byte[] compressedPayload,
+            List<SectorIndexEntry> sectorEntries)
         {
-            EnsureWriting();
-            if (!_entityOpen) throw new InvalidOperationException("BeginEntity not called.");
             if (preview == null || preview.Length != Sector.BRICKS_IN_SECTOR)
                 throw new ArgumentException($"preview must have {Sector.BRICKS_IN_SECTOR} entries.", nameof(preview));
             if (compressedPayload == null) throw new ArgumentNullException(nameof(compressedPayload));
@@ -104,38 +118,15 @@ namespace Voxelis.IO
             _writer.Write(compressedPayload);
 
             long regionEnd = _stream.Position;
-            _currentSectorEntries.Add(new SectorIndexEntry(
+            sectorEntries.Add(new SectorIndexEntry(
                 coord,
                 (ulong)regionOffset,
                 (uint)(regionEnd - regionOffset)));
         }
 
-        public void EndEntity()
+        public void Commit()
         {
             EnsureWriting();
-            if (!_entityOpen) throw new InvalidOperationException("BeginEntity not called.");
-
-            long indexOffset = _stream.Position;
-            int sectorCount = _currentSectorEntries.Count;
-            for (int i = 0; i < sectorCount; i++)
-            {
-                var e = _currentSectorEntries[i];
-                _writer.Write(e.Coord.x);
-                _writer.Write(e.Coord.y);
-                _writer.Write(e.Coord.z);
-                _writer.Write(e.RegionOffset);
-                _writer.Write(e.RegionSize);
-            }
-
-            _entityRecords.Add(new EntityRecord(_pendingGuid, _pendingTransform, _pendingFlags));
-            _entityIndexLocations.Add((indexOffset, sectorCount));
-            _entityOpen = false;
-        }
-
-        public void Finish()
-        {
-            EnsureWriting();
-            if (_entityOpen) throw new InvalidOperationException("Entity not ended.");
 
             long entityTableOffset = _stream.Position;
             _writer.Write((uint)_entityRecords.Count);
@@ -157,11 +148,11 @@ namespace Voxelis.IO
 
             // Backpatch header at offset 0
             _stream.Position = 0;
-            _writer.Write(WorldSaveFormat.Magic);
+            _writer.Write(WorldSaveFormat.FileMagic);
             _writer.Write(WorldSaveFormat.CurrentVersion);
             _writer.Write((ushort)SaveFlags.Deflate);
             _writer.Write((ulong)entityTableOffset);
-            // Remaining reserved bytes stay zero (allocated by ReserveHeader).
+            // Remaining reserved bytes stay zero (allocated by the constructor's header reservation).
 
             _writer.Flush();
             _writer.Dispose();
@@ -171,6 +162,7 @@ namespace Voxelis.IO
 
             if (File.Exists(_path)) File.Delete(_path);
             File.Move(_tmpPath, _path);
+            _committed = true;
         }
 
         // ---------- Read ----------
@@ -180,16 +172,19 @@ namespace Voxelis.IO
             EnsureReading();
             _stream.Position = 0;
             uint magic = _reader.ReadUInt32();
-            if (magic != WorldSaveFormat.Magic)
+            if (magic != WorldSaveFormat.FileMagic)
                 throw new InvalidDataException($"Bad save file magic 0x{magic:X8}.");
 
             ushort version = _reader.ReadUInt16();
             ushort flagsRaw = _reader.ReadUInt16();
             ulong entityTableOffset = _reader.ReadUInt64();
-            _header = new SaveHeader(version, (SaveFlags)flagsRaw);
+            var flags = (SaveFlags)flagsRaw;
+            _header = new SaveHeader(version, flags);
 
             if (version > WorldSaveFormat.CurrentVersion)
                 throw new InvalidDataException($"Save file version {version} is newer than supported ({WorldSaveFormat.CurrentVersion}).");
+            if (flags != SaveFlags.Deflate)
+                throw new InvalidDataException($"Unsupported save flags 0x{flagsRaw:X4}; this reader requires Deflate-compressed sector payloads.");
 
             _stream.Position = (long)entityTableOffset;
             int entityCount = (int)_reader.ReadUInt32();
@@ -257,6 +252,9 @@ namespace Voxelis.IO
         {
             EnsureReading();
             var entry = _readSectorMaps[entityIndex][coord];
+            if ((long)entry.RegionSize < WorldSaveFormat.PreviewBytes + sizeof(uint))
+                throw new InvalidDataException("Sector region is too small to contain a preview and payload size.");
+
             _stream.Position = (long)entry.RegionOffset;
             byte[] previewBytes = _reader.ReadBytes(WorldSaveFormat.PreviewBytes);
             if (previewBytes.Length != WorldSaveFormat.PreviewBytes)
@@ -270,8 +268,16 @@ namespace Voxelis.IO
         {
             EnsureReading();
             var entry = _readSectorMaps[entityIndex][coord];
+            long expectedPayloadSize = (long)entry.RegionSize - WorldSaveFormat.PreviewBytes - sizeof(uint);
+            if (expectedPayloadSize < 0 || expectedPayloadSize > int.MaxValue)
+                throw new InvalidDataException($"Sector region has invalid payload size {expectedPayloadSize}.");
+
             _stream.Position = (long)entry.RegionOffset + WorldSaveFormat.PreviewBytes;
             uint payloadSize = _reader.ReadUInt32();
+            if ((long)payloadSize != expectedPayloadSize)
+                throw new InvalidDataException(
+                    $"Sector payload size {payloadSize} does not match indexed region size {expectedPayloadSize}.");
+
             byte[] payload = _reader.ReadBytes((int)payloadSize);
             if (payload.Length != (int)payloadSize)
                 throw new EndOfStreamException("Sector payload truncated.");
@@ -288,6 +294,11 @@ namespace Voxelis.IO
             _writer = null;
             _reader = null;
             _stream = null;
+
+            if (_isWriting && !_committed && !string.IsNullOrEmpty(_tmpPath) && File.Exists(_tmpPath))
+            {
+                File.Delete(_tmpPath);
+            }
         }
 
         private void EnsureWriting()

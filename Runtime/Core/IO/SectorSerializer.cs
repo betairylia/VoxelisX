@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using System.IO.Compression;
 using Unity.Collections;
@@ -27,7 +28,7 @@ namespace Voxelis.IO
     /// </summary>
     public static class SectorSerializer
     {
-        private const uint Magic = 0x32535856u; // VXS2, little-endian
+        private const uint SectorPayloadMagic = 0x32535856u; // VXS2, little-endian
 
         public static unsafe byte[] Pack(in Sector sector)
         {
@@ -38,7 +39,7 @@ namespace Voxelis.IO
                 int count = sector.brickMap.Count;
                 int freeCount = sector.brickMap.FreeCount;
 
-                bw.Write(Magic);
+                bw.Write(SectorPayloadMagic);
                 bw.Write((uint)capacity);
                 bw.Write((uint)count);
                 bw.Write((uint)freeCount);
@@ -96,6 +97,8 @@ namespace Voxelis.IO
 
         public static unsafe Sector Unpack(byte[] compressed, Allocator allocator)
         {
+            if (compressed == null) throw new ArgumentNullException(nameof(compressed));
+
             using var compressedMs = new MemoryStream(compressed);
             using var deflate = new DeflateStream(compressedMs, CompressionMode.Decompress);
             using var rawMs = new MemoryStream();
@@ -105,56 +108,81 @@ namespace Voxelis.IO
             using var br = new BinaryReader(rawMs);
 
             uint magic = br.ReadUInt32();
-            if (magic != Magic)
+            if (magic != SectorPayloadMagic)
             {
                 throw new InvalidDataException("Unsupported sector payload format.");
             }
 
-            int capacity = (int)br.ReadUInt32();
-            int count = (int)br.ReadUInt32();
-            int freeCount = (int)br.ReadUInt32();
+            uint rawCapacity = br.ReadUInt32();
+            uint rawCount = br.ReadUInt32();
+            uint rawFreeCount = br.ReadUInt32();
+            if (rawCapacity > Sector.BRICKS_IN_SECTOR || rawCount > rawCapacity || rawFreeCount > rawCapacity || rawCount + rawFreeCount != rawCapacity)
+                throw new InvalidDataException(
+                    $"Invalid brick map counters: capacity={rawCapacity}, count={rawCount}, free={rawFreeCount}.");
+
+            int capacity = (int)rawCapacity;
+            int count = (int)rawCount;
+            int freeCount = (int)rawFreeCount;
 
             // Allocate the sector with enough initial brick capacity to avoid a resize.
             int initialBricks = capacity > 0 ? capacity : 1;
             var sector = Sector.New(allocator, initialBricks, NativeArrayOptions.UninitializedMemory, createDefaultSlots: false);
 
-            ReadRawBytes(br, sector.brickMap.indices, Sector.BRICKS_IN_SECTOR * sizeof(short));
-
-            if (freeCount > 0)
+            try
             {
-                ReadRawBytes(br, sector.brickMap.FreelistRaw, freeCount * sizeof(short));
-            }
+                ReadRawBytes(br, sector.brickMap.indices, Sector.BRICKS_IN_SECTOR * sizeof(short));
 
-            sector.brickMap.RestoreSerializedState(capacity, count, freeCount);
-
-            sector.sectorRequireUpdateFlags = br.ReadUInt16();
-            ReadRawBytes(br, sector.brickRequireUpdateFlags, Sector.BRICKS_IN_SECTOR * sizeof(ushort));
-
-            int slotRecordCount = (int)br.ReadUInt32();
-            for (int i = 0; i < slotRecordCount; i++)
-            {
-                int slotId = br.ReadByte();
-                int stride = br.ReadUInt16();
-
-                var slot = SectorSlotStorage.New(stride, capacity, allocator);
-
-                if (capacity > 0)
+                if (freeCount > 0)
                 {
-                    ReadRawBytes(br, slot.data.Ptr, capacity * Sector.BLOCKS_IN_BRICK * stride);
+                    ReadRawBytes(br, sector.brickMap.FreelistRaw, freeCount * sizeof(short));
                 }
 
-                *(sector.slots.Ptr + slotId) = slot;
+                sector.brickMap.RestoreSerializedState(capacity, count, freeCount);
+
+                sector.sectorRequireUpdateFlags = br.ReadUInt16();
+                ReadRawBytes(br, sector.brickRequireUpdateFlags, Sector.BRICKS_IN_SECTOR * sizeof(ushort));
+
+                uint rawSlotRecordCount = br.ReadUInt32();
+                if (rawSlotRecordCount > Sector.MAX_SLOTS)
+                    throw new InvalidDataException($"Invalid slot record count {rawSlotRecordCount}.");
+                int slotRecordCount = (int)rawSlotRecordCount;
+
+                for (int i = 0; i < slotRecordCount; i++)
+                {
+                    int slotId = br.ReadByte();
+                    if (slotId >= Sector.MAX_SLOTS || sector.slots[slotId].IsCreated)
+                        throw new InvalidDataException($"Invalid or duplicate slot id {slotId}.");
+
+                    int stride = br.ReadUInt16();
+                    long slotBytes = (long)capacity * Sector.BLOCKS_IN_BRICK * stride;
+                    if (stride <= 0 || slotBytes > int.MaxValue)
+                        throw new InvalidDataException($"Invalid slot stride {stride} for capacity {capacity}.");
+
+                    var slot = SectorSlotStorage.New(stride, capacity, allocator);
+                    SectorSlotStorage* slotPtr = sector.slots.Ptr + slotId;
+                    *slotPtr = slot;
+
+                    if (slotBytes > 0)
+                    {
+                        ReadRawBytes(br, slotPtr->data.Ptr, (int)slotBytes);
+                    }
+                }
+
+                // Dirty/runtime-only buffers stay zero-initialized — Sector.New already cleared them
+                // when ClearMemory was requested. With UninitializedMemory above, zero them explicitly.
+                int totalBricks = Sector.BRICKS_IN_SECTOR;
+                UnsafeUtility.MemClear(sector.brickDirtyFlags, totalBricks * sizeof(ushort));
+                UnsafeUtility.MemClear(sector.brickDirtyDirectionMask, totalBricks * sizeof(uint));
+                sector.sectorDirtyFlags = 0;
+                sector.sectorNeighborsToCreate = 0;
+
+                return sector;
             }
-
-            // Dirty/runtime-only buffers stay zero-initialized — Sector.New already cleared them
-            // when ClearMemory was requested. With UninitializedMemory above, zero them explicitly.
-            int totalBricks = Sector.BRICKS_IN_SECTOR;
-            UnsafeUtility.MemClear(sector.brickDirtyFlags, totalBricks * sizeof(ushort));
-            UnsafeUtility.MemClear(sector.brickDirtyDirectionMask, totalBricks * sizeof(uint));
-            sector.sectorDirtyFlags = 0;
-            sector.sectorNeighborsToCreate = 0;
-
-            return sector;
+            catch
+            {
+                sector.Dispose(allocator);
+                throw;
+            }
         }
 
         private static unsafe void WriteRawBytes(BinaryWriter bw, void* src, int byteCount)

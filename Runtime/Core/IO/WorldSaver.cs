@@ -19,26 +19,32 @@ namespace Voxelis.IO
                 var (guid, entity) = entities[i];
                 SaveEntity(writer, guid, entity);
             }
-            writer.Finish();
+            writer.Commit();
         }
 
         public static unsafe void SaveEntity(IWorldSaveWriter writer, Guid guid, VoxelEntity entity)
         {
             var data = entity.GetDataCopy();
             var transformRec = new EntityTransformRecord(data.transform.pos, data.transform.rot);
-            writer.BeginEntity(guid, in transformRec, data.entityRequireUpdateFlags);
+            var entityRecord = new EntityRecord(guid, transformRec, data.entityRequireUpdateFlags);
+            writer.WriteEntity(in entityRecord, EnumerateSectors(data));
+        }
 
-            uint[] preview = new uint[Sector.BRICKS_IN_SECTOR];
+        private static IEnumerable<SectorWriteRecord> EnumerateSectors(VoxelEntityData data)
+        {
             foreach (var kvp in data.sectors)
             {
-                int3 coord = kvp.Key;
-
-                PreviewBuilder.Build(kvp.Value.Ptr, preview);
-                byte[] payload = SectorSerializer.Pack(in kvp.Value.Get());
-                writer.WriteSector(coord, preview, payload);
+                yield return BuildSectorWriteRecord(kvp.Key, kvp.Value);
             }
+        }
 
-            writer.EndEntity();
+        private static unsafe SectorWriteRecord BuildSectorWriteRecord(int3 coord, SectorHandle sector)
+        {
+            uint[] preview = new uint[Sector.BRICKS_IN_SECTOR];
+            PreviewBuilder.Build(sector.Ptr, preview);
+            ref Sector source = ref sector.Get();
+            byte[] payload = SectorSerializer.Pack(in source);
+            return new SectorWriteRecord(coord, preview, payload);
         }
     }
 }

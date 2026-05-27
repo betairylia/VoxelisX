@@ -12,7 +12,7 @@ namespace Voxelis.IO
     ///   u32  magic               "VXLS"
     ///   u16  version
     ///   u16  flags                (bit0 = Deflate-compressed sector payloads)
-    ///   u64  entityTableOffset    (backpatched at Finish)
+    ///   u64  entityTableOffset    (backpatched at Commit)
     ///   48 B reserved
     ///
     /// [Sector regions and per-entity sector indices, interleaved as they're written]
@@ -36,7 +36,7 @@ namespace Voxelis.IO
     public static class WorldSaveFormat
     {
         /// <summary>Magic value for the file header: "VXLS" interpreted as little-endian u32.</summary>
-        public const uint Magic = 0x534C5856u;
+        public const uint FileMagic = 0x534C5856u;
 
         public const ushort CurrentVersion = 2;
         public const int HeaderBytes = 64;

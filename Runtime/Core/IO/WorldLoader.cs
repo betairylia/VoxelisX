@@ -32,6 +32,7 @@ namespace Voxelis.IO
 
         public static unsafe void LoadEntity(IWorldSaveReader reader, int entityIndex, in EntityRecord rec, VoxelEntity entity)
         {
+            // TODO: FIXME: Everything moved from 0,0,0 instantly to current position? That's not good.
             entity.transform.SetPositionAndRotation(rec.Transform.Position, rec.Transform.Rotation);
             entity.SyncCurrentTransformToData(0f);
 
@@ -39,9 +40,10 @@ namespace Voxelis.IO
             for (int s = 0; s < sectorIndex.Count; s++)
             {
                 var entry = sectorIndex[s];
+                // TODO: FIXME: Why here read SectorIndexEntry again
                 byte[] payload = reader.ReadPayload(entityIndex, entry.Coord);
                 var sector = SectorSerializer.Unpack(payload, Allocator.Persistent);
-                entity.CopyAndAddSectorAt(entry.Coord, sector);
+                entity.ShallowCopyAndAddSectorAt(entry.Coord, sector);
             }
 
             entity.RefreshAllocatedBrickLists();

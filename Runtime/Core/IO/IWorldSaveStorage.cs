@@ -11,17 +11,11 @@ namespace Voxelis.IO
     /// </summary>
     public interface IWorldSaveWriter : IDisposable
     {
-        /// <summary>Open a new entity in the save. <see cref="WriteSector"/> calls between Begin/End are attributed to this entity.</summary>
-        void BeginEntity(Guid guid, in EntityTransformRecord transform, ushort entityRequireUpdateFlags);
-
-        /// <summary>Write one sector's region (uncompressed preview + compressed payload) for the currently-open entity.</summary>
-        void WriteSector(int3 coord, uint[] preview, byte[] compressedPayload);
-
-        /// <summary>Close the current entity. Writes the per-entity sector index and records the entity for the entity table.</summary>
-        void EndEntity();
+        /// <summary>Write one entity and all of its sectors. Sector payloads are consumed immediately and may be generated lazily.</summary>
+        void WriteEntity(in EntityRecord entity, IEnumerable<SectorWriteRecord> sectors);
 
         /// <summary>Finalizes the file: writes the entity table, backpatches the header, atomically replaces the destination.</summary>
-        void Finish();
+        void Commit();
     }
 
     /// <summary>
@@ -40,5 +34,19 @@ namespace Voxelis.IO
 
         /// <summary>Reads the compressed sector payload — pass to <see cref="SectorSerializer.Unpack"/> to materialize a <see cref="Sector"/>.</summary>
         byte[] ReadPayload(int entityIndex, int3 coord);
+    }
+
+    public readonly struct SectorWriteRecord
+    {
+        public readonly int3 Coord;
+        public readonly uint[] Preview;
+        public readonly byte[] CompressedPayload;
+
+        public SectorWriteRecord(int3 coord, uint[] preview, byte[] compressedPayload)
+        {
+            Coord = coord;
+            Preview = preview;
+            CompressedPayload = compressedPayload;
+        }
     }
 }
