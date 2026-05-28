@@ -20,7 +20,7 @@ namespace Voxelis
         public DirtyFlags FlagsToPropagate;
         public float DeltaTime;
         
-        // TODO: FIXME: Below should be static
+        // TODO: FIXME: Below should be static/const or something
         public DirtyFlags AlienMotionDirtyMask;
         public int SpatialCellSize;
         public int DirtyHaloVoxels;
@@ -446,7 +446,7 @@ namespace Voxelis
             }
         }
 
-        /* Dedup keeps first candidate's flags rather than OR-ing them (AlienDirtyPropagation.cs:557–582). Today every duplicate (target, source, sourceBrick, mode) carries identical Flags so this is fine — but the moment a future caller emits two block-edit candidates with the same key but different flag bits, bits will be dropped silently. Either OR them (previous.Flags |= candidate.Flags; uniqueCandidates[uniqueIndex - 1] = previous;) or document the invariant. 
+        /* TODO: Dedup keeps first candidate's flags rather than OR-ing them (AlienDirtyPropagation.cs:557–582). Today every duplicate (target, source, sourceBrick, mode) carries identical Flags so this is fine — but the moment a future caller emits two block-edit candidates with the same key but different flag bits, bits will be dropped silently. Either OR them (previous.Flags |= candidate.Flags; uniqueCandidates[uniqueIndex - 1] = previous;) or document the invariant. 
          */
         private static void DeduplicateAndBuildRanges(
             NativeArray<AlienDirtyCandidate> sortedCandidates,
