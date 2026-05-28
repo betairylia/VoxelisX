@@ -100,23 +100,22 @@ namespace Voxelis.Rendering
                         if (bid == Sector.BRICKID_EMPTY) continue;
 
                         // Create record for this brick
-                        var record = new BrickUpdateInfo()
-                        {
-                            brickIdx = bid,
-                            brickIdxAbsolute = (short)brickIdxAbs,
-                            type = isAdded ? BrickUpdateInfo.Type.Added : BrickUpdateInfo.Type.Modified
-                        };
+                        // var record = new BrickUpdateInfo()
+                        // {
+                        //     brickIdx = bid,
+                        //     brickIdxAbsolute = (short)brickIdxAbs,
+                        //     type = isAdded ? BrickUpdateInfo.Type.Added : BrickUpdateInfo.Type.Modified
+                        // };
 
-                        ProcessBrick(record);
+                        ProcessBrick(bid, (short)brickIdxAbs, isAdded);
                     }
                 }
             }
 
-            private unsafe void ProcessBrick(BrickUpdateInfo record)
+            private unsafe void ProcessBrick(short bid, short bidAbsolute, bool isAdded)
             {
                 // Buffer start position
-                short bid = record.brickIdx;
-                int3 brickPos = Sector.ToBrickPos(record.brickIdxAbsolute);
+                int3 brickPos = Sector.ToBrickPos(bidAbsolute);
                 int3 brickBlockPos = brickPos * Sector.SIZE_IN_BLOCKS;
                 ref Sector sector = ref sectorHandle.Get();
                 Block* brick = sector.GetBrick(bid);
@@ -125,8 +124,6 @@ namespace Voxelis.Rendering
                     return;
                 }
 
-                bool isAdded = record.type == BrickUpdateInfo.Type.Added;
-                
                 int rendererBrickId = -1;
                 int rendererBrickBase = -1;
 
@@ -229,7 +226,7 @@ namespace Voxelis.Rendering
 #endif
                     if (removed != SparseBrickIdTable.EMPTY)
                     {
-                        brickData[removed * BRICK_DATA_LENGTH] = PackBrickInfo(record.brickIdxAbsolute, coarseOccupancy);
+                        brickData[removed * BRICK_DATA_LENGTH] = PackBrickInfo(bidAbsolute, coarseOccupancy);
                         syncRecord[0] = math.min(syncRecord[0], removed);
                         syncRecord[1] = math.max(syncRecord[1], removed);
                     }
@@ -238,7 +235,7 @@ namespace Voxelis.Rendering
                     return;
                 }
                 
-                brickData[rendererBrickBase] = PackBrickInfo(record.brickIdxAbsolute, coarseOccupancy);
+                brickData[rendererBrickBase] = PackBrickInfo(bidAbsolute, coarseOccupancy);
 
                 // AABB
                 // Only do for new bricks

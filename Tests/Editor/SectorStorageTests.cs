@@ -117,12 +117,10 @@ namespace VoxelisX.Tests
             Assert.That(scope.Handle.IsRendererDirty, Is.False);
             Assert.That(scope.Sector.sectorDirtyFlags & (ushort)DirtyFlags.BrickAdded, Is.Not.EqualTo(0));
             Assert.That(scope.DirtyFlagsAt(new int3(1, 0, 0)) & (ushort)DirtyFlags.BrickAdded, Is.Not.EqualTo(0));
-            Assert.That(scope.BrickUpdateAt(new int3(1, 0, 0)), Is.EqualTo(BrickUpdateInfo.Type.Idle));
 
             scope.Sector.MarkBrickRequireUpdate(Sector.ToBrickIdx(1, 0, 0), DirtyFlags.BrickAdded);
 
             Assert.That(scope.Handle.IsRendererDirty, Is.True);
-            Assert.That(scope.BrickUpdateAt(new int3(1, 0, 0)), Is.EqualTo(BrickUpdateInfo.Type.Added));
         }
 
         [Test]
@@ -135,7 +133,6 @@ namespace VoxelisX.Tests
             scope.Sector.ClearAllRequireUpdateFlags();
 
             Assert.That(scope.Handle.IsRendererDirty, Is.False);
-            Assert.That(scope.BrickUpdateAt(new int3(1, 0, 0)), Is.EqualTo(BrickUpdateInfo.Type.Idle));
         }
 
         [Test]
@@ -147,12 +144,10 @@ namespace VoxelisX.Tests
             scope.Sector.MarkBrickRequireUpdate(brickIdx, DirtyFlags.GeneralAutomata);
 
             Assert.That(scope.Handle.IsRendererDirty, Is.False);
-            Assert.That(scope.BrickUpdateAt(new int3(1, 0, 0)), Is.EqualTo(BrickUpdateInfo.Type.Idle));
 
             scope.Sector.MarkBrickRequireUpdate(brickIdx, DirtyFlags.GeometryWithLocalNeighbor);
 
             Assert.That(scope.Handle.IsRendererDirty, Is.True);
-            Assert.That(scope.BrickUpdateAt(new int3(1, 0, 0)), Is.EqualTo(BrickUpdateInfo.Type.Modified));
         }
 
         [Test]

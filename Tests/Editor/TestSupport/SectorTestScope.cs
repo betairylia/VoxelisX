@@ -31,27 +31,6 @@ namespace VoxelisX.Tests.TestSupport
             return Sector.brickRequireUpdateFlags[Voxelis.Sector.ToBrickIdx(brickPos.x, brickPos.y, brickPos.z)];
         }
 
-        public BrickUpdateInfo.Type BrickUpdateAt(int3 brickPos)
-        {
-            ushort flags = RequireFlagsAt(brickPos);
-            if ((flags & (ushort)DirtyFlags.BrickRemoved) != 0)
-            {
-                return BrickUpdateInfo.Type.Removed;
-            }
-
-            if ((flags & (ushort)DirtyFlags.BrickAdded) != 0)
-            {
-                return BrickUpdateInfo.Type.Added;
-            }
-
-            if ((flags & (ushort)DirtyFlags.GeometryWithLocalNeighbor) != 0)
-            {
-                return BrickUpdateInfo.Type.Modified;
-            }
-
-            return BrickUpdateInfo.Type.Idle;
-        }
-
         public void Dispose()
         {
             Handle.Dispose(Allocator.Persistent);

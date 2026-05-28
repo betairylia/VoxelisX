@@ -275,4 +275,51 @@ namespace Voxelis
             return this;
         }
     }
+    
+    // TODO: FIXME: Check
+    // TODO: Merge this with above?
+    [BurstCompile]
+    public unsafe struct SectorDirtyBrickEnumerator
+    {
+        private Sector sector;
+        private DirtyFlags mask;
+        private int nextIndex;
+        private DirtyBrickInfo current;
+
+        public SectorDirtyBrickEnumerator(Sector sector, DirtyFlags mask)
+        {
+            this.sector = sector;
+            this.mask = mask;
+            nextIndex = 0;
+            current = default;
+        }
+
+        public SectorDirtyBrickEnumerator GetEnumerator() => this;
+        public DirtyBrickInfo Current => current;
+
+        public bool MoveNext()
+        {
+            if ((sector.sectorDirtyFlags & (ushort)mask) == 0)
+            {
+                return false;
+            }
+
+            while (nextIndex < Sector.BRICKS_IN_SECTOR)
+            {
+                int brickIdx = nextIndex++;
+                ushort flags = (ushort)(sector.brickDirtyFlags[brickIdx] & (ushort)mask);
+                if (flags != 0 && sector.brickIdx[brickIdx] != Sector.BRICKID_EMPTY)
+                {
+                    current = new DirtyBrickInfo
+                    {
+                        BrickIdx = (short)brickIdx,
+                        Flags = (DirtyFlags)flags
+                    };
+                    return true;
+                }
+            }
+
+            return false;
+        }
+    }
 }

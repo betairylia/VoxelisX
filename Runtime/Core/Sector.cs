@@ -9,43 +9,6 @@ using Unity.Mathematics;
 namespace Voxelis
 {
     /// <summary>
-    /// Information about a brick update for renderer synchronization.
-    /// Tracks whether a brick was added, removed, or modified.
-    /// </summary>
-    public struct BrickUpdateInfo
-    {
-        /// <summary>
-        /// The type of update that occurred to a brick.
-        /// </summary>
-        public enum Type
-        {
-            /// <summary>No update pending.</summary>
-            Idle = 0,
-            /// <summary>Brick was newly added.</summary>
-            Added,
-            /// <summary>Brick was removed.</summary>
-            Removed,
-            /// <summary>Brick contents were modified.</summary>
-            Modified,
-        }
-
-        /// <summary>
-        /// The type of update for this brick.
-        /// </summary>
-        public Type type;
-
-        /// <summary>
-        /// The relative brick index within the sector's voxel data.
-        /// </summary>
-        public short brickIdx;
-
-        /// <summary>
-        /// The absolute brick index in the sector's 3D grid.
-        /// </summary>
-        public short brickIdxAbsolute;
-    }
-
-    /// <summary>
     /// Represents a 3D sector of voxel data organized into bricks.
     /// A sector contains a 16x16x16 grid of bricks, where each brick is 8x8x8 blocks.
     /// Total sector size is 128x128x128 blocks.
