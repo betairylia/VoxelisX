@@ -119,6 +119,7 @@ namespace Voxelis
         public DirtyFlags Flags;
     }
 
+    // TODO: Anything to cache this and make sure it only computes once?
     public unsafe struct SectorDirtyBrickEnumerator
     {
         private Sector sector;
