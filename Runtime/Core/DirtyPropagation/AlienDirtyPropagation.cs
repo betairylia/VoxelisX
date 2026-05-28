@@ -170,10 +170,12 @@ namespace Voxelis
             settings = NormalizeSettings(settings);
             if (entities.Length <= 1)
             {
+                // TODO: FIXME: This refreshes everything no matter what
                 RefreshAllocatedBrickLists(entities);
                 return;
             }
 
+            // TODO: FIXME: This refreshes everything no matter what
             RefreshAllocatedBrickLists(entities);
             if (settings.FlagsToPropagate == DirtyFlags.None && settings.AlienMotionDirtyMask == DirtyFlags.None)
             {
@@ -187,6 +189,7 @@ namespace Voxelis
 
             try
             {
+                // Builds all entities & sectors no matter what
                 BuildRecords(entities, settings.FlagsToPropagate, ref entityViews, ref allSectors, ref dirtySectorIndices, ref movingSectorIndices);
                 if (allSectors.Length == 0)
                 {
@@ -377,6 +380,7 @@ namespace Voxelis
             NativeArray<int> movingSectorIndices,
             AlienDirtyPropagationSettings settings)
         {
+            // TODO: FIXME: Smells. no filtering?
             var currentHash = BuildSpatialHash(allSectors, settings.SpatialCellSize, settings.DirtyHaloVoxels, false);
             var motionHash = BuildSpatialHash(allSectors, settings.SpatialCellSize, settings.DirtyHaloVoxels, true);
             var candidates = new NativeList<AlienDirtyCandidate>(Allocator.TempJob);
@@ -465,6 +469,7 @@ namespace Voxelis
             int halo,
             bool swept)
         {
+            // TODO: Is compute capacity -> put faster or put directly faster?
             int capacity = 0;
             for (int i = 0; i < sectors.Length; i++)
             {
@@ -594,6 +599,7 @@ namespace Voxelis
             }
         }
 
+        // TODO: FIXME: Cannot merge with ComputeBrickWorldAABB??
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static AlienDirtyAabb ComputeSectorWorldAabb(int3 sectorPos, RigidTransform transform)
         {
