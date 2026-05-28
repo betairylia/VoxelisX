@@ -133,7 +133,7 @@ namespace VoxelisX.Tests
         }
 
         [Test]
-        public void MovingEntityMarksLostOverlapThroughSweptAabb()
+        public void MovingEntityMarksLostOverlapThroughPreviousPosition()
         {
             using var moving = new EntityDataTestScope();
             using var other = new EntityDataTestScope();
@@ -197,8 +197,6 @@ namespace VoxelisX.Tests
         {
             var settings = BlockEditSettings();
             settings.AlienMotionDirtyMask = DirtyFlags.Reserved1;
-            settings.MotionThreshold = 0f;
-            settings.DeltaTime = 1f;
             return settings;
         }
 

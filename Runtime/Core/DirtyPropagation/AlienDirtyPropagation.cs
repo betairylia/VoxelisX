@@ -2,6 +2,7 @@ using System;
 using System.Runtime.CompilerServices;
 using Unity.Burst;
 using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine.Profiling;
@@ -9,22 +10,12 @@ using Voxelis.Mathematics;
 
 namespace Voxelis
 {
-    public enum AlienDirtyCandidateMode : byte
-    {
-        BlockEdit = 0,
-        Motion = 1
-    }
-
     public struct AlienDirtyPropagationSettings
     {
         public DirtyFlags FlagsToPropagate;
-        public float DeltaTime;
-        
-        // TODO: FIXME: Below should be static/const or something
         public DirtyFlags AlienMotionDirtyMask;
         public int SpatialCellSize;
         public int DirtyHaloVoxels;
-        public float MotionThreshold;
 
         public static AlienDirtyPropagationSettings Default => new AlienDirtyPropagationSettings
         {
@@ -32,64 +23,49 @@ namespace Voxelis
             AlienMotionDirtyMask = DirtyFlags.GeneralAutomata,
             SpatialCellSize = 64,
             DirtyHaloVoxels = 1,
-            MotionThreshold = 0f,
-            DeltaTime = 1f
         };
     }
 
     public static partial class AlienDirtyPropagation
     {
-        // Go to settings or somewhere else
         private const float MaxBoundEpsilon = 1e-4f;
 
         public static void Propagate(NativeArray<VoxelEntityData> entities, AlienDirtyPropagationSettings settings)
         {
             settings = NormalizeSettings(settings);
             if (entities.Length <= 1)
-            {
                 return;
-            }
 
             if (settings.FlagsToPropagate == DirtyFlags.None && settings.AlienMotionDirtyMask == DirtyFlags.None)
-            {
                 return;
-            }
 
             var entityViews = new NativeList<AlienDirtyEntityView>(entities.Length, Allocator.TempJob);
             var allSectors = new NativeList<AlienDirtySectorRecord>(Allocator.TempJob);
-            var dirtySectorIndices = new NativeList<int>(Allocator.TempJob);
-            var movingSectorIndices = new NativeList<int>(Allocator.TempJob);
+            var activeSectors = new NativeList<ActiveSectorInfo>(Allocator.TempJob);
 
             try
             {
                 Profiler.BeginSample("BuildRecords");
-                
-                BuildRecords(entities, settings.FlagsToPropagate, ref entityViews, ref allSectors, ref dirtySectorIndices, ref movingSectorIndices);
-                
+                BuildRecords(entities, settings, ref entityViews, ref allSectors, ref activeSectors);
                 Profiler.EndSample();
-                
-                if (allSectors.Length == 0)
-                {
+
+                if (allSectors.Length == 0 || activeSectors.Length == 0)
                     return;
-                }
 
                 Profiler.BeginSample("BuildCandidates");
                 NativeList<AlienDirtyCandidate> candidates = BuildCandidates(
                     entityViews.AsArray(),
                     allSectors.AsArray(),
-                    dirtySectorIndices.AsArray(),
-                    movingSectorIndices.AsArray(),
+                    activeSectors.AsArray(),
                     settings);
                 Profiler.EndSample();
+
                 try
                 {
                     if (candidates.Length == 0)
-                    {
                         return;
-                    }
-                    
-                    Profiler.BeginSample("Candidates Sort and Ranges");
 
+                    Profiler.BeginSample("Candidates Sort and Ranges");
                     candidates.Sort();
 
                     var uniqueCandidates = new NativeList<AlienDirtyCandidate>(candidates.Length, Allocator.TempJob);
@@ -100,10 +76,9 @@ namespace Voxelis
                     {
                         DeduplicateAndBuildRanges(candidates.AsArray(), ref uniqueCandidates, ranges, ref activeTargets);
                         Profiler.EndSample();
+
                         if (activeTargets.Length == 0)
-                        {
                             return;
-                        }
 
                         Profiler.BeginSample("Target-owned Mark Aliens");
                         var markJob = new MarkAlienRequireUpdatesJob
@@ -133,321 +108,159 @@ namespace Voxelis
             }
             finally
             {
-                if (movingSectorIndices.IsCreated) movingSectorIndices.Dispose();
-                if (dirtySectorIndices.IsCreated) dirtySectorIndices.Dispose();
+                if (activeSectors.IsCreated) activeSectors.Dispose();
                 if (allSectors.IsCreated) allSectors.Dispose();
                 if (entityViews.IsCreated) entityViews.Dispose();
             }
         }
 
-        // TODO: FIXME: Maybe remove or simplify or move to somewhere else, too bloaty
-        private static AlienDirtyPropagationSettings NormalizeSettings(AlienDirtyPropagationSettings settings)
+        private static AlienDirtyPropagationSettings NormalizeSettings(AlienDirtyPropagationSettings s)
         {
-            if (settings.FlagsToPropagate == DirtyFlags.None)
-            {
-                settings.FlagsToPropagate = DirtyFlags.All;
-            }
-
-            settings.FlagsToPropagate = (DirtyFlags)DirtyPropagationSettings.FilterCanPropagateToAlien((ushort)settings.FlagsToPropagate);
-
-            if (settings.AlienMotionDirtyMask == DirtyFlags.None)
-            {
-                settings.AlienMotionDirtyMask = DirtyFlags.GeneralAutomata;
-            }
-
-            settings.AlienMotionDirtyMask = (DirtyFlags)DirtyPropagationSettings.FilterCanPropagateToAlien((ushort)settings.AlienMotionDirtyMask);
-
-            if (settings.SpatialCellSize < Sector.SIZE_IN_BLOCKS)
-            {
-                settings.SpatialCellSize = Sector.SIZE_IN_BLOCKS;
-            }
-
-            if ((settings.SpatialCellSize & (settings.SpatialCellSize - 1)) != 0)
-            {
-                int cellSize = 1;
-                while (cellSize < settings.SpatialCellSize)
-                {
-                    cellSize <<= 1;
-                }
-
-                settings.SpatialCellSize = cellSize;
-            }
-
-            if (settings.DirtyHaloVoxels < 0)
-            {
-                settings.DirtyHaloVoxels = 0;
-            }
-
-            if (settings.DeltaTime <= 0f)
-            {
-                settings.DeltaTime = 1f;
-            }
-
-            return settings;
+            s.FlagsToPropagate = (DirtyFlags)DirtyPropagationSettings.FilterCanPropagateToAlien(
+                (ushort)(s.FlagsToPropagate == DirtyFlags.None ? DirtyFlags.All : s.FlagsToPropagate));
+            s.AlienMotionDirtyMask = (DirtyFlags)DirtyPropagationSettings.FilterCanPropagateToAlien(
+                (ushort)(s.AlienMotionDirtyMask == DirtyFlags.None
+                    ? DirtyFlags.GeneralAutomata
+                    : s.AlienMotionDirtyMask));
+            s.SpatialCellSize = math.max(Sector.SIZE_IN_BLOCKS, math.ceilpow2(s.SpatialCellSize));
+            s.DirtyHaloVoxels = math.max(0, s.DirtyHaloVoxels);
+            return s;
         }
 
-        // TODO: Maybe move to burst and check where can remove, current bottleneck
-        private static void BuildRecords(
+        private static unsafe void BuildRecords(
             NativeArray<VoxelEntityData> entities,
-            DirtyFlags flagsToPropagate,
+            AlienDirtyPropagationSettings settings,
             ref NativeList<AlienDirtyEntityView> entityViews,
             ref NativeList<AlienDirtySectorRecord> allSectors,
-            ref NativeList<int> dirtySectorIndices,
-            ref NativeList<int> movingSectorIndices)
+            ref NativeList<ActiveSectorInfo> activeSectors)
         {
-            for (int entityIndex = 0; entityIndex < entities.Length; entityIndex++)
+            new BuildRecordsJob
             {
-                VoxelEntityData entity = entities[entityIndex];
-                float4x4 localToWorld = float4x4.TRS(entity.transform.pos, entity.transform.rot, 1f);
-                float4x4 previousLocalToWorld = float4x4.TRS(entity.previousTransform.pos, entity.previousTransform.rot, 1f);
-
-                entityViews.Add(new AlienDirtyEntityView
-                {
-                    EntityId = entityIndex,
-                    LocalToWorld = entity.transform,
-                    WorldToLocal = math.inverse(localToWorld),
-                    PreviousLocalToWorld = entity.previousTransform,
-                    PreviousWorldToLocal = math.inverse(previousLocalToWorld),
-                    LinearVelocity = entity.linearVelocity,
-                    AngularVelocity = entity.angularVelocity
-                });
-
-                bool entityMoving = math.lengthsq(entity.linearVelocity) > 0f || math.lengthsq(entity.angularVelocity) > 0f;
-
-                foreach (var kvp in entity.sectors)
-                {
-                    int sectorIndex = allSectors.Length;
-                    SectorHandle sectorHandle = kvp.Value;
-                    int3 sectorPos = kvp.Key;
-
-                    var record = new AlienDirtySectorRecord
-                    {
-                        EntityId = entityIndex,
-                        SectorPos = sectorPos,
-                        Sector = sectorHandle,
-                        CurrentWorldAabb = ComputeSectorWorldAabb(sectorPos, entity.transform),
-                        PreviousWorldAabb = ComputeSectorWorldAabb(sectorPos, entity.previousTransform)
-                    };
-
-                    allSectors.Add(record);
-
-                    Sector sector = sectorHandle.Get();
-                    if (sector.NonEmptyBrickCount == 0)
-                    {
-                        continue;
-                    }
-
-                    if ((sector.sectorDirtyFlags & (ushort)flagsToPropagate) != 0)
-                    {
-                        dirtySectorIndices.Add(sectorIndex);
-                    }
-
-                    if (entityMoving)
-                    {
-                        movingSectorIndices.Add(sectorIndex);
-                    }
-                }
-            }
+                Entities = (VoxelEntityData*)entities.GetUnsafeReadOnlyPtr(),
+                EntityCount = entities.Length,
+                FlagsToPropagate = settings.FlagsToPropagate,
+                EntityViews = entityViews,
+                AllSectors = allSectors,
+                ActiveSectors = activeSectors
+            }.Schedule().Complete();
         }
 
-        // TODO: Why use two streams then merge? The merge seems very heavy which is weird
         private static NativeList<AlienDirtyCandidate> BuildCandidates(
             NativeArray<AlienDirtyEntityView> entityViews,
             NativeArray<AlienDirtySectorRecord> allSectors,
-            NativeArray<int> dirtySectorIndices,
-            NativeArray<int> movingSectorIndices,
+            NativeArray<ActiveSectorInfo> activeSectors,
             AlienDirtyPropagationSettings settings)
         {
-            NativeParallelMultiHashMap<int3, int> currentHash = default;
-            NativeParallelMultiHashMap<int3, int> motionHash = default;
+            NativeParallelMultiHashMap<int3, int> spatialHash = default;
             var candidates = new NativeList<AlienDirtyCandidate>(Allocator.TempJob);
 
             try
             {
-                NativeStream blockStream = default;
-                NativeStream motionStream = default;
+                spatialHash = BuildSpatialHash(allSectors, entityViews, settings.SpatialCellSize);
 
+                NativeStream stream = default;
                 try
                 {
-                    if (dirtySectorIndices.Length > 0)
+                    stream = new NativeStream(activeSectors.Length, Allocator.TempJob);
+                    var job = new BuildCandidatesJob
                     {
-                        currentHash = BuildSpatialHash(allSectors, settings.SpatialCellSize, 0, false);
-                        blockStream = new NativeStream(dirtySectorIndices.Length, Allocator.TempJob);
-                        var blockJob = new BuildBlockEditCandidatesJob
-                        {
-                            DirtySectorIndices = dirtySectorIndices,
-                            AllSectors = allSectors,
-                            Entities = entityViews,
-                            SpatialHash = currentHash,
-                            SpatialCellSize = settings.SpatialCellSize,
-                            DirtyHaloVoxels = settings.DirtyHaloVoxels,
-                            FlagsToPropagate = settings.FlagsToPropagate,
-                            Candidates = blockStream.AsWriter()
-                        };
-                        blockJob.Schedule(dirtySectorIndices.Length, 1).Complete();
-                    }
+                        ActiveSectors = activeSectors,
+                        AllSectors = allSectors,
+                        Entities = entityViews,
+                        SpatialHash = spatialHash,
+                        SpatialCellSize = settings.SpatialCellSize,
+                        DirtyHaloVoxels = settings.DirtyHaloVoxels,
+                        FlagsToPropagate = settings.FlagsToPropagate,
+                        AlienMotionDirtyMask = settings.AlienMotionDirtyMask,
+                        Candidates = stream.AsWriter()
+                    };
+                    job.Schedule(activeSectors.Length, 1).Complete();
 
-                    if (movingSectorIndices.Length > 0 && settings.AlienMotionDirtyMask != DirtyFlags.None)
-                    {
-                        motionHash = BuildSpatialHash(allSectors, settings.SpatialCellSize, settings.DirtyHaloVoxels, true);
-                        motionStream = new NativeStream(movingSectorIndices.Length, Allocator.TempJob);
-                        var motionJob = new BuildMotionCandidatesJob
-                        {
-                            MovingSectorIndices = movingSectorIndices,
-                            AllSectors = allSectors,
-                            Entities = entityViews,
-                            MotionSpatialHash = motionHash,
-                            SpatialCellSize = settings.SpatialCellSize,
-                            DirtyHaloVoxels = settings.DirtyHaloVoxels,
-                            MotionThreshold = settings.MotionThreshold,
-                            DeltaTime = settings.DeltaTime,
-                            AlienMotionDirtyMask = settings.AlienMotionDirtyMask,
-                            Candidates = motionStream.AsWriter()
-                        };
-                        motionJob.Schedule(movingSectorIndices.Length, 1).Complete();
-                    }
-
-                    NativeArray<int> blockCounts = default;
-                    NativeArray<int> motionCounts = default;
-                    int blockCount = blockStream.IsCreated ? CountStream(blockStream, dirtySectorIndices.Length, out blockCounts) : 0;
-                    int motionCount = motionStream.IsCreated ? CountStream(motionStream, movingSectorIndices.Length, out motionCounts) : 0;
-                    int totalCount = blockCount + motionCount;
-
-                    try
-                    {
-                        if (totalCount > 0)
-                        {
-                            candidates.ResizeUninitialized(totalCount);
-                            int offset = 0;
-                            if (blockCount > 0)
-                            {
-                                CopyStream(blockStream, blockCounts, candidates.AsArray(), offset);
-                                offset += blockCount;
-                            }
-
-                            if (motionCount > 0)
-                            {
-                                CopyStream(motionStream, motionCounts, candidates.AsArray(), offset);
-                            }
-                        }
-                    }
-                    finally
-                    {
-                        if (motionCounts.IsCreated) motionCounts.Dispose();
-                        if (blockCounts.IsCreated) blockCounts.Dispose();
-                    }
+                    FlattenStream(stream, activeSectors.Length, ref candidates);
                 }
                 finally
                 {
-                    if (motionStream.IsCreated) motionStream.Dispose();
-                    if (blockStream.IsCreated) blockStream.Dispose();
+                    if (stream.IsCreated) stream.Dispose();
                 }
             }
             finally
             {
-                if (motionHash.IsCreated) motionHash.Dispose();
-                if (currentHash.IsCreated) currentHash.Dispose();
+                if (spatialHash.IsCreated) spatialHash.Dispose();
             }
 
             return candidates;
         }
 
-        // TODO: Rethink motion and swept behavior
         private static NativeParallelMultiHashMap<int3, int> BuildSpatialHash(
             NativeArray<AlienDirtySectorRecord> sectors,
-            int cellSize,
-            int halo,
-            bool swept)
+            NativeArray<AlienDirtyEntityView> entities,
+            int cellSize)
         {
-            int capacity = 0;
-            for (int i = 0; i < sectors.Length; i++)
-            {
-                if (sectors[i].Sector.Get().NonEmptyBrickCount == 0)
-                {
-                    continue;
-                }
+            int estimatedCapacity = math.max(sectors.Length * 8, 1);
+            var hash = new NativeParallelMultiHashMap<int3, int>(estimatedCapacity, Allocator.TempJob);
 
-                AABB aabb = swept
-                    ? AABB.Union(sectors[i].PreviousWorldAabb, sectors[i].CurrentWorldAabb).Inflated(halo)
-                    : sectors[i].CurrentWorldAabb;
-                capacity += CountCells(aabb, cellSize);
-            }
-
-            var hash = new NativeParallelMultiHashMap<int3, int>(math.max(capacity, 1), Allocator.TempJob);
             for (int sectorIndex = 0; sectorIndex < sectors.Length; sectorIndex++)
             {
-                if (sectors[sectorIndex].Sector.Get().NonEmptyBrickCount == 0)
-                {
+                AlienDirtySectorRecord record = sectors[sectorIndex];
+                if (record.Sector.Get().NonEmptyBrickCount == 0)
                     continue;
-                }
 
-                AABB aabb = swept
-                    ? AABB.Union(sectors[sectorIndex].PreviousWorldAabb, sectors[sectorIndex].CurrentWorldAabb).Inflated(halo)
-                    : sectors[sectorIndex].CurrentWorldAabb;
+                InsertAabbIntoHash(ref hash, record.CurrentWorldAabb, cellSize, sectorIndex);
 
-                int3 minCell = WorldToCell(aabb.Min, cellSize);
-                int3 maxCell = WorldToCell(aabb.Max - new float3(MaxBoundEpsilon), cellSize);
-                for (int z = minCell.z; z <= maxCell.z; z++)
-                for (int y = minCell.y; y <= maxCell.y; y++)
-                for (int x = minCell.x; x <= maxCell.x; x++)
+                if (entities[record.EntityId].IsMoving)
                 {
-                    hash.Add(new int3(x, y, z), sectorIndex);
+                    InsertAabbIntoHash(ref hash, record.PreviousWorldAabb, cellSize, sectorIndex);
                 }
             }
 
             return hash;
         }
 
-        // TODO: Get rid of this
-        private static int CountStream(NativeStream stream, int foreachCount, out NativeArray<int> counts)
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void InsertAabbIntoHash(
+            ref NativeParallelMultiHashMap<int3, int> hash,
+            AABB aabb, int cellSize, int sectorIndex)
         {
-            counts = new NativeArray<int>(foreachCount, Allocator.TempJob);
-            var total = new NativeArray<int>(1, Allocator.TempJob);
-            try
+            int3 minCell = WorldToCell(aabb.Min, cellSize);
+            int3 maxCell = WorldToCell(aabb.Max - new float3(MaxBoundEpsilon), cellSize);
+            for (int z = minCell.z; z <= maxCell.z; z++)
+            for (int y = minCell.y; y <= maxCell.y; y++)
+            for (int x = minCell.x; x <= maxCell.x; x++)
             {
-                new CountCandidatesInStreamJob
-                {
-                    Candidates = stream.AsReader(),
-                    Counts = counts,
-                    Total = total
-                }.Run();
-
-                return total[0];
-            }
-            finally
-            {
-                total.Dispose();
+                hash.Add(new int3(x, y, z), sectorIndex);
             }
         }
 
-        // TODO: And this
-        private static void CopyStream(NativeStream stream, NativeArray<int> counts, NativeArray<AlienDirtyCandidate> output, int outputOffset)
+        private static void FlattenStream(NativeStream stream, int foreachCount,
+            ref NativeList<AlienDirtyCandidate> output)
         {
-            var starts = new NativeArray<int>(counts.Length, Allocator.TempJob);
-            try
+            var reader = stream.AsReader();
+            int total = 0;
+            for (int i = 0; i < foreachCount; i++)
             {
-                int running = outputOffset;
-                for (int i = 0; i < counts.Length; i++)
+                total += reader.BeginForEachIndex(i);
+            }
+
+            if (total == 0)
+                return;
+
+            output.ResizeUninitialized(total);
+            var array = output.AsArray();
+            int writeIndex = 0;
+
+            reader = stream.AsReader();
+            for (int i = 0; i < foreachCount; i++)
+            {
+                int count = reader.BeginForEachIndex(i);
+                for (int c = 0; c < count; c++)
                 {
-                    starts[i] = running;
-                    running += counts[i];
+                    array[writeIndex++] = reader.Read<AlienDirtyCandidate>();
                 }
 
-                new CopyCandidatesFromStreamJob
-                {
-                    Candidates = stream.AsReader(),
-                    Starts = starts,
-                    Output = output
-                }.Run();
-            }
-            finally
-            {
-                starts.Dispose();
+                reader.EndForEachIndex();
             }
         }
 
-        /* TODO: Dedup keeps first candidate's flags rather than OR-ing them (AlienDirtyPropagation.cs:557–582). Today every duplicate (target, source, sourceBrick, mode) carries identical Flags so this is fine — but the moment a future caller emits two block-edit candidates with the same key but different flag bits, bits will be dropped silently. Either OR them (previous.Flags |= candidate.Flags; uniqueCandidates[uniqueIndex - 1] = previous;) or document the invariant. 
-         */
         private static void DeduplicateAndBuildRanges(
             NativeArray<AlienDirtyCandidate> sortedCandidates,
             ref NativeList<AlienDirtyCandidate> uniqueCandidates,
@@ -466,7 +279,10 @@ namespace Voxelis
                 AlienDirtyCandidate candidate = sortedCandidates[i];
                 if (hasPrevious && candidate.SameDedupKey(previous))
                 {
-                    previous = candidate;
+                    var last = uniqueCandidates[uniqueCandidates.Length - 1];
+                    last.Flags |= candidate.Flags;
+                    uniqueCandidates[uniqueCandidates.Length - 1] = last;
+                    previous = last;
                     continue;
                 }
 
@@ -496,15 +312,6 @@ namespace Voxelis
             float3 localMin = sectorPos * Sector.SECTOR_SIZE_IN_BLOCKS;
             float3 localMax = localMin + Sector.SECTOR_SIZE_IN_BLOCKS;
             return AABB.Transform(new AABB { Min = localMin, Max = localMax }, transform);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int CountCells(AABB aabb, int cellSize)
-        {
-            int3 minCell = WorldToCell(aabb.Min, cellSize);
-            int3 maxCell = WorldToCell(aabb.Max - new float3(MaxBoundEpsilon), cellSize);
-            int3 size = maxCell - minCell + 1;
-            return math.max(1, size.x * size.y * size.z);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

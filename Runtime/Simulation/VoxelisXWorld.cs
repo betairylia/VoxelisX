@@ -37,7 +37,6 @@ namespace Voxelis
         [SerializeField] private int alienSpatialCellSize = 64;
         [SerializeField] private DirtyFlags alienMotionDirtyMask = DirtyFlags.GeneralAutomata;
         [SerializeField] private int alienDirtyHaloVoxels = 1;
-        [SerializeField] private float alienMotionDirtyThreshold = 0f;
         [Header("Debug")] public bool freeze = true;
         public bool isFirst = true;
         private float timer = 0.0f;
@@ -229,28 +228,18 @@ namespace Voxelis
             Profiler.EndSample();
 
             Profiler.BeginSample("Alien Propagation");
-            var dirtyPropagationEntities = new NativeArray<VoxelEntityData>(entities.Count, Allocator.TempJob);
-            try
+            for (int i = 0; i < entities.Count; i++)
             {
-                for (int i = 0; i < entities.Count; i++)
-                {
-                    dirtyPropagationEntities[i] = entities[i].GetDataCopy();
-                }
+                tickBuf.VoxelEntities[i] = entities[i].GetDataCopy();
+            }
 
-                AlienDirtyPropagation.Propagate(dirtyPropagationEntities, new AlienDirtyPropagationSettings
-                {
-                    FlagsToPropagate = DirtyFlags.All,
-                    AlienMotionDirtyMask = alienMotionDirtyMask,
-                    SpatialCellSize = alienSpatialCellSize,
-                    DirtyHaloVoxels = alienDirtyHaloVoxels,
-                    MotionThreshold = alienMotionDirtyThreshold,
-                    DeltaTime = dirtyPropagationDeltaTime
-                });
-            }
-            finally
+            AlienDirtyPropagation.Propagate(tickBuf.VoxelEntities.AsArray(), new AlienDirtyPropagationSettings
             {
-                dirtyPropagationEntities.Dispose();
-            }
+                FlagsToPropagate = DirtyFlags.All,
+                AlienMotionDirtyMask = alienMotionDirtyMask,
+                SpatialCellSize = alienSpatialCellSize,
+                DirtyHaloVoxels = alienDirtyHaloVoxels,
+            });
             Profiler.EndSample();
 
             Profiler.BeginSample("Clear Dirty Flags");

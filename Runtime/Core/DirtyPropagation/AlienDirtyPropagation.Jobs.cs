@@ -1,7 +1,8 @@
-﻿using System;
+using System;
 using System.Runtime.CompilerServices;
 using Unity.Burst;
 using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Mathematics;
 using Voxelis.Mathematics;
@@ -10,13 +11,14 @@ namespace Voxelis
 {
     public struct AlienDirtyEntityView
     {
-        public int EntityId;
+        public int LocalIndex;
         public RigidTransform LocalToWorld;
         public float4x4 WorldToLocal;
         public RigidTransform PreviousLocalToWorld;
         public float4x4 PreviousWorldToLocal;
         public float3 LinearVelocity;
         public float3 AngularVelocity;
+        public bool IsMoving;
     }
 
     public struct AlienDirtySectorRecord
@@ -28,13 +30,19 @@ namespace Voxelis
         public AABB PreviousWorldAabb;
     }
 
+    public struct ActiveSectorInfo
+    {
+        public int SectorIndex;
+        public bool HasDirtyBricks;
+        public bool EntityIsMoving;
+    }
+
     public struct AlienDirtyCandidate : IComparable<AlienDirtyCandidate>
     {
         public int TargetSectorIndex;
         public int SourceSectorIndex;
         public short SourceBrickIdx;
         public DirtyFlags Flags;
-        public AlienDirtyCandidateMode Mode;
 
         public int CompareTo(AlienDirtyCandidate other)
         {
@@ -44,28 +52,24 @@ namespace Voxelis
             if (cmp != 0) return cmp;
             cmp = SourceBrickIdx.CompareTo(other.SourceBrickIdx);
             if (cmp != 0) return cmp;
-            cmp = Mode.CompareTo(other.Mode);
-            if (cmp != 0) return cmp;
             return ((ushort)Flags).CompareTo((ushort)other.Flags);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool SameDedupKey(AlienDirtyCandidate other)
         {
             return TargetSectorIndex == other.TargetSectorIndex
                    && SourceSectorIndex == other.SourceSectorIndex
-                   && SourceBrickIdx == other.SourceBrickIdx
-                   && Mode == other.Mode;
+                   && SourceBrickIdx == other.SourceBrickIdx;
         }
     }
 
-    // TODO: A bit bloaty
     public struct AlienDirtyCandidateRange
     {
         public int Start;
         public int Count;
     }
 
-    // TODO: Should similar or merge to BrickIterator?
     public struct DirtyBrickInfo
     {
         public short BrickIdx;
@@ -75,91 +79,148 @@ namespace Voxelis
     public static unsafe partial class AlienDirtyPropagation
     {
         [BurstCompile]
-        public struct CountCandidatesInStreamJob : IJob
+        public unsafe struct BuildRecordsJob : IJob
         {
-            public NativeStream.Reader Candidates;
-            public NativeArray<int> Counts;
-            public NativeArray<int> Total;
+            [NativeDisableUnsafePtrRestriction] [ReadOnly] public VoxelEntityData* Entities;
+            [ReadOnly] public int EntityCount;
+            [ReadOnly] public DirtyFlags FlagsToPropagate;
+            public NativeList<AlienDirtyEntityView> EntityViews;
+            public NativeList<AlienDirtySectorRecord> AllSectors;
+            public NativeList<ActiveSectorInfo> ActiveSectors;
 
             public void Execute()
             {
-                int total = 0;
-                for (int i = 0; i < Counts.Length; i++)
+                for (int entityIndex = 0; entityIndex < EntityCount; entityIndex++)
                 {
-                    int count = Candidates.BeginForEachIndex(i);
-                    Counts[i] = count;
-                    total += count;
-                }
+                    VoxelEntityData entity = Entities[entityIndex];
+                    float4x4 localToWorld = float4x4.TRS(entity.transform.pos, entity.transform.rot, 1f);
+                    float4x4 previousLocalToWorld =
+                        float4x4.TRS(entity.previousTransform.pos, entity.previousTransform.rot, 1f);
 
-                Total[0] = total;
-            }
-        }
+                    bool entityMoving = math.lengthsq(entity.linearVelocity) > 0f ||
+                                        math.lengthsq(entity.angularVelocity) > 0f;
 
-        [BurstCompile]
-        public struct CopyCandidatesFromStreamJob : IJob
-        {
-            public NativeStream.Reader Candidates;
-            [ReadOnly] public NativeArray<int> Starts;
-            public NativeArray<AlienDirtyCandidate> Output;
-
-            public void Execute()
-            {
-                for (int i = 0; i < Starts.Length; i++)
-                {
-                    int count = Candidates.BeginForEachIndex(i);
-                    int writeIndex = Starts[i];
-                    for (int c = 0; c < count; c++)
+                    EntityViews.Add(new AlienDirtyEntityView
                     {
-                        Output[writeIndex++] = Candidates.Read<AlienDirtyCandidate>();
-                    }
+                        LocalIndex = entityIndex,
+                        LocalToWorld = entity.transform,
+                        WorldToLocal = math.inverse(localToWorld),
+                        PreviousLocalToWorld = entity.previousTransform,
+                        PreviousWorldToLocal = math.inverse(previousLocalToWorld),
+                        LinearVelocity = entity.linearVelocity,
+                        AngularVelocity = entity.angularVelocity,
+                        IsMoving = entityMoving,
+                    });
 
-                    Candidates.EndForEachIndex();
+                    foreach (var kvp in entity.sectors)
+                    {
+                        int sectorIndex = AllSectors.Length;
+                        SectorHandle sectorHandle = kvp.Value;
+                        int3 sectorPos = kvp.Key;
+
+                        AllSectors.Add(new AlienDirtySectorRecord
+                        {
+                            EntityId = entityIndex,
+                            SectorPos = sectorPos,
+                            Sector = sectorHandle,
+                            CurrentWorldAabb = ComputeSectorWorldAabb(sectorPos, entity.transform),
+                            PreviousWorldAabb = ComputeSectorWorldAabb(sectorPos, entity.previousTransform)
+                        });
+
+                        Sector sector = sectorHandle.Get();
+                        if (sector.NonEmptyBrickCount == 0)
+                            continue;
+
+                        bool hasDirty = (sector.sectorDirtyFlags & (ushort)FlagsToPropagate) != 0;
+                        if (hasDirty || entityMoving)
+                        {
+                            ActiveSectors.Add(new ActiveSectorInfo
+                            {
+                                SectorIndex = sectorIndex,
+                                HasDirtyBricks = hasDirty,
+                                EntityIsMoving = entityMoving,
+                            });
+                        }
+                    }
                 }
             }
         }
 
         [BurstCompile]
-        public unsafe struct BuildBlockEditCandidatesJob : IJobParallelFor
+        public unsafe struct BuildCandidatesJob : IJobParallelFor
         {
-            [ReadOnly] public NativeArray<int> DirtySectorIndices;
+            [ReadOnly] public NativeArray<ActiveSectorInfo> ActiveSectors;
             [ReadOnly] public NativeArray<AlienDirtySectorRecord> AllSectors;
             [ReadOnly] public NativeArray<AlienDirtyEntityView> Entities;
             [ReadOnly] public NativeParallelMultiHashMap<int3, int> SpatialHash;
             [ReadOnly] public int SpatialCellSize;
             [ReadOnly] public int DirtyHaloVoxels;
             [ReadOnly] public DirtyFlags FlagsToPropagate;
+            [ReadOnly] public DirtyFlags AlienMotionDirtyMask;
             public NativeStream.Writer Candidates;
 
-            public void Execute(int sourceSectorListIndex)
+            public void Execute(int activeIdx)
             {
                 NativeStream.Writer writer = Candidates;
-                writer.BeginForEachIndex(sourceSectorListIndex);
+                writer.BeginForEachIndex(activeIdx);
 
-                int sourceSectorIndex = DirtySectorIndices[sourceSectorListIndex];
+                ActiveSectorInfo info = ActiveSectors[activeIdx];
+                int sourceSectorIndex = info.SectorIndex;
                 AlienDirtySectorRecord source = AllSectors[sourceSectorIndex];
                 Sector sourceSector = source.Sector.Get();
 
-                foreach (DirtyBrickInfo dirtyBrick in new SectorDirtyBrickEnumerator(sourceSector, FlagsToPropagate))
+                if (info.HasDirtyBricks)
                 {
-                    AABB sourceWorldAabb = ComputeBrickWorldAabb(source, Entities[source.EntityId], dirtyBrick.BrickIdx,
-                        DirtyHaloVoxels);
-                    QueryAndWriteBlockCandidates(ref writer, sourceSectorIndex, source, sourceWorldAabb, dirtyBrick);
+                    foreach (DirtyBrickInfo dirtyBrick in new SectorDirtyBrickEnumerator(sourceSector, FlagsToPropagate))
+                    {
+                        AABB brickAabb = ComputeBrickWorldAabb(source, Entities[source.EntityId],
+                            dirtyBrick.BrickIdx, DirtyHaloVoxels, false);
+                        QueryAndEmitCandidates(ref writer, sourceSectorIndex, source,
+                            brickAabb, dirtyBrick.BrickIdx, dirtyBrick.Flags, false);
+                    }
+                }
+
+                if (info.EntityIsMoving && AlienMotionDirtyMask != DirtyFlags.None)
+                {
+                    AlienDirtyEntityView sourceEntity = Entities[source.EntityId];
+
+                    if (sourceSector.NonEmptyBrickCount > 0)
+                    {
+                        for (short brickSlot = 0; brickSlot < Sector.BRICKS_IN_SECTOR; brickSlot++)
+                        {
+                            if (sourceSector.brickIdx[brickSlot] == Sector.BRICKID_EMPTY)
+                                continue;
+
+                            AABB currentAabb = ComputeBrickWorldAabb(source, sourceEntity,
+                                brickSlot, DirtyHaloVoxels, false);
+                            QueryAndEmitCandidates(ref writer, sourceSectorIndex, source,
+                                currentAabb, brickSlot, AlienMotionDirtyMask, true);
+
+                            AABB previousAabb = ComputeBrickWorldAabb(source, sourceEntity,
+                                brickSlot, DirtyHaloVoxels, true);
+                            QueryAndEmitCandidates(ref writer, sourceSectorIndex, source,
+                                previousAabb, brickSlot, AlienMotionDirtyMask, true);
+                        }
+                    }
+
+                    EmitReverseCandidates(ref writer, sourceSectorIndex, source);
                 }
 
                 writer.EndForEachIndex();
             }
 
-            private void QueryAndWriteBlockCandidates(
+            private void QueryAndEmitCandidates(
                 ref NativeStream.Writer writer,
                 int sourceSectorIndex,
                 AlienDirtySectorRecord source,
                 AABB sourceWorldAabb,
-                DirtyBrickInfo dirtyBrick)
+                short sourceBrickIdx,
+                DirtyFlags flags,
+                bool checkRelativeMotion)
             {
                 int3 minCell = AlienDirtyPropagation.WorldToCell(sourceWorldAabb.Min, SpatialCellSize);
-                int3 maxCell =
-                    AlienDirtyPropagation.WorldToCell(AlienDirtyPropagation.MaxExclusive(sourceWorldAabb.Max),
-                        SpatialCellSize);
+                int3 maxCell = AlienDirtyPropagation.WorldToCell(
+                    AlienDirtyPropagation.MaxExclusive(sourceWorldAabb.Max), SpatialCellSize);
 
                 for (int z = minCell.z; z <= maxCell.z; z++)
                 for (int y = minCell.y; y <= maxCell.y; y++)
@@ -167,154 +228,97 @@ namespace Voxelis
                 {
                     int3 cell = new int3(x, y, z);
                     if (!SpatialHash.TryGetFirstValue(cell, out int targetSectorIndex, out var iterator))
-                    {
                         continue;
-                    }
 
                     do
                     {
                         AlienDirtySectorRecord target = AllSectors[targetSectorIndex];
                         if (target.EntityId == source.EntityId)
-                        {
                             continue;
-                        }
 
-                        if (!AABB.Overlaps(sourceWorldAabb, target.CurrentWorldAabb))
-                        {
+                        if (checkRelativeMotion &&
+                            !HasRelativeMotion(Entities[source.EntityId], Entities[target.EntityId]))
                             continue;
-                        }
+
+                        if (!AABB.Overlaps(sourceWorldAabb, target.CurrentWorldAabb) &&
+                            !AABB.Overlaps(sourceWorldAabb, target.PreviousWorldAabb))
+                            continue;
 
                         writer.Write(new AlienDirtyCandidate
                         {
                             TargetSectorIndex = targetSectorIndex,
                             SourceSectorIndex = sourceSectorIndex,
-                            SourceBrickIdx = dirtyBrick.BrickIdx,
-                            Flags = dirtyBrick.Flags,
-                            Mode = AlienDirtyCandidateMode.BlockEdit
+                            SourceBrickIdx = sourceBrickIdx,
+                            Flags = flags
                         });
                     } while (SpatialHash.TryGetNextValue(out targetSectorIndex, ref iterator));
                 }
             }
 
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            private static AABB ComputeBrickWorldAabb(AlienDirtySectorRecord sector, AlienDirtyEntityView entity,
-                short brickIdx, int halo)
+            private static bool HasRelativeMotion(AlienDirtyEntityView a, AlienDirtyEntityView b)
             {
-                int3 brickPos = Sector.ToBrickPos(brickIdx);
-                float3 localMin = sector.SectorPos * Sector.SECTOR_SIZE_IN_BLOCKS + brickPos * Sector.SIZE_IN_BLOCKS -
-                                  halo;
-                float3 localMax = sector.SectorPos * Sector.SECTOR_SIZE_IN_BLOCKS +
-                                  (brickPos + 1) * Sector.SIZE_IN_BLOCKS + halo;
-                return AABB.Transform(new AABB { Min = localMin, Max = localMax }, entity.LocalToWorld);
+                return math.lengthsq(a.LinearVelocity - b.LinearVelocity) > 0f ||
+                       math.lengthsq(a.AngularVelocity - b.AngularVelocity) > 0f;
             }
-        }
 
-        [BurstCompile]
-        public unsafe struct BuildMotionCandidatesJob : IJobParallelFor
-        {
-            [ReadOnly] public NativeArray<int> MovingSectorIndices;
-            [ReadOnly] public NativeArray<AlienDirtySectorRecord> AllSectors;
-            [ReadOnly] public NativeArray<AlienDirtyEntityView> Entities;
-            [ReadOnly] public NativeParallelMultiHashMap<int3, int> MotionSpatialHash;
-            [ReadOnly] public int SpatialCellSize;
-            [ReadOnly] public int DirtyHaloVoxels;
-            [ReadOnly] public float MotionThreshold;
-            [ReadOnly] public float DeltaTime;
-            [ReadOnly] public DirtyFlags AlienMotionDirtyMask;
-            public NativeStream.Writer Candidates;
-
-            public void Execute(int movingSectorListIndex)
+            private void EmitReverseCandidates(
+                ref NativeStream.Writer writer,
+                int movingSectorIndex,
+                AlienDirtySectorRecord moving)
             {
-                NativeStream.Writer writer = Candidates;
-                writer.BeginForEachIndex(movingSectorListIndex);
-
-                int movingSectorIndex = MovingSectorIndices[movingSectorListIndex];
-                AlienDirtySectorRecord moving = AllSectors[movingSectorIndex];
-                if (!HasAllocatedBricks(moving.Sector.Get()))
-                {
-                    writer.EndForEachIndex();
-                    return;
-                }
-
-                AABB swept = AABB.Union(moving.PreviousWorldAabb, moving.CurrentWorldAabb).Inflated(DirtyHaloVoxels);
-                int3 minCell = AlienDirtyPropagation.WorldToCell(swept.Min, SpatialCellSize);
-                int3 maxCell =
-                    AlienDirtyPropagation.WorldToCell(AlienDirtyPropagation.MaxExclusive(swept.Max), SpatialCellSize);
+                AABB queryAabb = AABB.Union(moving.CurrentWorldAabb, moving.PreviousWorldAabb)
+                    .Inflated(DirtyHaloVoxels);
+                int3 minCell = AlienDirtyPropagation.WorldToCell(queryAabb.Min, SpatialCellSize);
+                int3 maxCell = AlienDirtyPropagation.WorldToCell(
+                    AlienDirtyPropagation.MaxExclusive(queryAabb.Max), SpatialCellSize);
 
                 for (int z = minCell.z; z <= maxCell.z; z++)
                 for (int y = minCell.y; y <= maxCell.y; y++)
                 for (int x = minCell.x; x <= maxCell.x; x++)
                 {
                     int3 cell = new int3(x, y, z);
-                    if (!MotionSpatialHash.TryGetFirstValue(cell, out int otherSectorIndex, out var iterator))
-                    {
+                    if (!SpatialHash.TryGetFirstValue(cell, out int otherSectorIndex, out var iterator))
                         continue;
-                    }
 
                     do
                     {
                         AlienDirtySectorRecord other = AllSectors[otherSectorIndex];
                         if (other.EntityId == moving.EntityId)
-                        {
                             continue;
-                        }
 
-                        if (!HasAllocatedBricks(other.Sector.Get()))
-                        {
+                        if (!HasRelativeMotion(Entities[moving.EntityId], Entities[other.EntityId]))
                             continue;
-                        }
 
-                        if (!AABB.Overlaps(swept, other.CurrentWorldAabb)
-                            && !AABB.Overlaps(swept, other.PreviousWorldAabb))
-                        {
+                        if (other.Sector.Get().NonEmptyBrickCount == 0)
                             continue;
-                        }
 
-                        if (!RelativeMotionExceedsThreshold(Entities[moving.EntityId], Entities[other.EntityId],
-                                MotionThreshold, DeltaTime))
-                        {
+                        if (!AABB.Overlaps(queryAabb, other.CurrentWorldAabb) &&
+                            !AABB.Overlaps(queryAabb, other.PreviousWorldAabb))
                             continue;
-                        }
-
-                        writer.Write(new AlienDirtyCandidate
-                        {
-                            TargetSectorIndex = otherSectorIndex,
-                            SourceSectorIndex = movingSectorIndex,
-                            SourceBrickIdx = -1,
-                            Flags = AlienMotionDirtyMask,
-                            Mode = AlienDirtyCandidateMode.Motion
-                        });
 
                         writer.Write(new AlienDirtyCandidate
                         {
                             TargetSectorIndex = movingSectorIndex,
                             SourceSectorIndex = otherSectorIndex,
                             SourceBrickIdx = -1,
-                            Flags = AlienMotionDirtyMask,
-                            Mode = AlienDirtyCandidateMode.Motion
+                            Flags = AlienMotionDirtyMask
                         });
-                    } while (MotionSpatialHash.TryGetNextValue(out otherSectorIndex, ref iterator));
+                    } while (SpatialHash.TryGetNextValue(out otherSectorIndex, ref iterator));
                 }
-
-                writer.EndForEachIndex();
             }
 
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            private static bool HasAllocatedBricks(Sector sector)
+            private static AABB ComputeBrickWorldAabb(AlienDirtySectorRecord sector, AlienDirtyEntityView entity,
+                short brickIdx, int halo, bool previous)
             {
-                return sector.NonEmptyBrickCount > 0;
-            }
-
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            private static bool RelativeMotionExceedsThreshold(AlienDirtyEntityView a, AlienDirtyEntityView b,
-                float threshold, float deltaTime)
-            {
-                float linear = math.length(a.LinearVelocity - b.LinearVelocity) * deltaTime;
-                float influenceRadius = Sector.SECTOR_SIZE_IN_BLOCKS;
-                // TODO: Tighten this with pair-local lever-arm displacement instead of waking on any angular motion.
-                float angular = (math.length(a.AngularVelocity) + math.length(b.AngularVelocity)) * influenceRadius *
-                                deltaTime;
-                return linear + angular > threshold;
+                int3 brickPos = Sector.ToBrickPos(brickIdx);
+                float3 localMin = sector.SectorPos * Sector.SECTOR_SIZE_IN_BLOCKS
+                                  + brickPos * Sector.SIZE_IN_BLOCKS - halo;
+                float3 localMax = sector.SectorPos * Sector.SECTOR_SIZE_IN_BLOCKS
+                                  + (brickPos + 1) * Sector.SIZE_IN_BLOCKS + halo;
+                RigidTransform transform = previous ? entity.PreviousLocalToWorld : entity.LocalToWorld;
+                return AABB.Transform(new AABB { Min = localMin, Max = localMax }, transform);
             }
         }
 
@@ -334,48 +338,64 @@ namespace Voxelis
                 AlienDirtySectorRecord target = Sectors[targetSectorIndex];
                 AlienDirtyCandidateRange range = CandidateRanges[targetSectorIndex];
                 if (range.Start < 0 || range.Count <= 0)
-                {
                     return;
-                }
 
                 for (int i = range.Start; i < range.Start + range.Count; i++)
                 {
                     AlienDirtyCandidate candidate = Candidates[i];
                     AlienDirtySectorRecord source = Sectors[candidate.SourceSectorIndex];
 
-                    if (candidate.Mode == AlienDirtyCandidateMode.BlockEdit)
+                    if (candidate.SourceBrickIdx >= 0)
                     {
-                        if (TryGetBrickTargetRange(source, target, candidate.SourceBrickIdx, DirtyHaloVoxels, false,
-                                out int3 minBrick, out int3 maxBrick))
-                        {
-                            MarkAllocatedTargetBrickRange(target.Sector, minBrick, maxBrick, candidate.Flags);
-                        }
+                        MarkSpecificBrick(source, target, candidate.SourceBrickIdx, candidate.Flags);
                     }
                     else
                     {
-                        Sector sourceSector = source.Sector.Get();
-                        for (short sourceBrick = 0; sourceBrick < Sector.BRICKS_IN_SECTOR; sourceBrick++)
-                        {
-                            if (sourceSector.brickIdx[sourceBrick] == Sector.BRICKID_EMPTY)
-                            {
-                                continue;
-                            }
+                        MarkAllAllocatedBricks(source, target, candidate.Flags);
+                    }
+                }
+            }
 
-                            bool hasCurrent = TryGetBrickTargetRange(source, target, sourceBrick, DirtyHaloVoxels,
-                                false, out int3 currentMin, out int3 currentMax);
-                            bool hasPrevious = TryGetBrickTargetRange(source, target, sourceBrick, DirtyHaloVoxels,
-                                true, out int3 previousMin, out int3 previousMax);
+            private void MarkSpecificBrick(AlienDirtySectorRecord source, AlienDirtySectorRecord target,
+                short sourceBrickIdx, DirtyFlags flags)
+            {
+                if (TryGetBrickTargetRange(source, target, sourceBrickIdx, DirtyHaloVoxels,
+                        false, out int3 currentMin, out int3 currentMax))
+                {
+                    MarkAllocatedTargetBrickRange(target.Sector, currentMin, currentMax, flags);
+                }
 
-                            if (hasCurrent)
-                            {
-                                MarkAllocatedTargetBrickRange(target.Sector, currentMin, currentMax, candidate.Flags);
-                            }
+                AlienDirtyEntityView sourceEntity = Entities[source.EntityId];
+                AlienDirtyEntityView targetEntity = Entities[target.EntityId];
+                if (sourceEntity.IsMoving || targetEntity.IsMoving)
+                {
+                    if (TryGetBrickTargetRange(source, target, sourceBrickIdx, DirtyHaloVoxels,
+                            true, out int3 prevMin, out int3 prevMax))
+                    {
+                        MarkAllocatedTargetBrickRange(target.Sector, prevMin, prevMax, flags);
+                    }
+                }
+            }
 
-                            if (hasPrevious)
-                            {
-                                MarkAllocatedTargetBrickRange(target.Sector, previousMin, previousMax, candidate.Flags);
-                            }
-                        }
+            private void MarkAllAllocatedBricks(AlienDirtySectorRecord source, AlienDirtySectorRecord target,
+                DirtyFlags flags)
+            {
+                Sector sourceSector = source.Sector.Get();
+                for (short sourceBrick = 0; sourceBrick < Sector.BRICKS_IN_SECTOR; sourceBrick++)
+                {
+                    if (sourceSector.brickIdx[sourceBrick] == Sector.BRICKID_EMPTY)
+                        continue;
+
+                    if (TryGetBrickTargetRange(source, target, sourceBrick, DirtyHaloVoxels,
+                            false, out int3 currentMin, out int3 currentMax))
+                    {
+                        MarkAllocatedTargetBrickRange(target.Sector, currentMin, currentMax, flags);
+                    }
+
+                    if (TryGetBrickTargetRange(source, target, sourceBrick, DirtyHaloVoxels,
+                            true, out int3 prevMin, out int3 prevMax))
+                    {
+                        MarkAllocatedTargetBrickRange(target.Sector, prevMin, prevMax, flags);
                     }
                 }
             }
@@ -417,9 +437,7 @@ namespace Voxelis
                 maxBrick = (int3)math.floor(AlienDirtyPropagation.MaxExclusive(targetMax) / Sector.SIZE_IN_BLOCKS);
 
                 if (math.any(maxBrick < 0) || math.any(minBrick >= Sector.SIZE_IN_BRICKS))
-                {
                     return false;
-                }
 
                 minBrick = math.max(minBrick, int3.zero);
                 maxBrick = math.min(maxBrick, new int3(Sector.SIZE_IN_BRICKS - 1));
@@ -430,8 +448,10 @@ namespace Voxelis
             private static float3 AbsMul(float3x3 matrix, float3 value)
             {
                 return new float3(
-                    math.abs(matrix.c0.x) * value.x + math.abs(matrix.c1.x) * value.y + math.abs(matrix.c2.x) * value.z,
-                    math.abs(matrix.c0.y) * value.x + math.abs(matrix.c1.y) * value.y + math.abs(matrix.c2.y) * value.z,
+                    math.abs(matrix.c0.x) * value.x + math.abs(matrix.c1.x) * value.y +
+                    math.abs(matrix.c2.x) * value.z,
+                    math.abs(matrix.c0.y) * value.x + math.abs(matrix.c1.y) * value.y +
+                    math.abs(matrix.c2.y) * value.z,
                     math.abs(matrix.c0.z) * value.x + math.abs(matrix.c1.z) * value.y +
                     math.abs(matrix.c2.z) * value.z);
             }
@@ -447,15 +467,12 @@ namespace Voxelis
                 {
                     int brickIdx = Sector.ToBrickIdx(x, y, z);
                     if (target.brickIdx[brickIdx] == Sector.BRICKID_EMPTY)
-                    {
                         continue;
-                    }
 
                     target.brickRequireUpdateFlags[brickIdx] |= (ushort)flags;
                     target.sectorRequireUpdateFlags |= (ushort)flags;
                 }
             }
-
         }
     }
 }
