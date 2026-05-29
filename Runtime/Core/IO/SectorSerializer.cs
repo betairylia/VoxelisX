@@ -55,33 +55,27 @@ namespace Voxelis.IO
                 WriteRawBytes(bw, sector.brickRequireUpdateFlags, Sector.BRICKS_IN_SECTOR * sizeof(ushort));
 
                 int slotRecordCount = 0;
-                if (sector.slots.IsCreated)
+                for (int i = 0; i < Sector.MAX_SLOTS; i++)
                 {
-                    for (int i = 0; i < sector.slots.Length; i++)
+                    if (sector.slots[i].IsCreated)
                     {
-                        if (sector.slots[i].IsCreated)
-                        {
-                            slotRecordCount++;
-                        }
+                        slotRecordCount++;
                     }
                 }
 
                 bw.Write((uint)slotRecordCount);
 
-                if (sector.slots.IsCreated)
+                for (int i = 0; i < Sector.MAX_SLOTS; i++)
                 {
-                    for (int i = 0; i < sector.slots.Length; i++)
+                    SectorSlotStorage slot = sector.slots[i];
+                    if (!slot.IsCreated) continue;
+
+                    bw.Write((byte)i);
+                    bw.Write((ushort)slot.stride);
+
+                    if (capacity > 0)
                     {
-                        SectorSlotStorage slot = sector.slots[i];
-                        if (!slot.IsCreated) continue;
-
-                        bw.Write((byte)i);
-                        bw.Write((ushort)slot.stride);
-
-                        if (capacity > 0)
-                        {
-                            WriteRawBytes(bw, slot.data.Ptr, capacity * Sector.BLOCKS_IN_BRICK * slot.stride);
-                        }
+                        WriteRawBytes(bw, slot.data.Ptr, capacity * Sector.BLOCKS_IN_BRICK * slot.stride);
                     }
                 }
             }
@@ -159,7 +153,7 @@ namespace Voxelis.IO
                         throw new InvalidDataException($"Invalid slot stride {stride} for capacity {capacity}.");
 
                     var slot = SectorSlotStorage.New(stride, capacity, allocator);
-                    SectorSlotStorage* slotPtr = sector.slots.Ptr + slotId;
+                    SectorSlotStorage* slotPtr = sector.slots + slotId;
                     *slotPtr = slot;
 
                     if (slotBytes > 0)

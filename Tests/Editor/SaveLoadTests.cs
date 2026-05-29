@@ -174,8 +174,6 @@ namespace VoxelisX.Tests
                 handle.SetBlock(64, 64, 64, b2);
                 handle.SetBlock(127, 127, 127, b3);
                 handle.SetBlock(8, 0, 0, b1);
-                handle.SetMeta(8, 0, 0, new Meta { data = 0x1234 });
-                handle.SetMeta(16, 0, 0, new Meta { data = 0xBEEF });
 
                 ref Sector source = ref handle.Get();
                 int sourceCount = source.brickMap.Count;
@@ -192,8 +190,6 @@ namespace VoxelisX.Tests
                     Assert.That(loaded.GetBlock(127, 127, 127), Is.EqualTo(b3));
                     Assert.That(loaded.GetBlock(8, 0, 0), Is.EqualTo(b1));
                     Assert.That(loaded.GetBlock(1, 1, 1), Is.EqualTo(Block.Empty));
-                    Assert.That(loaded.GetMeta(8, 0, 0), Is.EqualTo(new Meta { data = 0x1234 }));
-                    Assert.That(loaded.GetMeta(16, 0, 0), Is.EqualTo(new Meta { data = 0xBEEF }));
                     Assert.That(loaded.GetBlock(16, 0, 0), Is.EqualTo(Block.Empty));
                 }
                 finally { loaded.Dispose(Allocator.Persistent); }

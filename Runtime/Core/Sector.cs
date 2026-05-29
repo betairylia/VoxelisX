@@ -50,13 +50,7 @@ namespace Voxelis
         /// <summary>Sentinel value for an unallocated brick slot in <see cref="brickIdx"/>.</summary>
         public const short BRICKID_EMPTY = SparseBrickIdTable.EMPTY;
         public const int MAX_SLOTS = 16;
-
-        /// <summary>
-        /// Fixed table of enum-addressed slot storage. Slot data uses the shared <see cref="brickMap"/>
-        /// namespace. If a shared brick ID exists, every created slot has data for it.
-        /// </summary>
-        public UnsafeList<SectorSlotStorage> slots;
-
+        
         public SparseBrickIdTable brickMap;
         public short* brickIdx
         {
@@ -78,7 +72,7 @@ namespace Voxelis
         /// <summary>
         /// Returns true if there are pending brick updates for the renderer.
         /// </summary>
-        public bool IsRendererRequireUpdate => (sectorRequireUpdateFlags & (ushort)(DirtyFlags.GeometryWithLocalNeighbor | DirtyFlags.BrickAdded | DirtyFlags.BrickRemoved)) != 0;
+        public bool IsRendererRequireUpdate => (sectorRequireUpdateFlags & (ushort)(DirtyFlags.GeometryWithLocalNeighbor | DirtyFlags.BlockBrickAdded | DirtyFlags.BlockBrickRemoved)) != 0;
 
         // Lock for brick-thread-safe write
         private long _sectorAllocLock, _sectorSetDirtyLock;
@@ -107,9 +101,8 @@ namespace Voxelis
             get
             {
                 int total = 0;
-                if (!slots.IsCreated) return total;
 
-                for (int i = 0; i < slots.Length; i++)
+                for (int i = 0; i < MAX_SLOTS; i++)
                 {
                     SectorSlotStorage slot = slots[i];
                     if (!slot.IsCreated) continue;
@@ -138,7 +131,7 @@ namespace Voxelis
 
             Sector s = new Sector()
             {
-                slots = new UnsafeList<SectorSlotStorage>(MAX_SLOTS, allocator),
+                slots = (SectorSlotStorage*)UnsafeUtility.Malloc(MAX_SLOTS * sizeof(SectorSlotStorage), UnsafeUtility.AlignOf<SectorSlotStorage>(), allocator),
                 brickMap = (copyFrom == null ? SparseBrickIdTable.New(allocator) : copyFrom.Value.Clone(allocator)),
                 brickDirtyFlags = (ushort*)UnsafeUtility.Malloc(totalBricks * sizeof(ushort), UnsafeUtility.AlignOf<ushort>(), allocator),
                 brickRequireUpdateFlags = (ushort*)UnsafeUtility.Malloc(totalBricks * sizeof(ushort), UnsafeUtility.AlignOf<ushort>(), allocator),
@@ -151,11 +144,10 @@ namespace Voxelis
                 _allocator = allocator,
             };
 
-            s.slots.Resize(MAX_SLOTS, NativeArrayOptions.ClearMemory);
             if (createDefaultSlots)
             {
-                s.CreateSlot(SectorSlotId.Block, UnsafeUtility.SizeOf<Block>(), allocator);
-                s.CreateSlot(SectorSlotId.Meta, UnsafeUtility.SizeOf<Meta>(), allocator);
+                s.slots[(int)SectorSlotId.Block] = SectorSlotStorage.New(
+                    UnsafeUtility.SizeOf<Block>(), initialBricks, allocator);
             }
 
             if (options == NativeArrayOptions.ClearMemory)
@@ -200,7 +192,7 @@ namespace Voxelis
                 copyFrom: from.brickMap,
                 createDefaultSlots: false);
 
-            s.CloneSlotsFrom(in from, allocator);
+            CopySlotsTo(from.slots, s.slots, allocator);
 
             return s;
         }
@@ -210,8 +202,8 @@ namespace Voxelis
         /// </summary>
         public void Dispose(Allocator allocator)
         {
-            DisposeSlotTable(ref slots);
-            DisposeSlotTable(ref _snapshot_slots);
+            ResetSlotTable(ref slots);
+            ResetSlotTable(ref _snapshot_slots);
             if (brickMap.IsCreated) brickMap.Dispose();
             if (_snapshot_brickMap.IsCreated) _snapshot_brickMap.Dispose();
             if (NonEmptyBricks.IsCreated) NonEmptyBricks.Dispose();
@@ -306,29 +298,24 @@ namespace Voxelis
         public Block* GetBrick(int x, int y, int z)
         {
             short bid = this.brickIdx[ToBrickIdx(x, y, z)];
-            return GetBrick(bid);
+            return GetBrick<Block>(SectorSlotId.Block, bid);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public Block* GetBrick(short bid)
+        public T* GetBrick<T>(SectorSlotId slotId, short bid) 
+            where T: unmanaged, IEquatable<T>
         {
-            if (bid == BRICKID_EMPTY)
+            if (bid == BRICKID_EMPTY || (int)slotId >= MAX_SLOTS)
             {
                 return null;
             }
-
-            SectorSlotStorage* blockSlot = GetSlotStorage(SectorSlotId.Block);
-            return blockSlot == null ? null : (Block*)blockSlot->GetBrickPtr(bid);
+            
+            SectorSlotStorage slot = slots[(int)slotId];
+            return slot.IsCreated ? null : (T*)slot.GetBrickPtr(bid);
         }
 
         #region Snapshots
-
-        /// <summary>
-        /// Backbuffer version of slot storage for read access during double-buffered updates (e.g., cellular automata).
-        /// </summary>
-        [NativeDisableUnsafePtrRestriction]
-        public UnsafeList<SectorSlotStorage> _snapshot_slots;
-
+        
         /// <summary>
         /// Backbuffer version of <see cref="brickMap"/> for read access during double-buffered updates.
         /// Allocated lazily on first <see cref="ActivateSnapshot"/> and reused thereafter.
@@ -361,21 +348,7 @@ namespace Voxelis
                 _snapshot_brickMap = SparseBrickIdTable.New(allocator);
             }
 
-            DisposeSlotTable(ref _snapshot_slots);
-            _snapshot_slots = new UnsafeList<SectorSlotStorage>(MAX_SLOTS, allocator);
-            _snapshot_slots.Resize(MAX_SLOTS, NativeArrayOptions.ClearMemory);
-            if (slots.IsCreated)
-            {
-                for (int i = 0; i < slots.Length; i++)
-                {
-                    SectorSlotStorage source = slots[i];
-                    if (source.IsCreated)
-                    {
-                        *(_snapshot_slots.Ptr + i) = source.Clone(allocator);
-                    }
-                }
-            }
-
+            CopySlotsTo(slots, _snapshot_slots, allocator);
             _snapshot_brickMap.CopyFrom(brickMap);
 
             _snapshot_enabled = true;

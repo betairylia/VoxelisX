@@ -16,7 +16,7 @@ namespace Voxelis.IO
     public static class WorldLoader
     {
         public const ushort FirstFrameUploadFlags =
-            (ushort)(DirtyFlags.BrickAdded | DirtyFlags.GeometryWithLocalNeighbor | DirtyFlags.Geometry);
+            (ushort)(DirtyFlags.BlockBrickAdded | DirtyFlags.GeometryWithLocalNeighbor | DirtyFlags.Geometry);
 
         public static void Load(string path, Func<EntityRecord, VoxelEntity> entityFactory)
         {

@@ -406,7 +406,7 @@ namespace Voxelis
             {
                 int3 placePosition = hit + hitNormal;
                 hitTarget.SetBlock(placePosition, new Block(handblock));
-                hitTarget.SetMeta(placePosition, new Meta { data = 0x1523 });
+                // hitTarget.SetMeta(placePosition, new Meta { data = 0x1523 });
             }
 
             // Middle click: pick block

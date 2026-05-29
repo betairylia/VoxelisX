@@ -78,7 +78,7 @@ namespace Voxelis
                         if (brick_acce_id >= sector.NonEmptyBricks.Length) return false;
                         absolute_bid = sector.NonEmptyBricks[brick_acce_id];
                         sectorBrickIndex = sector.brickIdx[absolute_bid];
-                        currentBrick = sector.GetBrick(sectorBrickIndex);
+                        currentBrick = sector.GetBrick<Block>(SectorSlotId.Block, sectorBrickIndex);
                     }while(sectorBrickIndex == Sector.BRICKID_EMPTY || currentBrick == null);
 
                     bX = absolute_bid & Sector.SECTOR_MASK;

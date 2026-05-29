@@ -114,7 +114,7 @@ namespace Voxelis
         }
     }
 
-    public enum SectorSlotId : byte
+    public enum SectorSlotId
     {
         Block = 0,
         Meta = 1,

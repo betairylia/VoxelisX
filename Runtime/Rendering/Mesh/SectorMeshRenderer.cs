@@ -139,7 +139,7 @@ namespace Voxelis.Rendering.Meshing
                 for (int brickIdx = 0; brickIdx < Sector.BRICKS_IN_SECTOR; brickIdx++)
                 {
                     // Check if brick is Added or has GeneralAutomata flag (content changed)
-                    bool isAdded = (sector.brickDirtyFlags[brickIdx] & (ushort)DirtyFlags.BrickAdded) != 0;
+                    bool isAdded = (sector.brickDirtyFlags[brickIdx] & (ushort)DirtyFlags.BlockBrickAdded) != 0;
                     bool isModified = (sector.brickDirtyFlags[brickIdx] & (ushort)DirtyFlags.GeneralAutomata) != 0;
 
                     if (isAdded || isModified)

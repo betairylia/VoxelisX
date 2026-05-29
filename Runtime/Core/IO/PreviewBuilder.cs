@@ -25,7 +25,7 @@ namespace Voxelis.IO
                     continue;
                 }
 
-                Block* brick = sector->GetBrick(bid);
+                Block* brick = sector->GetBrick<Block>(SectorSlotId.Block, bid);
                 if (brick == null)
                 {
                     dst[brickAbsIdx] = 0u;

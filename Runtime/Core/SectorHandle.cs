@@ -70,11 +70,6 @@ namespace Voxelis
             return _ptr->GetBlock(x, y, z);
         }
 
-        public Meta GetMeta(int x, int y, int z)
-        {
-            return _ptr->GetMeta(x, y, z);
-        }
-
         public T GetSlot<T>(SectorSlotId slotId, int x, int y, int z) where T : unmanaged
         {
             return _ptr->GetSlot<T>(slotId, x, y, z);
@@ -88,25 +83,12 @@ namespace Voxelis
             _ptr->SetBlock(x, y, z, block);
         }
 
-        public void SetMeta(int x, int y, int z, Meta meta)
-        {
-            _ptr->SetMeta(x, y, z, meta);
-        }
-
         /// <summary>
         /// Gets a pointer to a brick within the sector.
         /// </summary>
         public Block* GetBrick(int x, int y, int z)
         {
             return _ptr->GetBrick(x, y, z);
-        }
-
-        /// <summary>
-        /// Gets a pointer to a brick by brick ID.
-        /// </summary>
-        public Block* GetBrick(short bid)
-        {
-            return _ptr->GetBrick(bid);
         }
 
         /// <summary>

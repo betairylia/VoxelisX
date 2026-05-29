@@ -83,10 +83,10 @@ namespace Voxelis.Rendering
                     for (int brickIdxAbs = 0; brickIdxAbs < Sector.BRICKS_IN_SECTOR; brickIdxAbs++)
                     {
                         // Check require-update flags populated by dirty propagation.
-                        bool isAdded = (sector.brickRequireUpdateFlags[brickIdxAbs] & (ushort)DirtyFlags.BrickAdded) !=
+                        bool isAdded = (sector.brickRequireUpdateFlags[brickIdxAbs] & (ushort)DirtyFlags.BlockBrickAdded) !=
                                        0;
                         bool isRemoved =
-                            (sector.brickRequireUpdateFlags[brickIdxAbs] & (ushort)DirtyFlags.BrickRemoved) !=
+                            (sector.brickRequireUpdateFlags[brickIdxAbs] & (ushort)DirtyFlags.BlockBrickRemoved) !=
                             0;
                         bool needRebuilt = (sector.brickRequireUpdateFlags[brickIdxAbs] &
                                             (ushort)DirtyFlags.GeometryWithLocalNeighbor) != 0;
@@ -118,7 +118,7 @@ namespace Voxelis.Rendering
                 int3 brickPos = Sector.ToBrickPos(bidAbsolute);
                 int3 brickBlockPos = brickPos * Sector.SIZE_IN_BLOCKS;
                 ref Sector sector = ref sectorHandle.Get();
-                Block* brick = sector.GetBrick(bid);
+                Block* brick = sector.GetBrick<Block>(SectorSlotId.Block, bid);
                 if (brick == null)
                 {
                     return;
