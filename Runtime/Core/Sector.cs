@@ -132,6 +132,7 @@ namespace Voxelis
             Sector s = new Sector()
             {
                 slots = (SectorSlotStorage*)UnsafeUtility.Malloc(MAX_SLOTS * sizeof(SectorSlotStorage), UnsafeUtility.AlignOf<SectorSlotStorage>(), allocator),
+                _snapshot_slots = null,
                 brickMap = (copyFrom == null ? SparseBrickIdTable.New(allocator) : copyFrom.Value.Clone(allocator)),
                 brickDirtyFlags = (ushort*)UnsafeUtility.Malloc(totalBricks * sizeof(ushort), UnsafeUtility.AlignOf<ushort>(), allocator),
                 brickRequireUpdateFlags = (ushort*)UnsafeUtility.Malloc(totalBricks * sizeof(ushort), UnsafeUtility.AlignOf<ushort>(), allocator),
@@ -144,6 +145,7 @@ namespace Voxelis
                 _allocator = allocator,
             };
 
+            UnsafeUtility.MemClear(s.slots, MAX_SLOTS * sizeof(SectorSlotStorage));
             if (createDefaultSlots)
             {
                 s.slots[(int)SectorSlotId.Block] = SectorSlotStorage.New(
@@ -202,8 +204,20 @@ namespace Voxelis
         /// </summary>
         public void Dispose(Allocator allocator)
         {
-            ResetSlotTable(ref slots);
-            ResetSlotTable(ref _snapshot_slots);
+            if(slots != null)
+            {
+                ResetSlotTable(ref slots);
+                UnsafeUtility.Free(slots, allocator);
+                slots = null;
+            }
+
+            if (_snapshot_slots != null)
+            {
+                ResetSlotTable(ref _snapshot_slots);
+                UnsafeUtility.Free(_snapshot_slots, allocator);
+                _snapshot_slots = null;
+            }
+
             if (brickMap.IsCreated) brickMap.Dispose();
             if (_snapshot_brickMap.IsCreated) _snapshot_brickMap.Dispose();
             if (NonEmptyBricks.IsCreated) NonEmptyBricks.Dispose();
@@ -311,7 +325,7 @@ namespace Voxelis
             }
             
             SectorSlotStorage slot = slots[(int)slotId];
-            return slot.IsCreated ? null : (T*)slot.GetBrickPtr(bid);
+            return slot.IsCreated ? (T*)slot.GetBrickPtr(bid) : null;
         }
 
         #region Snapshots
@@ -341,6 +355,13 @@ namespace Voxelis
             if (_snapshot_enabled)
             {
                 return;
+            }
+
+            if (_snapshot_slots == null)
+            {
+                _snapshot_slots = (SectorSlotStorage*)UnsafeUtility.Malloc(MAX_SLOTS * sizeof(SectorSlotStorage),
+                    UnsafeUtility.AlignOf<SectorSlotStorage>(), allocator);
+                UnsafeUtility.MemClear(_snapshot_slots, MAX_SLOTS * sizeof(SectorSlotStorage));
             }
 
             if (!_snapshot_brickMap.IsCreated)

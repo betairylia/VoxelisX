@@ -38,6 +38,7 @@ namespace Voxelis
             
             if (IsCreated && data.Length > 0)
             {
+                clone.data.Resize(data.Length, NativeArrayOptions.UninitializedMemory);
                 UnsafeUtility.MemCpy(clone.data.Ptr, data.Ptr, data.Length);
             }
             return clone;
@@ -46,6 +47,8 @@ namespace Voxelis
         public void Dispose()
         {
             if (data.IsCreated) data.Dispose();
+            data = default;
+            stride = 0;
         }
 
         public void EnsureBrickCapacity(int brickCapacity, NativeArrayOptions initialization = NativeArrayOptions.ClearMemory)
@@ -99,19 +102,23 @@ namespace Voxelis
         
         private static void ExtendCreatedSlots(SectorSlotStorage* slotTable, int brickCapacity)
         {
+            // if (slotTable == null) return;
+
             for (int i = 0; i < MAX_SLOTS; i++)
             {
-                SectorSlotStorage slot = slotTable[i];
-                if (slot.IsCreated) { slot.EnsureBrickCapacity(brickCapacity); }
+                SectorSlotStorage* slot = slotTable + i;
+                if (slot->IsCreated) { slot->EnsureBrickCapacity(brickCapacity); }
             }
         }
 
         private static void ClearBrickForAllSlots(SectorSlotStorage* slotTable, short bid)
         {
+            // if (slotTable == null) return;
+
             for (int i = 0; i < MAX_SLOTS; i++)
             {
-                SectorSlotStorage slot = slotTable[i];
-                if (slot.IsCreated) { slot.ClearBrick(bid); }
+                SectorSlotStorage* slot = slotTable + i;
+                if (slot->IsCreated) { slot->ClearBrick(bid); }
             }
         }
 
@@ -123,10 +130,13 @@ namespace Voxelis
 
         private static void ResetSlotTable(ref SectorSlotStorage* slotTable)
         {
+            if (slotTable == null) return;
+
             for (int i = 0; i < MAX_SLOTS; i++)
             {
-                SectorSlotStorage slot = slotTable[i];
-                if (slot.IsCreated) { slot.Dispose(); }
+                SectorSlotStorage* slot = slotTable + i;
+                if (slot->IsCreated) { slot->Dispose(); }
+                *slot = default;
             }
         }
 
