@@ -114,10 +114,17 @@ namespace Voxelis
         }
     }
 
+    // TODO: Make this customizable
     public enum SectorSlotId
     {
         Block = 0,
-        Meta = 1,
+        Reserved1 = 1,
+        Reserved2 = 2,
+        Reserved3 = 3,
+        Reserved4 = 4,
+        Reserved5 = 5,
+        Reserved6 = 6,
+        Reserved7 = 7,
     }
 
     public struct Meta : IEquatable<Meta>

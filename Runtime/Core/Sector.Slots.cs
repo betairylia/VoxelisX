@@ -165,7 +165,7 @@ namespace Voxelis
             => SetSlot(SectorSlotId.Block, x, y, z, block);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void SetSlot<T>(SectorSlotId slotId, int x, int y, int z, T value)
+        public void SetSlot<T>(SectorSlotId slotId, int x, int y, int z, T value)
             where T : unmanaged, IEquatable<T>
         {
             ref SparseBrickIdTable targetBrickMap = ref(_snapshot_enabled ? ref _snapshot_brickMap : ref brickMap);
