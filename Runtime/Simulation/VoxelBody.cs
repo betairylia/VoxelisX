@@ -24,6 +24,9 @@ namespace Voxelis
         
         private Rigidbody body;
         private VoxelEntity _entity;
+        private NativeHashMap<int3, VoxelEntityPhysics.SectorMassMoments> sectorMassCache;
+        private VoxelEntityPhysics.SectorMassMoments cachedMassMoments;
+        private bool massCacheInitialized;
 
         public VoxelEntity entity
         {
@@ -151,83 +154,149 @@ namespace Voxelis
 
         /// <summary>
         /// Computes mass properties (mass, center of mass, inertia tensor) for this voxel body.
-        /// Uses the job system to accumulate properties across all sectors.
+        /// Uses cached per-sector origin moments and only refreshes geometry-dirty sectors after the initial build.
         /// </summary>
         public MassProperties ComputeMassProperties()
         {
-            MassProperties result = new MassProperties();
+            RefreshMassPropertiesCache();
+            return massProperties;
+        }
 
-            // Compute center of mass
-            var CoM = new NativeArray<float4>(1, Allocator.TempJob);
-            try
+        public MassProperties RebuildMassPropertiesCache()
+        {
+            RefreshMassPropertiesCache(forceRebuild: true);
+            return massProperties;
+        }
+
+        public bool RefreshMassPropertiesCache(
+            DirtyFlags dirtyMask = DirtyFlags.Geometry,
+            bool forceRebuild = false)
+        {
+            int sectorCount = entity.Sectors.Count;
+            if (sectorCount == 0)
             {
-                CoM[0] = new float4(0, 0, 0, 0);
+                ClearMassPropertiesCache();
+                massProperties = default;
+                return true;
+            }
 
+            bool rebuild = forceRebuild || !massCacheInitialized || !sectorMassCache.IsCreated || sectorMassCache.Count != sectorCount;
+            if (!rebuild)
+            {
                 foreach (var kvp in entity.Sectors)
                 {
-                    int3 sectorPos = kvp.Key;
-                    var sectorBPos = VoxelEntity.GetSectorBlockPos(sectorPos);
-
-                    var sectorJob = new VoxelEntityPhysics.AccumulateSectorCenterOfMass
+                    if (!sectorMassCache.ContainsKey(kvp.Key))
                     {
-                        settings = PhysicsSettings.Settings,
-                        sector = kvp.Value.Get(),
-                        sectorPosition = sectorBPos,
-                        accumulatedCenter = CoM
-                    };
+                        rebuild = true;
+                        break;
+                    }
+                }
+            }
 
-                    sectorJob.Schedule().Complete();
+            EnsureMassPropertiesCache(sectorCount, rebuild);
+
+            var inputs = new NativeList<VoxelEntityPhysics.SectorMassMomentInput>(Allocator.TempJob);
+            try
+            {
+                foreach (var kvp in entity.Sectors)
+                {
+                    ref Sector sector = ref kvp.Value.Get();
+                    if (!rebuild && (sector.sectorDirtyFlags & (ushort)dirtyMask) == 0)
+                    {
+                        continue;
+                    }
+
+                    sector.UpdateNonEmptyBricks();
+                    inputs.Add(new VoxelEntityPhysics.SectorMassMomentInput
+                    {
+                        SectorPosition = kvp.Key,
+                        SectorBlockPosition = VoxelEntity.GetSectorBlockPos(kvp.Key),
+                        Sector = kvp.Value
+                    });
                 }
 
-                result.mass = CoM[0].w;
-                if (CoM[0].w > 0)
+                if (inputs.Length == 0)
                 {
-                    result.centerOfMass = CoM[0].xyz / CoM[0].w;
+                    return false;
                 }
-                else
+
+                using var results = new NativeArray<VoxelEntityPhysics.SectorMassMomentResult>(inputs.Length, Allocator.TempJob);
+                var job = new VoxelEntityPhysics.ComputeSectorMassMomentsJob
                 {
-                    result.centerOfMass = float3.zero;
+                    settings = PhysicsSettings.Settings,
+                    inputs = inputs.AsArray(),
+                    results = results
+                };
+                job.Schedule(inputs.Length, 1).Complete();
+
+                for (int i = 0; i < results.Length; i++)
+                {
+                    VoxelEntityPhysics.SectorMassMomentResult result = results[i];
+                    VoxelEntityPhysics.SectorMassMoments oldMoments = default;
+                    bool hadCachedSector = sectorMassCache.TryGetValue(result.SectorPosition, out oldMoments);
+
+                    if (hadCachedSector)
+                    {
+                        sectorMassCache[result.SectorPosition] = result.Moments;
+                    }
+                    else
+                    {
+                        sectorMassCache.Add(result.SectorPosition, result.Moments);
+                    }
+
+                    cachedMassMoments += result.Moments - oldMoments;
                 }
+
+                ApplyCachedMassProperties();
+                return true;
             }
             finally
             {
-                CoM.Dispose();
-            }
-
-            // Compute inertia tensor
-            var Inertia = new NativeArray<float3>(1, Allocator.TempJob);
-            try
-            {
-                Inertia[0] = new float3(0, 0, 0);
-
-                foreach (var kvp in entity.Sectors)
+                if (inputs.IsCreated)
                 {
-                    int3 sectorPos = kvp.Key;
-                    var sectorBPos = VoxelEntity.GetSectorBlockPos(sectorPos);
-
-                    var sectorJob = new VoxelEntityPhysics.AccumulateSectorInertia
-                    {
-                        settings = PhysicsSettings.Settings,
-                        sector = kvp.Value.Get(),
-                        sectorPosition = sectorBPos,
-                        centerOfMass = result.centerOfMass,
-                        accumulatedInertia = Inertia,
-                    };
-
-                    sectorJob.Schedule().Complete();
+                    inputs.Dispose();
                 }
+            }
+        }
 
-                result.inertiaTensor = Inertia[0];
-            }
-            finally
+        private void EnsureMassPropertiesCache(int sectorCount, bool rebuild)
+        {
+            if (rebuild)
             {
-                Inertia.Dispose();
+                ClearMassPropertiesCache();
             }
-            
-            // TODO: REMOVE ME
+
+            if (!sectorMassCache.IsCreated)
+            {
+                sectorMassCache = new NativeHashMap<int3, VoxelEntityPhysics.SectorMassMoments>(math.max(1, sectorCount), Allocator.Persistent);
+            }
+
+            massCacheInitialized = true;
+        }
+
+        private void ClearMassPropertiesCache()
+        {
+            if (sectorMassCache.IsCreated)
+            {
+                sectorMassCache.Dispose();
+            }
+
+            sectorMassCache = default;
+            cachedMassMoments = default;
+            massCacheInitialized = false;
+        }
+
+        private void ApplyCachedMassProperties()
+        {
+            MassProperties result = default;
+            result.mass = cachedMassMoments.Mass;
+            if (cachedMassMoments.Mass > 0f)
+            {
+                result.centerOfMass = cachedMassMoments.FirstMoment / cachedMassMoments.Mass;
+                result.inertiaTensor = VoxelEntityPhysics.InertiaAroundCenterOfMass(cachedMassMoments, result.centerOfMass);
+            }
+
             massProperties = result;
-            
-            return result;
         }
 
         public unsafe void BeforePhysicsTick()
@@ -241,6 +310,11 @@ namespace Voxelis
         public static void ResolveContact(IEnumerable<VoxelCollisionSolver.ContactPoint> wsContactsB, VoxelEntity Ae, VoxelEntity Be)
         {
             throw new NotImplementedException();
+        }
+
+        private void OnDestroy()
+        {
+            ClearMassPropertiesCache();
         }
 
         private void OnDrawGizmos()
