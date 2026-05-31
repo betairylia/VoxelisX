@@ -1,5 +1,6 @@
 using System;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
@@ -65,11 +66,13 @@ namespace Voxelis
         /// <summary>
         /// Gets the block at the specified position within the sector.
         /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public Block GetBlock(int x, int y, int z)
         {
-            return _ptr->GetBlock(x, y, z);
+            return GetSlot<Block>(SectorSlotId.Block, x, y, z);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public T GetSlot<T>(SectorSlotId slotId, int x, int y, int z) where T : unmanaged
         {
             return _ptr->GetSlot<T>(slotId, x, y, z);
@@ -78,9 +81,17 @@ namespace Voxelis
         /// <summary>
         /// Sets the block at the specified position within the sector.
         /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void SetBlock(int x, int y, int z, Block block)
         {
-            _ptr->SetBlock(x, y, z, block);
+            SetSlot(SectorSlotId.Block, x, y, z, block);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void SetSlot<T>(SectorSlotId slotId, int x, int y, int z, T value)
+            where T : unmanaged, IEquatable<T>
+        {
+            _ptr->SetSlot(slotId, x, y, z, value);
         }
 
         /// <summary>

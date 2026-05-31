@@ -127,22 +127,6 @@ namespace Voxelis
         Reserved7 = 7,
     }
 
-    public struct Meta : IEquatable<Meta>
-    {
-        public ushort data;
-
-        public bool isEmpty => data == 0;
-
-        public static readonly Meta Empty = new Meta { data = 0 };
-
-        public static bool operator ==(Meta a, Meta b) => a.data == b.data;
-        public static bool operator !=(Meta a, Meta b) => a.data != b.data;
-
-        public bool Equals(Meta other) => data == other.data;
-        public override bool Equals(object obj) => obj is Meta other && Equals(other);
-        public override int GetHashCode() => data;
-    }
-
     /// <summary>
     /// Iterator structure for enumerating blocks within a sector along with their positions.
     /// </summary>

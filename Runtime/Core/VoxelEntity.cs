@@ -152,17 +152,23 @@ namespace Voxelis
         /// <returns>The block at the specified position, or Block.Empty if no sector exists at that location.</returns>
         public Block GetBlock(int3 pos)
         {
+            return GetSlot<Block>(SectorSlotId.Block, pos);
+        }
+
+        public T GetSlot<T>(SectorSlotId slotId, int3 pos) where T : unmanaged
+        {
             int3 sectorPos = new int3(
                 pos.x >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS),
                 pos.y >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS),
                 pos.z >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS));
 
-            if (!sectors.ContainsKey(sectorPos))
+            if (!sectors.TryGetValue(sectorPos, out SectorHandle sector))
             {
-                return Block.Empty;
+                return default;
             }
 
-            return sectors[sectorPos].GetBlock(
+            return sector.GetSlot<T>(
+                slotId,
                 pos.x & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
                 pos.y & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
                 pos.z & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS))
@@ -179,6 +185,12 @@ namespace Voxelis
         /// </remarks>
         public void SetBlock(int3 pos, Block b)
         {
+            SetSlot(SectorSlotId.Block, pos, b);
+        }
+
+        public void SetSlot<T>(SectorSlotId slotId, int3 pos, T value)
+            where T : unmanaged, IEquatable<T>
+        {
             int3 sectorPos = new int3(
                 pos.x >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS),
                 pos.y >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS),
@@ -190,11 +202,12 @@ namespace Voxelis
             }
 
             // Modify sector directly in dictionary
-            sectors[sectorPos].SetBlock(
+            sectors[sectorPos].SetSlot(
+                slotId,
                 pos.x & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
                 pos.y & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
                 pos.z & (Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS)),
-                b
+                value
             );
         }
 
@@ -617,6 +630,11 @@ namespace Voxelis
             return data.GetBlock(pos);
         }
 
+        public T GetSlot<T>(SectorSlotId slotId, int3 pos) where T : unmanaged
+        {
+            return data.GetSlot<T>(slotId, pos);
+        }
+
         /// <summary>
         /// Sets the block at the specified world position. Creates a new sector if one doesn't exist.
         /// </summary>
@@ -628,6 +646,12 @@ namespace Voxelis
         public void SetBlock(int3 pos, Block b)
         {
             data.SetBlock(pos, b);
+        }
+
+        public void SetSlot<T>(SectorSlotId slotId, int3 pos, T value)
+            where T : unmanaged, IEquatable<T>
+        {
+            data.SetSlot(slotId, pos, value);
         }
 
         /// <summary>

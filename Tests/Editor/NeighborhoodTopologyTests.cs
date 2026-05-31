@@ -63,6 +63,20 @@ namespace VoxelisX.Tests
         }
 
         [Test]
+        public void GenericSlotAccessCreatesMissingSectorAndKeepsDefaultBlockSlotEmpty()
+        {
+            using var scope = new EntityDataTestScope();
+            var worldPos = new int3(Sector.SECTOR_SIZE_IN_BLOCKS + 5, 7, 9);
+            const ushort reservedValue = 0x2468;
+
+            scope.Data.SetSlot(SectorSlotId.Reserved1, worldPos, reservedValue);
+
+            Assert.That(scope.Data.sectors.ContainsKey(new int3(1, 0, 0)), Is.True);
+            Assert.That(scope.Data.GetBlock(worldPos).isEmpty, Is.True);
+            Assert.That(scope.Data.GetSlot<ushort>(SectorSlotId.Reserved1, worldPos), Is.EqualTo(reservedValue));
+        }
+
+        [Test]
         public void GetBlockReadsFromCorrectSectorForWorldPositions()
         {
             using var scope = new EntityDataTestScope();

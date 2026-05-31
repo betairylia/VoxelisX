@@ -34,6 +34,20 @@ namespace VoxelisX.Tests
         }
 
         [Test]
+        public void GenericSlotAccessStoresDataIndependentlyFromBlockSlot()
+        {
+            using var scope = new SectorTestScope();
+            var block = new Block(37);
+            const ushort reservedValue = 0x1357;
+
+            scope.Handle.SetBlock(1, 2, 3, block);
+            scope.Handle.SetSlot(SectorSlotId.Reserved1, 1, 2, 3, reservedValue);
+
+            Assert.That(scope.Handle.GetBlock(1, 2, 3), Is.EqualTo(block));
+            Assert.That(scope.Handle.GetSlot<ushort>(SectorSlotId.Reserved1, 1, 2, 3), Is.EqualTo(reservedValue));
+        }
+
+        [Test]
         public void MultipleWritesInsideOneBrickAllocateOnce()
         {
             using var scope = new SectorTestScope();

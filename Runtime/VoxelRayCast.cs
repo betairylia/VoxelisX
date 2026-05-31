@@ -61,32 +61,32 @@ namespace Voxelis
 
         #endregion
 
-        #region Private Fields
+        #region Protected Fields
 
         /// <summary>
         /// Whether the last raycast hit a voxel.
         /// </summary>
-        private bool hitted = false;
+        protected bool hitted = false;
 
         /// <summary>
         /// The voxel position that was hit by the raycast (in entity local space).
         /// </summary>
-        private int3 hit = int3.zero;
+        protected int3 hit = int3.zero;
 
         /// <summary>
         /// The normal direction of the hit face (in entity local space).
         /// </summary>
-        private int3 hitNormal = int3.zero;
+        protected int3 hitNormal = int3.zero;
 
         /// <summary>
         /// The voxel entity that was hit.
         /// </summary>
-        private VoxelEntity hitTarget;
+        protected VoxelEntity hitTarget;
 
         /// <summary>
         /// Cached camera component.
         /// </summary>
-        private Camera mainCamera;
+        protected Camera mainCamera;
 
         #endregion
 
@@ -386,6 +386,25 @@ namespace Voxelis
 
         #region Input Handling
 
+        protected virtual void HandleLeftClick()
+        {
+            hitTarget.SetBlock(hit, Block.Empty);
+        }
+
+        protected virtual void HandleRightClick()
+        {
+            int3 placePosition = hit + hitNormal;
+            hitTarget.SetBlock(placePosition, new Block(handblock));
+        }
+
+        protected virtual void HandleMiddleClick()
+        {
+            Block block = hitTarget.GetBlock(hit);
+            handblock = block.data;
+            Debug.Log($"Picked block: {block.data}");
+        }
+
+        // TODO: Modern interface
         /// <summary>
         /// Handles player input for block interaction (place, destroy, pick).
         /// </summary>
@@ -394,7 +413,7 @@ namespace Voxelis
             // Left click: destroy block
             if (Input.GetMouseButtonDown(0))
             {
-                hitTarget.SetBlock(hit, Block.Empty);
+                HandleLeftClick();
             }
 
             // Right click: place block
@@ -404,17 +423,13 @@ namespace Voxelis
 
             if (shouldPlace)
             {
-                int3 placePosition = hit + hitNormal;
-                hitTarget.SetBlock(placePosition, new Block(handblock));
-                // hitTarget.SetMeta(placePosition, new Meta { data = 0x1523 });
+                HandleRightClick();
             }
 
             // Middle click: pick block
             if (Input.GetMouseButtonDown(2))
             {
-                Block block = hitTarget.GetBlock(hit);
-                handblock = block.data;
-                Debug.Log($"Picked block: {block.data}");
+                HandleMiddleClick();
             }
         }
 

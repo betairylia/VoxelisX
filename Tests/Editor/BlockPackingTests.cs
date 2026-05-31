@@ -27,17 +27,6 @@ namespace VoxelisX.Tests
         }
 
         [Test]
-        public void MetaIsSeparateFixedSizeSlotValue()
-        {
-            var block = new Block { data = 0xABCD };
-            var meta = new Meta { data = 0x1357 };
-
-            Assert.That(block.id, Is.EqualTo(0xABCD));
-            Assert.That(UnsafeUtility.SizeOf<Meta>(), Is.EqualTo(sizeof(ushort)));
-            Assert.That(meta.data, Is.EqualTo(0x1357));
-        }
-
-        [Test]
         public void IsEmptyRequiresAllDataBitsToBeZero()
         {
             var visible = new Block { data = 1 };
