@@ -6,6 +6,7 @@ using Unity.Mathematics;
 using Unity.Physics;
 using UnityEngine;
 using UnityEngine.Rendering;
+using UnityEngine.Profiling;
 using Voxelis.Tick;
 using Collider = Unity.Physics.Collider;
 using Joint = Unity.Physics.Joint;
@@ -39,21 +40,16 @@ namespace Voxelis.Simulation
         }
 
         private List<VoxelContactInfo> previousFrameContacts = new();
-        
+
         public override void Init()
         {
             base.Init();
             // PrepareTestWorld();
         }
-        
+
         private void AddBodyToPhysicsWorld(VoxelBody vb, int bodyIndex)
         {
             Transform t = vb.transform;
-
-            // Update sector data
-            vb.BeforePhysicsTick();
-
-            // Debug.Log($"[Body {bodyIndex}] Mass: {massProps.mass}, CoM: {massProps.centerOfMass}, Inertia: {massProps.inertiaTensor}, IsStatic: {vb.isStatic}");
 
             // Create material that raises collision events
             var material = new Unity.Physics.Material
@@ -103,7 +99,7 @@ namespace Voxelis.Simulation
                     LinearDamping = 0.01f,
                     AngularDamping = 0.05f
                 };
-                
+
                 motionVelocities[motionIndex] = new Unity.Physics.MotionVelocity
                 {
                     LinearVelocity = Unity.Mathematics.float3.zero,
@@ -114,70 +110,86 @@ namespace Voxelis.Simulation
                     GravityFactor = 1.0f
                 };
             }
-            
+
             UpdateBodyInfo(vb, bodyIndex);
         }
 
         private unsafe void UpdateBodyInfo(VoxelBody vb, int bodyIndex)
         {
-            // Update sector data
-            vb.BeforePhysicsTick();
-
-            VoxelCollider* vc = (VoxelCollider*)physicsWorld.Bodies[bodyIndex].Collider.GetUnsafePtr();
-            using var sectors = vb.entity.Sectors.ToNativeHashMap(Allocator.Temp);
-            vc->ReloadSectors(sectors);
-
-            if (vb.isStatic) return;
-
-            // Compute mass properties using VoxelBody API
-            var massProps = vb.ComputeMassProperties();
-            
-            //// Dynamics
-            
-            int motionIndex = bodyIndex; // Dynamic bodies come first
-            var motionDatas = physicsWorld.MotionDatas;
-            var motionVelocities = physicsWorld.MotionVelocities;
-        
-            /// CoM
-            
-            // Create BodyFromMotion transform (offset by center of mass in body space)
-            Unity.Mathematics.RigidTransform bodyFromMotion = new Unity.Mathematics.RigidTransform(
-                Unity.Mathematics.quaternion.identity,
-                massProps.centerOfMass
-            );
-            
-            // WorldFromMotion = WorldFromBody * BodyFromMotion
-            Unity.Mathematics.RigidTransform worldFromBody = physicsWorld.Bodies[bodyIndex].WorldFromBody;
-            Unity.Mathematics.RigidTransform worldFromMotion = Unity.Mathematics.math.mul(worldFromBody, bodyFromMotion);
-
-            var md = motionDatas[motionIndex];
-            motionDatas[motionIndex] = new Unity.Physics.MotionData
+            Profiler.BeginSample("TestPhysics UpdateBodyInfo");
+            try
             {
-                WorldFromMotion = worldFromMotion,
-                BodyFromMotion = bodyFromMotion,
-                LinearDamping = md.LinearDamping,
-                AngularDamping = md.AngularDamping
-            };
-            
-            /// Mass
-            
-            // Create motion velocity with computed mass properties
-            float inverseMass = massProps.mass > 0 ? 1.0f / massProps.mass : 0.0f;
-            Unity.Mathematics.float3 inverseInertia = Unity.Mathematics.float3.zero;
-            if (massProps.inertiaTensor.x > 0) inverseInertia.x = 1.0f / massProps.inertiaTensor.x;
-            if (massProps.inertiaTensor.y > 0) inverseInertia.y = 1.0f / massProps.inertiaTensor.y;
-            if (massProps.inertiaTensor.z > 0) inverseInertia.z = 1.0f / massProps.inertiaTensor.z;
+                // Update sector data
+                Profiler.BeginSample("TestPhysics Body BeforePhysicsTick");
+                // vb.BeforePhysicsTick();
+                Profiler.EndSample();
 
-            var mv = motionVelocities[motionIndex];
-            motionVelocities[motionIndex] = new Unity.Physics.MotionVelocity
+                Profiler.BeginSample("TestPhysics Reload VoxelCollider Sectors");
+                VoxelCollider* vc = (VoxelCollider*)physicsWorld.Bodies[bodyIndex].Collider.GetUnsafePtr();
+                using var sectors = vb.entity.Sectors.ToNativeHashMap(Allocator.Temp);
+                vc->ReloadSectors(sectors);
+                Profiler.EndSample();
+
+                if (vb.isStatic) return;
+
+                // Compute mass properties using VoxelBody API
+                Profiler.BeginSample("TestPhysics Compute Mass Properties");
+                var massProps = vb.ComputeMassProperties();
+                Profiler.EndSample();
+
+                //// Dynamics
+
+                int motionIndex = bodyIndex; // Dynamic bodies come first
+                var motionDatas = physicsWorld.MotionDatas;
+                var motionVelocities = physicsWorld.MotionVelocities;
+
+                /// CoM
+                Profiler.BeginSample("TestPhysics Write MotionData");
+                // Create BodyFromMotion transform (offset by center of mass in body space)
+                Unity.Mathematics.RigidTransform bodyFromMotion = new Unity.Mathematics.RigidTransform(
+                    Unity.Mathematics.quaternion.identity,
+                    massProps.centerOfMass
+                );
+
+                // WorldFromMotion = WorldFromBody * BodyFromMotion
+                Unity.Mathematics.RigidTransform worldFromBody = physicsWorld.Bodies[bodyIndex].WorldFromBody;
+                Unity.Mathematics.RigidTransform worldFromMotion = Unity.Mathematics.math.mul(worldFromBody, bodyFromMotion);
+
+                var md = motionDatas[motionIndex];
+                motionDatas[motionIndex] = new Unity.Physics.MotionData
+                {
+                    WorldFromMotion = worldFromMotion,
+                    BodyFromMotion = bodyFromMotion,
+                    LinearDamping = md.LinearDamping,
+                    AngularDamping = md.AngularDamping
+                };
+                Profiler.EndSample();
+
+                /// Mass
+                Profiler.BeginSample("TestPhysics Write MotionVelocity");
+                // Create motion velocity with computed mass properties
+                float inverseMass = massProps.mass > 0 ? 1.0f / massProps.mass : 0.0f;
+                Unity.Mathematics.float3 inverseInertia = Unity.Mathematics.float3.zero;
+                if (massProps.inertiaTensor.x > 0) inverseInertia.x = 1.0f / massProps.inertiaTensor.x;
+                if (massProps.inertiaTensor.y > 0) inverseInertia.y = 1.0f / massProps.inertiaTensor.y;
+                if (massProps.inertiaTensor.z > 0) inverseInertia.z = 1.0f / massProps.inertiaTensor.z;
+
+                var mv = motionVelocities[motionIndex];
+                motionVelocities[motionIndex] = new Unity.Physics.MotionVelocity
+                {
+                    LinearVelocity = mv.LinearVelocity,
+                    AngularVelocity = mv.AngularVelocity,
+                    InverseInertia = inverseInertia,
+                    InverseMass = inverseMass,
+                    AngularExpansionFactor = mv.AngularExpansionFactor, // Will be computed by physics engine
+                    GravityFactor = mv.GravityFactor
+                };
+                Profiler.EndSample();
+            }
+            finally
             {
-                LinearVelocity = mv.LinearVelocity,
-                AngularVelocity = mv.AngularVelocity,
-                InverseInertia = inverseInertia,
-                InverseMass = inverseMass,
-                AngularExpansionFactor = mv.AngularExpansionFactor, // Will be computed by physics engine
-                GravityFactor = mv.GravityFactor
-            };
+                Profiler.EndSample();
+            }
         }
 
         [ContextMenu("Prepare Test World")]
@@ -220,7 +232,7 @@ namespace Voxelis.Simulation
                 AddBodyToPhysicsWorld(vb, bodyIndex);
                 bodyIndex++;
             }
-            
+
             // Test joint
             // Add motor to dynamic body #0
             // A: body #0
@@ -235,7 +247,7 @@ namespace Voxelis.Simulation
                 Vector3.right,
                 AxisOfRotation
             );
-            
+
             // float3 AxisOfRotation = new float3(1, 0, 0);
             float3 PivotPos = dynamicbodies[RotatingDynamicObjectID].massProperties.centerOfMass;
             Debug.Log(PivotPos);
@@ -284,7 +296,7 @@ namespace Voxelis.Simulation
         public void ExportTestWorld()
         {
             if (!prepared) return;
-            
+
             var motionDatas = physicsWorld.MotionDatas;
             var motionVelocities = physicsWorld.MotionVelocities;
 
@@ -322,114 +334,139 @@ namespace Voxelis.Simulation
 
         public override void BeforeSimulationStart()
         {
-            base.BeforeSimulationStart();
-
-            if (!prepared) return;
-            
-            int bodyIndex = 0;
-
-            // Sync dynamic bodies
-            for (int i = 0; i < dynamicbodies.Count; i++)
+            Profiler.BeginSample("TestPhysics BeforeSimulationStart");
+            try
             {
-                VoxelBody vb = dynamicbodies[i];
-                UpdateBodyInfo(vb, bodyIndex);
-                bodyIndex++;
+                base.BeforeSimulationStart();
+
+                if (!prepared) return;
+
+                int bodyIndex = 0;
+
+                Profiler.BeginSample("TestPhysics Sync Dynamic Bodies");
+                for (int i = 0; i < dynamicbodies.Count; i++)
+                {
+                    VoxelBody vb = dynamicbodies[i];
+                    UpdateBodyInfo(vb, bodyIndex);
+                    bodyIndex++;
+                }
+                Profiler.EndSample();
+
+                Profiler.BeginSample("TestPhysics Sync Static Bodies");
+                for (int i = 0; i < staticBodies.Count; i++)
+                {
+                    VoxelBody vb = staticBodies[i];
+                    UpdateBodyInfo(vb, bodyIndex);
+                    bodyIndex++;
+                }
+                Profiler.EndSample();
             }
-
-            // Sync static bodies
-            for (int i = 0; i < staticBodies.Count; i++)
+            finally
             {
-                VoxelBody vb = staticBodies[i];
-                UpdateBodyInfo(vb, bodyIndex);
-                bodyIndex++;
+                Profiler.EndSample();
             }
         }
 
         public override void OnSimulationFinished()
         {
-            if (!prepared) return;
-
-            // First, reset all previously marked voxels to their original state
-            if (MarkContacts)
+            Profiler.BeginSample("TestPhysics OnSimulationFinished");
+            try
             {
-                foreach (var contactInfo in previousFrameContacts)
+                if (!prepared) return;
+
+                // First, reset all previously marked voxels to their original state
+                if (MarkContacts)
                 {
-                    VoxelBody body = GetBodyByIndex(contactInfo.bodyIndex);
-                    if (body != null)
+                    Profiler.BeginSample("TestPhysics Reset Previous Contacts");
+                    foreach (var contactInfo in previousFrameContacts)
                     {
-                        body.entity.SetBlock(contactInfo.voxelCoords, contactInfo.originalBlock);
-                    }
-                }
-
-                // Clear the previous frame contacts list
-                previousFrameContacts.Clear();
-
-                // Now process the current frame's contact events
-                var voxelContactEvents = simulation.VoxelContactEvents;
-
-                // Create a red block for marking contacts
-                Block redBlock = new Block(31, 8, 8, false);
-                Block blueBlock = new Block(8, 8, 31, false);
-
-                foreach (var contactEvent in voxelContactEvents)
-                {
-                    // Process body A
-                    VoxelBody bodyA = GetBodyByIndex(contactEvent.BodyIndexA);
-                    if (bodyA != null)
-                    {
-                        int3 voxelCoordsA = contactEvent.VoxelCoordsInA;
-
-                        // Store original block state
-                        Block originalBlockA = bodyA.entity.GetBlock(voxelCoordsA);
-
-                        // Only store and mark if not already red (avoids duplicates)
-                        if (originalBlockA != redBlock && originalBlockA != blueBlock)
+                        VoxelBody body = GetBodyByIndex(contactInfo.bodyIndex);
+                        if (body != null)
                         {
-                            previousFrameContacts.Add(new VoxelContactInfo
+                            body.entity.SetBlock(contactInfo.voxelCoords, contactInfo.originalBlock);
+                        }
+                    }
+                    Profiler.EndSample();
+
+                    Profiler.BeginSample("TestPhysics Clear Previous Contacts");
+                    previousFrameContacts.Clear();
+                    Profiler.EndSample();
+
+                    // Now process the current frame's contact events
+                    Profiler.BeginSample("TestPhysics Process Voxel Contact Events");
+                    var voxelContactEvents = simulation.VoxelContactEvents;
+
+                    // Create a red block for marking contacts
+                    Block redBlock = new Block(31, 8, 8, false);
+                    Block blueBlock = new Block(8, 8, 31, false);
+
+                    foreach (var contactEvent in voxelContactEvents)
+                    {
+                        // Process body A
+                        VoxelBody bodyA = GetBodyByIndex(contactEvent.BodyIndexA);
+                        if (bodyA != null)
+                        {
+                            int3 voxelCoordsA = contactEvent.VoxelCoordsInA;
+
+                            // Store original block state
+                            Block originalBlockA = bodyA.entity.GetBlock(voxelCoordsA);
+
+                            // Only store and mark if not already red (avoids duplicates)
+                            if (originalBlockA != redBlock && originalBlockA != blueBlock)
                             {
-                                bodyIndex = contactEvent.BodyIndexA,
-                                voxelCoords = voxelCoordsA,
-                                originalBlock = originalBlockA
-                            });
+                                previousFrameContacts.Add(new VoxelContactInfo
+                                {
+                                    bodyIndex = contactEvent.BodyIndexA,
+                                    voxelCoords = voxelCoordsA,
+                                    originalBlock = originalBlockA
+                                });
+                            }
+
+                            // Mark in blue > red
+                            if (!contactEvent.IsPhysicsContact && originalBlockA != blueBlock)
+                                bodyA.entity.SetBlock(voxelCoordsA, redBlock);
+                            else
+                                bodyA.entity.SetBlock(voxelCoordsA, contactEvent.IsPhysicsContact ? blueBlock : redBlock);
                         }
 
-                        // Mark in blue > red
-                        if (!contactEvent.IsPhysicsContact && originalBlockA != blueBlock)
-                            bodyA.entity.SetBlock(voxelCoordsA, redBlock);
-                        else
-                            bodyA.entity.SetBlock(voxelCoordsA, contactEvent.IsPhysicsContact ? blueBlock : redBlock);
-                    }
-
-                    // Process body B
-                    VoxelBody bodyB = GetBodyByIndex(contactEvent.BodyIndexB);
-                    if (bodyB != null)
-                    {
-                        int3 voxelCoordsB = contactEvent.VoxelCoordsInB;
-
-                        // Store original block state
-                        Block originalBlockB = bodyB.entity.GetBlock(voxelCoordsB);
-
-                        // Only store and mark if not already red (avoids duplicates)
-                        if (originalBlockB != redBlock && originalBlockB != blueBlock)
+                        // Process body B
+                        VoxelBody bodyB = GetBodyByIndex(contactEvent.BodyIndexB);
+                        if (bodyB != null)
                         {
-                            previousFrameContacts.Add(new VoxelContactInfo
-                            {
-                                bodyIndex = contactEvent.BodyIndexB,
-                                voxelCoords = voxelCoordsB,
-                                originalBlock = originalBlockB
-                            });
-                        }
+                            int3 voxelCoordsB = contactEvent.VoxelCoordsInB;
 
-                        // Mark in blue > red
-                        if (!contactEvent.IsPhysicsContact && originalBlockB != blueBlock)
-                            bodyB.entity.SetBlock(voxelCoordsB, redBlock);
-                        else
-                            bodyB.entity.SetBlock(voxelCoordsB, contactEvent.IsPhysicsContact ? blueBlock : redBlock);
+                            // Store original block state
+                            Block originalBlockB = bodyB.entity.GetBlock(voxelCoordsB);
+
+                            // Only store and mark if not already red (avoids duplicates)
+                            if (originalBlockB != redBlock && originalBlockB != blueBlock)
+                            {
+                                previousFrameContacts.Add(new VoxelContactInfo
+                                {
+                                    bodyIndex = contactEvent.BodyIndexB,
+                                    voxelCoords = voxelCoordsB,
+                                    originalBlock = originalBlockB
+                                });
+                            }
+
+                            // Mark in blue > red
+                            if (!contactEvent.IsPhysicsContact && originalBlockB != blueBlock)
+                                bodyB.entity.SetBlock(voxelCoordsB, redBlock);
+                            else
+                                bodyB.entity.SetBlock(voxelCoordsB, contactEvent.IsPhysicsContact ? blueBlock : redBlock);
+                        }
                     }
+                    Profiler.EndSample();
                 }
+
+                Profiler.BeginSample("TestPhysics ExportTestWorld");
+                ExportTestWorld();
+                Profiler.EndSample();
             }
-
-            ExportTestWorld();
+            finally
+            {
+                Profiler.EndSample();
+            }
         }
 
         private VoxelBody GetBodyByIndex(int bodyIndex)
@@ -452,7 +489,7 @@ namespace Voxelis.Simulation
         private void Update()
         {
             if (!prepared) return;
-            
+
             frameCount++;
             if (frameCount <= 5)  // Only log first 5 frames to avoid spam
             {

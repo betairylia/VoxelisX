@@ -4,6 +4,7 @@ using Unity.Collections;
 using Unity.Jobs;
 using Unity.Physics;
 using UnityEngine;
+using UnityEngine.Profiling;
 using Voxelis.Tick;
 
 namespace Voxelis.Simulation
@@ -77,10 +78,13 @@ namespace Voxelis.Simulation
         {
             // TODO: Update physics World
             // PhysicsWorldBuilder.cs:88
-            
+
+            Profiler.BeginSample("Physics BeforeSimulationStart");
             BeforeSimulationStart();
+            Profiler.EndSample();
 
             // Create solver stabilization settings
+            Profiler.BeginSample("Physics Build Step Input");
             Solver.StabilizationHeuristicSettings stabilizationSettings = enableSolverStabilization
                 ? new Solver.StabilizationHeuristicSettings
                 {
@@ -103,7 +107,9 @@ namespace Voxelis.Simulation
                 SolverStabilizationHeuristicSettings = stabilizationSettings,
                 HaveStaticBodiesChanged = haveStaticBodiesChanged
             };
+            Profiler.EndSample();
 
+            Profiler.BeginSample("Physics Debug Pre-Step");
             debugFrameCount++;
 
             // Debug: Check collision world before simulation (first 10 frames only)
@@ -111,21 +117,35 @@ namespace Voxelis.Simulation
             {
                 UnityEngine.Debug.Log($"[SimStep {debugFrameCount}] CollisionWorld NumBodies: {physicsWorld.CollisionWorld.NumBodies}, NumDynamic: {physicsWorld.CollisionWorld.NumDynamicBodies}, NumStatic: {physicsWorld.CollisionWorld.NumStaticBodies}");
             }
+            Profiler.EndSample();
 
             // Build the broadphase BVH trees before simulation
+            Profiler.BeginSample("Physics Build Broadphase");
             var buildBroadphaseHandle = physicsWorld.CollisionWorld.ScheduleBuildBroadphaseJobs(
                 ref physicsWorld, dt, gravity, haveStaticBodiesChanged, default, multiThreaded);
+            Profiler.BeginSample("Physics Complete Broadphase");
             buildBroadphaseHandle.Complete();
+            Profiler.EndSample();
+            Profiler.EndSample();
 
+            Profiler.BeginSample("Physics Debug Post-Broadphase");
             if (debugFrameCount <= 10)
             {
                 UnityEngine.Debug.Log($"[SimStep {debugFrameCount}] Broadphase built successfully");
             }
+            Profiler.EndSample();
 
+            Profiler.BeginSample("Physics Reset Simulation Context");
             simulation.ResetSimulationContext(stepInput);
-            var handles = simulation.ScheduleStepJobs(stepInput, default, multiThreaded);
+            Profiler.EndSample();
 
+            Profiler.BeginSample("Physics Schedule Step Jobs");
+            var handles = simulation.ScheduleStepJobs(stepInput, default, multiThreaded);
+            Profiler.EndSample();
+
+            Profiler.BeginSample("Physics Complete Step Jobs");
             handles.FinalExecutionHandle.Complete();
+            Profiler.EndSample();
 
             // Debug: Check for collision events (first 10 frames only)
             // if (debugFrameCount <= 10)
@@ -154,14 +174,21 @@ namespace Voxelis.Simulation
             //     }
             // }
 
+            Profiler.BeginSample("Physics OnSimulationFinished");
             OnSimulationFinished();
+            Profiler.EndSample();
+
+            Profiler.BeginSample("Physics Complete Dispose Jobs");
             handles.FinalDisposeHandle.Complete();
+            Profiler.EndSample();
 
             // Reset the static bodies changed flag after simulation
+            Profiler.BeginSample("Physics Reset Static Changed Flag");
             if (haveStaticBodiesChanged.Value > 0)
             {
                 haveStaticBodiesChanged.Value = 0;
             }
+            Profiler.EndSample();
         }
 
         public virtual void BeforeSimulationStart() { }

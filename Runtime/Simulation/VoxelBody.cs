@@ -331,14 +331,6 @@ namespace Voxelis
             massProperties = result;
         }
 
-        public unsafe void BeforePhysicsTick()
-        {
-            foreach (var kvp in entity.Sectors)
-            {
-                kvp.Value.Ptr->UpdateNonEmptyBricks();
-            }
-        }
-
         public static void ResolveContact(IEnumerable<VoxelCollisionSolver.ContactPoint> wsContactsB, VoxelEntity Ae, VoxelEntity Be)
         {
             throw new NotImplementedException();

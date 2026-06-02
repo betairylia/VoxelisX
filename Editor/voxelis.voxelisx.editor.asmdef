@@ -3,7 +3,14 @@
     "rootNamespace": "",
     "references": [
         "voxelis.Core",
-        "voxelis.voxelisx"
+        "voxelis.voxelisx",
+        "Unity.Numerics.Linear",
+        "Unity.Numerics.Linear.Dense",
+        "Unity.Numerics.Linear.Solvers.Lowlevel",
+        "Unity.Numerics.Linear.Sparse",
+        "Unity.Numerics.Memory",
+        "Unity.Numerics.Random",
+        "voxelis.Unity.Physics"
     ],
     "includePlatforms": [
         "Editor"

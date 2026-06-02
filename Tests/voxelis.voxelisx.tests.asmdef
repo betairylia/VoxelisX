@@ -8,7 +8,14 @@
         "voxelis.voxelisx",
         "Unity.Mathematics",
         "Unity.Collections",
-        "Unity.Burst"
+        "Unity.Burst",
+        "Unity.Numerics.Linear",
+        "Unity.Numerics.Linear.Dense",
+        "Unity.Numerics.Linear.Solvers.Lowlevel",
+        "Unity.Numerics.Linear.Sparse",
+        "Unity.Numerics.Memory",
+        "Unity.Numerics.Random",
+        "voxelis.Unity.Physics"
     ],
     "includePlatforms": [
         "Editor"
