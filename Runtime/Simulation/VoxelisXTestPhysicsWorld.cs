@@ -123,14 +123,14 @@ namespace Voxelis.Simulation
             // Update sector data
             vb.BeforePhysicsTick();
 
-            // Compute mass properties using VoxelBody API
-            var massProps = vb.ComputeMassProperties();
-
             VoxelCollider* vc = (VoxelCollider*)physicsWorld.Bodies[bodyIndex].Collider.GetUnsafePtr();
             using var sectors = vb.entity.Sectors.ToNativeHashMap(Allocator.Temp);
             vc->ReloadSectors(sectors);
 
             if (vb.isStatic) return;
+
+            // Compute mass properties using VoxelBody API
+            var massProps = vb.ComputeMassProperties();
             
             //// Dynamics
             

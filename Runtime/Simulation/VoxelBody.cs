@@ -172,6 +172,13 @@ namespace Voxelis
             DirtyFlags dirtyMask = DirtyFlags.Geometry,
             bool forceRebuild = false)
         {
+            if (isStatic)
+            {
+                ClearMassPropertiesCache();
+                massProperties = default;
+                return false;
+            }
+
             int sectorCount = entity.Sectors.Count;
             if (sectorCount == 0)
             {
@@ -180,20 +187,10 @@ namespace Voxelis
                 return true;
             }
 
-            bool rebuild = forceRebuild || !massCacheInitialized || !sectorMassCache.IsCreated || sectorMassCache.Count != sectorCount;
-            if (!rebuild)
-            {
-                foreach (var kvp in entity.Sectors)
-                {
-                    if (!sectorMassCache.ContainsKey(kvp.Key))
-                    {
-                        rebuild = true;
-                        break;
-                    }
-                }
-            }
+            bool resetCache = forceRebuild || !massCacheInitialized || !sectorMassCache.IsCreated;
+            EnsureMassPropertiesCache(sectorCount, resetCache);
 
-            EnsureMassPropertiesCache(sectorCount, rebuild);
+            bool changed = RemoveMissingSectorMoments();
 
             var inputs = new NativeList<VoxelEntityPhysics.SectorMassMomentInput>(Allocator.TempJob);
             try
@@ -201,7 +198,8 @@ namespace Voxelis
                 foreach (var kvp in entity.Sectors)
                 {
                     ref Sector sector = ref kvp.Value.Get();
-                    if (!rebuild && (sector.sectorDirtyFlags & (ushort)dirtyMask) == 0)
+                    bool cached = sectorMassCache.ContainsKey(kvp.Key);
+                    if (cached && (sector.sectorDirtyFlags & (ushort)dirtyMask) == 0)
                     {
                         continue;
                     }
@@ -217,7 +215,11 @@ namespace Voxelis
 
                 if (inputs.Length == 0)
                 {
-                    return false;
+                    if (changed)
+                    {
+                        ApplyCachedMassProperties();
+                    }
+                    return changed;
                 }
 
                 using var results = new NativeArray<VoxelEntityPhysics.SectorMassMomentResult>(inputs.Length, Allocator.TempJob);
@@ -245,10 +247,11 @@ namespace Voxelis
                     }
 
                     cachedMassMoments += result.Moments - oldMoments;
+                    changed = true;
                 }
 
                 ApplyCachedMassProperties();
-                return true;
+                return changed;
             }
             finally
             {
@@ -270,8 +273,37 @@ namespace Voxelis
             {
                 sectorMassCache = new NativeHashMap<int3, VoxelEntityPhysics.SectorMassMoments>(math.max(1, sectorCount), Allocator.Persistent);
             }
+            else if (sectorMassCache.Capacity < sectorCount)
+            {
+                sectorMassCache.Capacity = sectorCount;
+            }
 
             massCacheInitialized = true;
+        }
+
+        private bool RemoveMissingSectorMoments()
+        {
+            if (!sectorMassCache.IsCreated || sectorMassCache.Count == 0)
+            {
+                return false;
+            }
+
+            bool changed = false;
+            using var cachedKeys = sectorMassCache.GetKeyArray(Allocator.Temp);
+            for (int i = 0; i < cachedKeys.Length; i++)
+            {
+                int3 sectorPosition = cachedKeys[i];
+                if (entity.Sectors.ContainsKey(sectorPosition))
+                {
+                    continue;
+                }
+
+                cachedMassMoments -= sectorMassCache[sectorPosition];
+                sectorMassCache.Remove(sectorPosition);
+                changed = true;
+            }
+
+            return changed;
         }
 
         private void ClearMassPropertiesCache()
