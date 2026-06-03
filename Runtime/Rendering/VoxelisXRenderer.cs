@@ -132,7 +132,7 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
 
         _voxelScene.ClearInstances();
 
-        foreach (var e in world.entities)
+        foreach (var e in world.entities.Values)
         {
             foreach (var kvp in e.Sectors)
             {
@@ -278,7 +278,7 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
         instanceCount = (int)voxelScene.GetInstanceCount();
 
         // Pass 1: Emit jobs & Remove unused sectors
-        foreach (var e in world.entities)
+        foreach (var e in world.entities.Values)
         {
             if(e == null)
             {
@@ -314,7 +314,7 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
         }
 
         // Pass 2: Sync buffers
-        foreach (var e in world.entities)
+        foreach (var e in world.entities.Values)
         {
             if (e == null)
             {

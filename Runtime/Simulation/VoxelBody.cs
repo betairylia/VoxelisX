@@ -29,6 +29,8 @@ namespace Voxelis
         private VoxelEntity _entity;
         private VoxelBodyData data;
 
+        public VoxelBodyData GetDataCopy() => data;
+
         public VoxelEntity entity
         {
             get
@@ -82,6 +84,16 @@ namespace Voxelis
         private void OnDestroy()
         {
             data.Dispose();
+        }
+
+        private void OnEnable()
+        {
+            (VoxelisXCoreWorld.instance as VoxelisXWorld)?.AddBody(this);
+        }
+
+        private void OnDisable()
+        {
+            (VoxelisXCoreWorld.instance as VoxelisXWorld)?.RemoveBody(this);
         }
 
         private void OnDrawGizmos()

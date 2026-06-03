@@ -2,12 +2,16 @@ using NUnit.Framework;
 using Unity.Collections;
 using Unity.Mathematics;
 using Voxelis;
+using Voxelis.Utils;
 using VoxelisX.Tests.TestSupport;
 
 namespace VoxelisX.Tests.Editor
 {
     public class VoxelNeighborhoodReaderTests
     {
+        private static readonly Guid128 SelfEntityId = new Guid128(1, 0, 0, 0);
+        private static readonly Guid128 AlienEntityId = new Guid128(2, 0, 0, 0);
+
         [Test]
         public void GetBlock_PrefersLocalBlockOverAlien()
         {
@@ -23,12 +27,12 @@ namespace VoxelisX.Tests.Editor
             var views = new NativeArray<AlienEntityView>(2, Allocator.Temp);
             try
             {
-                views[0] = BuildView(0, self.Data);
-                views[1] = BuildView(1, alien.Data);
+                views[0] = BuildView(SelfEntityId, self.Data);
+                views[1] = BuildView(AlienEntityId, alien.Data);
 
                 var reader = VoxelNeighborhoodReader.Create(new VoxelisXCoreWorld.BrickInfo
                 {
-                    EntityId = 0,
+                    EntityId = SelfEntityId,
                     SectorPos = int3.zero,
                     LocalToWorld = RigidTransform.identity,
                     Sector = selfSector,
@@ -56,12 +60,12 @@ namespace VoxelisX.Tests.Editor
             var views = new NativeArray<AlienEntityView>(2, Allocator.Temp);
             try
             {
-                views[0] = BuildView(0, self.Data);
-                views[1] = BuildView(1, alien.Data);
+                views[0] = BuildView(SelfEntityId, self.Data);
+                views[1] = BuildView(AlienEntityId, alien.Data);
 
                 var reader = VoxelNeighborhoodReader.Create(new VoxelisXCoreWorld.BrickInfo
                 {
-                    EntityId = 0,
+                    EntityId = SelfEntityId,
                     SectorPos = int3.zero,
                     LocalToWorld = RigidTransform.identity,
                     Sector = selfSector,
@@ -77,7 +81,7 @@ namespace VoxelisX.Tests.Editor
             }
         }
 
-        private static AlienEntityView BuildView(int id, VoxelEntityData data)
+        private static AlienEntityView BuildView(Guid128 id, VoxelEntityData data)
         {
             return new AlienEntityView
             {

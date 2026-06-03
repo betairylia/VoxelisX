@@ -1,11 +1,12 @@
 using Unity.Collections;
 using Unity.Mathematics;
+using Voxelis.Utils;
 
 namespace Voxelis
 {
     public struct AlienEntityView
     {
-        public int EntityId;
+        public Guid128 EntityId;
         public RigidTransform LocalToWorld;
         public float4x4 WorldToLocal;
         [ReadOnly] public LockableUnsafeHashMap<int3, SectorHandle> Sectors;
@@ -34,7 +35,7 @@ namespace Voxelis
     {
         [ReadOnly] public NativeArray<AlienEntityView> EntitiesInDeterministicOrder;
 
-        public Block GetFirstOccupyingAlienBlock(int selfEntityId, RigidTransform selfLocalToWorld, int3 selfEntityLocalVoxel)
+        public Block GetFirstOccupyingAlienBlock(Guid128 selfEntityId, RigidTransform selfLocalToWorld, int3 selfEntityLocalVoxel)
         {
             float3 localSamplePoint = selfEntityLocalVoxel + new float3(0.5f);
             float3 worldSamplePoint = math.transform(selfLocalToWorld, localSamplePoint);
@@ -59,7 +60,7 @@ namespace Voxelis
             return Block.Empty;
         }
 
-        public bool IsVoxelSpaceOccupied(int selfEntityId, RigidTransform selfLocalToWorld, int3 selfEntityLocalVoxel)
+        public bool IsVoxelSpaceOccupied(Guid128 selfEntityId, RigidTransform selfLocalToWorld, int3 selfEntityLocalVoxel)
         {
             return !GetFirstOccupyingAlienBlock(selfEntityId, selfLocalToWorld, selfEntityLocalVoxel).isEmpty;
         }
@@ -67,7 +68,7 @@ namespace Voxelis
 
     public struct VoxelNeighborhoodReader
     {
-        private int selfEntityId;
+        private Guid128 selfEntityId;
         private int3 centerSectorPos;
         private RigidTransform selfLocalToWorld;
         private SectorNeighborhoodReaderHelper localReader;

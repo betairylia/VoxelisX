@@ -5,6 +5,7 @@ using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Profiling;
 using Voxelis.Tick;
+using Voxelis.Utils;
 
 namespace Voxelis
 {
@@ -12,7 +13,7 @@ namespace Voxelis
     {
         public struct BrickInfo
         {
-            public int EntityId;
+            public Utils.Guid128 EntityId;
             public int3 SectorPos;
             public int3 BrickOrigin;
             public short BrickId;
@@ -25,21 +26,22 @@ namespace Voxelis
             public ushort BrickRequireUpdateFlag;
         }
         
-        public List<VoxelEntity> entities = new();
+        public Dictionary<Guid128, VoxelEntity> entities = new();
         private readonly List<InfiniteLoader> worldLoaders = new();
 
         /// <summary>
         /// Registers a voxel entity with this world.
+        /// The entity's Guid cannot be changed after registration.
         /// </summary>
         /// <param name="e">The entity to add.</param>
         public void AddEntity(VoxelEntity e)
         {
-            if (entities.Contains(e))
+            if (entities.ContainsKey(e.PersistentGuid))
             {
                 return;
             }
 
-            entities.Add(e);
+            entities.Add(e.PersistentGuid, e);
         }
 
         /// <summary>
@@ -48,7 +50,7 @@ namespace Voxelis
         /// <param name="e">The entity to remove.</param>
         public void RemoveEntity(VoxelEntity e)
         {
-            entities.Remove(e);
+            entities.Remove(e.PersistentGuid);
         }
 
         /// <summary>
@@ -129,6 +131,6 @@ namespace Voxelis
         /// <summary>
         /// Gets a copy of all registered voxel entities.
         /// </summary>
-        public List<VoxelEntity> AllEntities => new List<VoxelEntity>(entities);
+        public List<VoxelEntity> AllEntities => new List<VoxelEntity>(entities.Values);
     }
 }

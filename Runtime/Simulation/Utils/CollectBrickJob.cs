@@ -3,6 +3,7 @@ using Unity.Burst;
 using Unity.Collections;
 using Unity.Jobs;
 using Voxelis;
+using Voxelis.Utils;
 
 namespace Simulation.Utils
 {
@@ -12,12 +13,12 @@ namespace Simulation.Utils
     {
         [BurstCompile]
         public static unsafe void Collect(
-            ref NativeList<VoxelEntityData> entities,
+            ref NativeHashMap<Guid128, VoxelEntityData> entities,
             ref NativeList<VoxelisXWorld.BrickInfo> brickList)
         {
-            for (int ei = 0; ei < entities.Length; ei++)
+            foreach(var kvp in entities)
             {
-                var e = entities[ei];
+                var e = kvp.Value;
                 foreach (var s in e.sectors)
                 {
                     ref Sector sec = ref s.Value.Get();
@@ -28,7 +29,7 @@ namespace Simulation.Utils
                     {
                         brickList.Add(new VoxelisXWorld.BrickInfo
                         {
-                            EntityId = ei,
+                            EntityId = kvp.Key,
                             SectorPos = s.Key,
                             BrickOrigin = b.position,
                             BrickId = b.brickIdx,

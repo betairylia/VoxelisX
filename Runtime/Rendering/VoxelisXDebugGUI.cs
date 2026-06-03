@@ -297,7 +297,7 @@ public class VoxelisXDebugGUI : MonoBehaviour
                 int totalSectors = 0;
                 int totalBricks = 0;
 
-                foreach (var entity in world.entities)
+                foreach (var entity in world.entities.Values)
                 {
                     if (entity != null)
                     {
@@ -545,7 +545,7 @@ public class VoxelisXDebugGUI : MonoBehaviour
         GL.Begin(GL.LINES);
 
         // Draw sector and brick borders
-        foreach (var entity in world.entities)
+        foreach (var entity in world.entities.Values)
         {
             if (entity == null) continue;
 

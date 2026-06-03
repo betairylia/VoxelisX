@@ -22,6 +22,8 @@ namespace Voxelis
 {
     public class VoxelisXWorld : VoxelisXCoreWorld
     {
+        public Dictionary<Guid128, VoxelBody> bodies = new();
+
         public TickStage<WorldStageInputs> physicsStage;
         public TickStage<AutomataStageInputs> automataStage;
 
@@ -49,13 +51,13 @@ namespace Voxelis
         
         public struct WorldStageInputs
         {
-            public NativeList<VoxelEntityData> VoxelEntities;
-            public NativeList<VoxelBodyData> VoxelBodies;
+            public NativeHashMap<Guid128, VoxelEntityData> VoxelEntities;
+            public NativeHashMap<Guid128, VoxelBodyData> VoxelBodies;
         }
         
         public struct AutomataStageInputs
         {
-            public NativeList<VoxelEntityData> VoxelEntities;
+            public NativeHashMap<Guid128, VoxelEntityData> VoxelEntities;
             public NativeList<BrickInfo> BricksRequiredUpdate;
             public AutomataReadContext ReadContext;
         }
@@ -72,9 +74,34 @@ namespace Voxelis
             physicsStage = new();
             automataStage = new();
             
-            tickBuf.VoxelEntities = new NativeList<VoxelEntityData>(Allocator.Persistent);
+            tickBuf.VoxelEntities = new NativeHashMap<Guid128, VoxelEntityData>(1, Allocator.Persistent);
+            tickBuf.VoxelBodies = new NativeHashMap<Guid128, VoxelBodyData>(1, Allocator.Persistent);
             automataTickBuf.BricksRequiredUpdate = new NativeList<BrickInfo>(Allocator.Persistent);
             alienEntityViews = new NativeList<AlienEntityView>(Allocator.Persistent);
+        }
+
+        /// <summary>
+        /// Registers a voxel entity with this world.
+        /// The entity's Guid cannot be changed after registration.
+        /// </summary>
+        /// <param name="e">The entity to add.</param>
+        public void AddBody(VoxelBody b)
+        {
+            if (bodies.ContainsKey(b.entity.PersistentGuid))
+            {
+                return;
+            }
+
+            bodies.Add(b.entity.PersistentGuid, b);
+        }
+
+        /// <summary>
+        /// Unregisters a voxel entity from this world.
+        /// </summary>
+        /// <param name="e">The entity to remove.</param>
+        public void RemoveBody(VoxelBody b)
+        {
+            entities.Remove(b.entity.PersistentGuid);
         }
 
         protected override void ReleaseResources()
@@ -113,12 +140,17 @@ namespace Voxelis
             // TODO: Keep the unique instance in world and let VoxelEntity ref it?
             Profiler.BeginSample("Fill TickBuffer");
             tickBuf.VoxelEntities.Clear();
-            for (int i = 0; i < entities.Count; i++)
+            tickBuf.VoxelBodies.Clear();
+            foreach(var kvp in entities)
             {
-                VoxelEntity e = entities[i];
-
+                var e = kvp.Value;
                 e.SyncTransformToData();
-                tickBuf.VoxelEntities.Add(e.GetDataCopy());
+                tickBuf.VoxelEntities.Add(e.PersistentGuid, e.GetDataCopy());
+
+                if (bodies.TryGetValue(kvp.Key, out var b))
+                {
+                    tickBuf.VoxelBodies.Add(b.entity.PersistentGuid, b.GetDataCopy());
+                }
             }
             Profiler.EndSample();
 
@@ -136,9 +168,9 @@ namespace Voxelis
             // TODO: Wrap this up and handle this properly
             // Activate sector snapshotting for modifications
             Profiler.BeginSample("Activate Sector Snapshots");
-            for (int i = 0; i < entities.Count; i++)
+            foreach (var e in entities.Values)
             {
-                foreach (var kvp in entities[i].Sectors)
+                foreach (var kvp in e.Sectors)
                 {
                     if (kvp.Value.Get().sectorRequireUpdateFlags > 0)
                         kvp.Value.ActivateSnapshot();
@@ -180,9 +212,9 @@ namespace Voxelis
             // TODO: Wrap this up and handle this properly
             // Apply sector modifications
             Profiler.BeginSample("Apply Sector Snapshots");
-            for (int i = 0; i < entities.Count; i++)
+            foreach(var e in entities.Values)
             {
-                foreach (var kvp in entities[i].Sectors)
+                foreach (var kvp in e.Sectors)
                 {
                     kvp.Value.ApplySnapshot();
                 }
@@ -191,12 +223,10 @@ namespace Voxelis
 
             // Copy data back to VoxelEntities
             Profiler.BeginSample("Burst -> Managed Boundary Copy Back");
-            for (int i = 0; i < entities.Count; i++)
+            foreach(var kvp in entities)
             {
-                VoxelEntity e = entities[i];
-
-                e.CopyDataFrom(tickBuf.VoxelEntities[i]);
-                e.SyncTransformFromData();
+                kvp.Value.CopyDataFrom(tickBuf.VoxelEntities[kvp.Key]);
+                kvp.Value.SyncTransformFromData();
             }
             Profiler.EndSample();
 
@@ -208,21 +238,24 @@ namespace Voxelis
             Profiler.BeginSample("Dirty Propagation");
             Profiler.BeginSample("Sync Transform");
             float dirtyPropagationDeltaTime = targetTPS > 0f ? 1.0f / targetTPS : Time.deltaTime;
-            for (int i = 0; i < entities.Count; i++)
+            foreach(var e in entities.Values)
             {
-                entities[i].SyncCurrentTransformToData(dirtyPropagationDeltaTime);
+                e.SyncCurrentTransformToData(dirtyPropagationDeltaTime);
             }
             Profiler.EndSample();
 
             Profiler.BeginSample("Clear Require Updates");
-            entities.ForEach(e => e.ClearRequireUpdates());
+            foreach (var e in entities.Values)
+            {
+                e.ClearRequireUpdates();
+            }
             Profiler.EndSample();
 
             Profiler.BeginSample("Propagate Dirty Flags");
             JobHandle handle = new JobHandle();
-            for (int i = 0; i < entities.Count; i++)
+            foreach(var e in entities.Values)
             {
-                handle = JobHandle.CombineDependencies(handle, entities[i].PropagateDirtyFlags(DirtyFlags.All, true));
+                handle = JobHandle.CombineDependencies(handle, e.PropagateDirtyFlags(DirtyFlags.All, true));
             }
 
             Profiler.BeginSample("Burst");
@@ -230,12 +263,12 @@ namespace Voxelis
             Profiler.EndSample();
 
             Profiler.BeginSample("Alien Propagation");
-            for (int i = 0; i < entities.Count; i++)
+            foreach(var kvp in entities)
             {
-                tickBuf.VoxelEntities[i] = entities[i].GetDataCopy();
+                tickBuf.VoxelEntities[kvp.Key] = entities[kvp.Key].GetDataCopy();
             }
 
-            AlienDirtyPropagation.Propagate(tickBuf.VoxelEntities.AsArray(), new AlienDirtyPropagationSettings
+            AlienDirtyPropagation.Propagate(tickBuf.VoxelEntities.GetValueArray(Allocator.TempJob), new AlienDirtyPropagationSettings
             {
                 FlagsToPropagate = DirtyFlags.All,
                 AlienMotionDirtyMask = alienMotionDirtyMask,
@@ -245,7 +278,10 @@ namespace Voxelis
             Profiler.EndSample();
 
             Profiler.BeginSample("Clear Dirty Flags");
-            entities.ForEach(e => e.ClearDirtyFlags());
+            foreach(var e in entities.Values)
+            {
+                e.ClearDirtyFlags();
+            }
             Profiler.EndSample();
             Profiler.EndSample();
             
@@ -263,9 +299,9 @@ namespace Voxelis
         {
             alienEntityViews.Clear();
 
-            for (int i = 0; i < tickBuf.VoxelEntities.Length; i++)
+            foreach(var kvp in tickBuf.VoxelEntities)
             {
-                VoxelEntityData entity = tickBuf.VoxelEntities[i];
+                VoxelEntityData entity = kvp.Value;
                 float4x4 localToWorldMatrix = float4x4.TRS(entity.transform.pos, entity.transform.rot, 1f);
                 float4x4 worldToLocal = math.inverse(localToWorldMatrix);
                 float3 worldAabbMin = entity.transform.pos;
@@ -301,7 +337,7 @@ namespace Voxelis
 
                 alienEntityViews.Add(new AlienEntityView
                 {
-                    EntityId = i,
+                    EntityId = kvp.Key,
                     LocalToWorld = entity.transform,
                     WorldToLocal = worldToLocal,
                     Sectors = entity.sectors.AsReadOnly(),
@@ -326,9 +362,8 @@ namespace Voxelis
         public void Save(string path)
         {
             var list = new List<(Guid128, VoxelEntity)>(entities.Count);
-            for (int i = 0; i < entities.Count; i++)
+            foreach(var e in entities.Values)
             {
-                VoxelEntity e = entities[i];
                 e.SyncCurrentTransformToData(0f);
                 list.Add((e.PersistentGuid, e));
             }
@@ -347,40 +382,27 @@ namespace Voxelis
         }
 
         /// <summary>
-        /// Loads entities from a <c>.vxw</c> file. The caller supplies a factory that creates the
-        /// target <see cref="VoxelEntity"/> for each saved record (e.g. instantiate a prefab).
-        /// The factory may return null to skip a record.
-        /// </summary>
-        public void Load(string path, Func<EntityRecord, VoxelEntity> entityFactory)
-        {
-            WorldLoader.Load(path, rec =>
-            {
-                var e = entityFactory(rec);
-                if (e != null) e.PersistentGuid = rec.Guid;
-                return e;
-            });
-        }
-
-        /// <summary>
-        /// Convenience overload that creates a bare <c>VoxelEntity</c> GameObject for each saved record.
-        /// </summary>
-        public void Load(string path)
-        {
-            Load(path, rec =>
-            {
-                var go = new GameObject($"VoxelEntity_{rec.Guid}");
-                return go.AddComponent<VoxelEntity>();
-            });
-        }
-
-        /// <summary>
         /// Loads the world using the inspector-configured save/load path.
         /// </summary>
         [InspectorButton("Load World", PlayModeOnly = true)]
         public void Load()
         {
             string path = ResolveSaveLoadPath();
-            Load(path);
+
+            WorldLoader.Load(path, rec =>
+            {
+                var go = new GameObject($"VoxelEntity_{rec.Guid}");
+
+                go.SetActive(false);
+
+                var e = go.AddComponent<VoxelEntity>();
+                if (e != null) e.PersistentGuid = rec.Guid;
+                
+                go.SetActive(true);
+
+                return e;
+            });
+
             Debug.Log($"Loaded VoxelisX world from {path}", this);
         }
 
