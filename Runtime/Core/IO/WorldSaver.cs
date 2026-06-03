@@ -1,6 +1,6 @@
-using System;
 using System.Collections.Generic;
 using Unity.Mathematics;
+using Voxelis.Utils;
 
 namespace Voxelis.IO
 {
@@ -11,7 +11,7 @@ namespace Voxelis.IO
     /// </summary>
     public static class WorldSaver
     {
-        public static void Save(string path, IReadOnlyList<(Guid Guid, VoxelEntity Entity)> entities)
+        public static void Save(string path, IReadOnlyList<(Guid128 Guid, VoxelEntity Entity)> entities)
         {
             using var writer = SingleFileSaveStorage.OpenWrite(path);
             for (int i = 0; i < entities.Count; i++)
@@ -22,7 +22,7 @@ namespace Voxelis.IO
             writer.Commit();
         }
 
-        public static unsafe void SaveEntity(IWorldSaveWriter writer, Guid guid, VoxelEntity entity)
+        public static unsafe void SaveEntity(IWorldSaveWriter writer, Guid128 guid, VoxelEntity entity)
         {
             var data = entity.GetDataCopy();
             var transformRec = new EntityTransformRecord(data.transform.pos, data.transform.rot);

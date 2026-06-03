@@ -1,4 +1,5 @@
 using NUnit.Framework;
+using Unity.Collections;
 using Unity.Mathematics;
 using Voxelis;
 using Voxelis.Simulation;
@@ -59,6 +60,55 @@ namespace VoxelisX.Tests
 
             Assert.That(moments.Mass, Is.EqualTo(1f));
             Assert.That(moments.FirstMoment, Is.EqualTo(new float3(128.5f, 0.5f, 0.5f)));
+        }
+
+        [Test]
+        public void VoxelBodyDataComputesMassPropertiesFromEntitySectors()
+        {
+            using var scope = new EntityDataTestScope();
+            SectorHandle sector = scope.AddSector(int3.zero);
+            sector.SetBlock(0, 0, 0, new Block(1));
+
+            var bodyData = new VoxelBodyData(Allocator.Persistent);
+            try
+            {
+                VoxelBodyData.MassProperties massProperties =
+                    bodyData.ComputeMassProperties(scope.Data.sectors);
+
+                Assert.That(massProperties.mass, Is.EqualTo(1f));
+                Assert.That(massProperties.centerOfMass, Is.EqualTo(new float3(0.5f, 0.5f, 0.5f)));
+                Assert.That(massProperties.inertiaTensor, Is.EqualTo(float3.zero));
+            }
+            finally
+            {
+                bodyData.Dispose();
+            }
+        }
+
+        [Test]
+        public void VoxelBodyDataClearsMassPropertiesForStaticBodies()
+        {
+            using var scope = new EntityDataTestScope();
+            SectorHandle sector = scope.AddSector(int3.zero);
+            sector.SetBlock(0, 0, 0, new Block(1));
+
+            var bodyData = new VoxelBodyData(Allocator.Persistent);
+            try
+            {
+                Assert.That(bodyData.ComputeMassProperties(scope.Data.sectors).mass, Is.EqualTo(1f));
+
+                bodyData.isStatic = true;
+                VoxelBodyData.MassProperties massProperties =
+                    bodyData.ComputeMassProperties(scope.Data.sectors);
+
+                Assert.That(massProperties.mass, Is.EqualTo(0f));
+                Assert.That(massProperties.centerOfMass, Is.EqualTo(float3.zero));
+                Assert.That(massProperties.inertiaTensor, Is.EqualTo(float3.zero));
+            }
+            finally
+            {
+                bodyData.Dispose();
+            }
         }
     }
 }

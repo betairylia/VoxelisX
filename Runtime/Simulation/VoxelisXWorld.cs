@@ -16,6 +16,7 @@ using Voxelis.IO;
 using Voxelis.Rendering.Meshing;
 using Voxelis.Simulation;
 using Voxelis.Tick;
+using Voxelis.Utils;
 
 namespace Voxelis
 {
@@ -49,6 +50,7 @@ namespace Voxelis
         public struct WorldStageInputs
         {
             public NativeList<VoxelEntityData> VoxelEntities;
+            public NativeList<VoxelBodyData> VoxelBodies;
         }
         
         public struct AutomataStageInputs
@@ -199,7 +201,7 @@ namespace Voxelis
             Profiler.EndSample();
 
             Profiler.BeginSample("Physics Step");
-            physicsWorld.SimulateStep(1.0f / targetTPS);
+            physicsWorld.SimulateStep(1.0f / targetTPS, tickBuf);
             Profiler.EndSample();
             
             // Dirty propagation
@@ -323,7 +325,7 @@ namespace Voxelis
         /// </summary>
         public void Save(string path)
         {
-            var list = new List<(Guid, VoxelEntity)>(entities.Count);
+            var list = new List<(Guid128, VoxelEntity)>(entities.Count);
             for (int i = 0; i < entities.Count; i++)
             {
                 VoxelEntity e = entities[i];

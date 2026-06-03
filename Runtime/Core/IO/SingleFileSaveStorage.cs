@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using Unity.Mathematics;
+using Voxelis.Utils;
 
 namespace Voxelis.IO
 {
@@ -133,7 +134,11 @@ namespace Voxelis.IO
             for (int i = 0; i < _entityRecords.Count; i++)
             {
                 var rec = _entityRecords[i];
-                _writer.Write(rec.Guid.ToByteArray());
+                uint4 guid = rec.Guid.Value;
+                _writer.Write(guid.x);
+                _writer.Write(guid.y);
+                _writer.Write(guid.z);
+                _writer.Write(guid.w);
                 _writer.Write(rec.Transform.Position.x);
                 _writer.Write(rec.Transform.Position.y);
                 _writer.Write(rec.Transform.Position.z);
@@ -193,8 +198,11 @@ namespace Voxelis.IO
 
             for (int i = 0; i < entityCount; i++)
             {
-                byte[] guidBytes = _reader.ReadBytes(16);
-                var guid = new Guid(guidBytes);
+                var guid = new Guid128(
+                    _reader.ReadUInt32(),
+                    _reader.ReadUInt32(),
+                    _reader.ReadUInt32(),
+                    _reader.ReadUInt32());
                 var pos = new float3(_reader.ReadSingle(), _reader.ReadSingle(), _reader.ReadSingle());
                 var rotV = new float4(
                     _reader.ReadSingle(),

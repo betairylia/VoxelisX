@@ -74,7 +74,7 @@ namespace Voxelis.Simulation
             bodies.Remove(b);
         }
 
-        public void SimulateStep(float dt)
+        public void SimulateStep(float dt, VoxelisXWorld.WorldStageInputs tickBuf)
         {
             // TODO: Update physics World
             // PhysicsWorldBuilder.cs:88

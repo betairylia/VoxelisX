@@ -1,5 +1,6 @@
 using System;
 using Unity.Mathematics;
+using Voxelis.Utils;
 
 namespace Voxelis.IO
 {
@@ -84,11 +85,11 @@ namespace Voxelis.IO
 
     public readonly struct EntityRecord
     {
-        public readonly Guid Guid;
+        public readonly Guid128 Guid;
         public readonly EntityTransformRecord Transform;
         public readonly ushort EntityRequireUpdateFlags;
 
-        public EntityRecord(Guid guid, EntityTransformRecord transform, ushort entityRequireUpdateFlags)
+        public EntityRecord(Guid128 guid, EntityTransformRecord transform, ushort entityRequireUpdateFlags)
         {
             Guid = guid;
             Transform = transform;

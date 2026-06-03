@@ -1,9 +1,146 @@
 ﻿using System;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using Unity.Mathematics;
 using UnityEngine;
 
 namespace Voxelis.Utils
 {
+    /// <summary>
+    /// Burst-friendly 128-bit identifier stored as four uint lanes.
+    /// </summary>
+    [Serializable]
+    [StructLayout(LayoutKind.Sequential)]
+    public readonly struct Guid128 : IEquatable<Guid128>
+    {
+        public static Guid128 Zero
+        {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => default;
+        }
+
+        private readonly uint4 value;
+
+        public uint4 Value
+        {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => value;
+        }
+
+        public bool IsZero
+        {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => math.all(value == uint4.zero);
+        }
+
+        public bool IsValid
+        {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => !IsZero;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public Guid128(uint4 value)
+        {
+            this.value = value;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public Guid128(uint x, uint y, uint z, uint w)
+        {
+            value = new uint4(x, y, z, w);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static Guid128 NewGuid(ref Unity.Mathematics.Random random)
+        {
+            uint4 randomValue = random.NextUInt4();
+
+            // RFC 4122 version 4 and variant bits, using little-endian uint lanes.
+            randomValue.y = (randomValue.y & 0xFF0FFFFFu) | 0x00400000u;
+            randomValue.z = (randomValue.z & 0xFFFFFF3Fu) | 0x00000080u;
+
+            return new Guid128(randomValue);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static Guid128 Random(ref Unity.Mathematics.Random random)
+        {
+            return NewGuid(ref random);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool Equals(Guid128 other)
+        {
+            return math.all(value == other.value);
+        }
+
+        public override bool Equals(object obj)
+        {
+            return obj is Guid128 other && Equals(other);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public override int GetHashCode()
+        {
+            return (int)math.hash(value);
+        }
+
+        public override string ToString()
+        {
+            return $"{value.x:x8}{value.y:x8}{value.z:x8}{value.w:x8}";
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static bool operator ==(Guid128 left, Guid128 right)
+        {
+            return math.all(left.value == right.value);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static bool operator !=(Guid128 left, Guid128 right)
+        {
+            return math.any(left.value != right.value);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static Guid128 operator ^(Guid128 left, Guid128 right)
+        {
+            return new Guid128(left.value ^ right.value);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static Guid128 operator &(Guid128 left, Guid128 right)
+        {
+            return new Guid128(left.value & right.value);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static Guid128 operator |(Guid128 left, Guid128 right)
+        {
+            return new Guid128(left.value | right.value);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static Guid128 operator ~(Guid128 guid)
+        {
+            return new Guid128(~guid.value);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static explicit operator uint4(Guid128 guid)
+        {
+            return guid.value;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static explicit operator Guid128(uint4 value)
+        {
+            return new Guid128(value);
+        }
+
+    }
+
     /// <summary>
     /// Provides assertion utilities that are compatible with Burst-compiled code.
     /// </summary>

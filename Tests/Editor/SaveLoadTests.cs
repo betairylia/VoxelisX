@@ -5,6 +5,7 @@ using Unity.Collections;
 using Unity.Mathematics;
 using Voxelis;
 using Voxelis.IO;
+using Voxelis.Utils;
 
 namespace VoxelisX.Tests
 {
@@ -289,11 +290,12 @@ namespace VoxelisX.Tests
     public unsafe class SingleFileSaveStorageTests
     {
         private string _tempPath;
+        private static uint _guidSeed = 1;
 
         [SetUp]
         public void SetUp()
         {
-            _tempPath = Path.Combine(Path.GetTempPath(), $"voxelisx_test_{Guid.NewGuid():N}.vxw");
+            _tempPath = Path.Combine(Path.GetTempPath(), $"voxelisx_test_{NewGuid128()}.vxw");
         }
 
         [TearDown]
@@ -307,7 +309,7 @@ namespace VoxelisX.Tests
         [Test]
         public void WriteRead_RoundTripsHeaderEntityAndSectorIndex()
         {
-            Guid entityGuid = Guid.NewGuid();
+            Guid128 entityGuid = NewGuid128();
             var transform = new EntityTransformRecord(
                 new float3(1.5f, -2.0f, 3.25f),
                 quaternion.Euler(0.1f, 0.2f, 0.3f));
@@ -405,7 +407,7 @@ namespace VoxelisX.Tests
 
             using (var writer = SingleFileSaveStorage.OpenWrite(_tempPath))
             {
-                var entityRecord = new EntityRecord(Guid.NewGuid(), default, 0);
+                var entityRecord = new EntityRecord(NewGuid128(), default, 0);
                 writer.WriteEntity(in entityRecord, new[]
                 {
                     new SectorWriteRecord(coord, preview, payload),
@@ -439,7 +441,7 @@ namespace VoxelisX.Tests
                 int3 coord = new int3(0, 0, 0);
                 using (var writer = SingleFileSaveStorage.OpenWrite(_tempPath))
                 {
-                    var entityRecord = new EntityRecord(Guid.NewGuid(), default, 0);
+                    var entityRecord = new EntityRecord(NewGuid128(), default, 0);
                     writer.WriteEntity(in entityRecord, new[]
                     {
                         new SectorWriteRecord(coord, preview, payload),
@@ -466,7 +468,7 @@ namespace VoxelisX.Tests
             uint[] preview = new uint[Sector.BRICKS_IN_SECTOR];
             byte[] payload = new byte[] { 1, 2, 3 };
             using var writer = SingleFileSaveStorage.OpenWrite(_tempPath);
-            var entityRecord = new EntityRecord(Guid.NewGuid(), default, 0);
+            var entityRecord = new EntityRecord(NewGuid128(), default, 0);
             writer.WriteEntity(in entityRecord, new[]
             {
                 new SectorWriteRecord(new int3(0, 0, 0), preview, payload),
@@ -480,6 +482,12 @@ namespace VoxelisX.Tests
             using var bw = new BinaryWriter(fs);
             fs.Position = sizeof(uint) + sizeof(ushort);
             bw.Write((ushort)flags);
+        }
+
+        private static Guid128 NewGuid128()
+        {
+            var random = Unity.Mathematics.Random.CreateFromIndex(_guidSeed++);
+            return Guid128.NewGuid(ref random);
         }
     }
 }

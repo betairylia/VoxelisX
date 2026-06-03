@@ -8,6 +8,7 @@ using Unity.Collections.NotBurstCompatible;
 using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
+using Voxelis.Utils;
 
 namespace Voxelis
 {
@@ -35,6 +36,9 @@ namespace Voxelis
         public ushort entityDirtyFlags;
         public ushort entityRequireUpdateFlags;
 
+        // Persistence and Identity
+        public Guid128 Guid;
+
         public VoxelEntityData(Allocator allocator)
         {
             sectors = new(1, allocator);
@@ -46,6 +50,13 @@ namespace Voxelis
             angularVelocity = float3.zero;
             entityDirtyFlags = 0;
             entityRequireUpdateFlags = 0;
+            Guid = Guid128.Zero;
+        }
+
+        public VoxelEntityData(Allocator allocator, ref Unity.Mathematics.Random random)
+            : this(allocator)
+        {
+            Guid = Guid128.Random(ref random);
         }
 
         public VoxelEntityData(Allocator allocator, Transform transform)
@@ -59,6 +70,13 @@ namespace Voxelis
             angularVelocity = float3.zero;
             entityDirtyFlags = 0;
             entityRequireUpdateFlags = 0;
+            Guid = Guid128.Zero;
+        }
+
+        public VoxelEntityData(Allocator allocator, Transform transform, ref Unity.Mathematics.Random random)
+            : this(allocator, transform)
+        {
+            Guid = Guid128.Random(ref random);
         }
 
         /// <summary>
@@ -463,42 +481,20 @@ namespace Voxelis
     {
         private VoxelEntityData data;
         public VoxelEntityData GetDataCopy() => data;
+        private static Unity.Mathematics.Random globalEntityRandomState = new Unity.Mathematics.Random(0x6E624EB7u);
 
-        [SerializeField, HideInInspector] private string _persistentGuid;
-        private Guid _persistentGuidCached;
-        private bool _persistentGuidResolved;
-
-        /// <summary>
-        /// Stable identifier used by the save/load system. Lazily generated on first access if
-        /// not already present; persisted in the scene via the hidden <c>_persistentGuid</c> field
-        /// so scene-baked entities keep the same identity across saves.
-        /// </summary>
-        public Guid PersistentGuid
+        public Guid128 PersistentGuid
         {
-            get
-            {
-                if (!_persistentGuidResolved)
-                {
-                    if (!Guid.TryParse(_persistentGuid, out _persistentGuidCached))
-                    {
-                        _persistentGuidCached = Guid.NewGuid();
-                        _persistentGuid = _persistentGuidCached.ToString();
-                    }
-                    _persistentGuidResolved = true;
-                }
-                return _persistentGuidCached;
-            }
+            get => data.Guid;
             set
             {
-                _persistentGuidCached = value;
-                _persistentGuid = value.ToString();
-                _persistentGuidResolved = true;
+                data.Guid = value;
             }
         }
 
         private void Awake()
         {
-            data = new VoxelEntityData(Allocator.Persistent, transform);
+            data = new VoxelEntityData(Allocator.Persistent, transform, ref globalEntityRandomState);
         }
 
         public void CopyDataFrom(VoxelEntityData srcData)
