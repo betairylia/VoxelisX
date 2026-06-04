@@ -385,16 +385,14 @@ namespace Voxelis
             }
         }
 
-        public void SetTransformForDirtyPropagation(RigidTransform nextTransform, float deltaTime)
+        public void SetTransformForDirtyPropagation(RigidTransform nextTransform) 
         {
             previousTransform = transform;
-            UpdateCurrentTransformForDirtyPropagation(nextTransform, deltaTime);
+            transform = nextTransform;
         }
 
-        public void UpdateCurrentTransformForDirtyPropagation(RigidTransform nextTransform, float deltaTime)
+        public void ComputeVelocityForDirtyPropagation(float deltaTime)
         {
-            transform = nextTransform;
-
             if (deltaTime <= 0f)
             {
                 linearVelocity = float3.zero;
@@ -545,18 +543,13 @@ namespace Voxelis
         /// </summary>
         public void SyncTransformToData()
         {
-            float deltaTime = Time.deltaTime > 0f ? Time.deltaTime : Time.fixedDeltaTime;
-            SyncTransformToData(deltaTime);
+            data.SetTransformForDirtyPropagation(new RigidTransform(transform.rotation, transform.position));
         }
 
-        public void SyncTransformToData(float deltaTime)
+        // Sync current, don't touch previous
+        public void UpdateVelocity(float deltaTime)
         {
-            data.SetTransformForDirtyPropagation(new RigidTransform(transform.rotation, transform.position), deltaTime);
-        }
-
-        public void SyncCurrentTransformToData(float deltaTime)
-        {
-            data.UpdateCurrentTransformForDirtyPropagation(new RigidTransform(transform.rotation, transform.position), deltaTime);
+            data.ComputeVelocityForDirtyPropagation(deltaTime);
         }
 
         /// <summary>

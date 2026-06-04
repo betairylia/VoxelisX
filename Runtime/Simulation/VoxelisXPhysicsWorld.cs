@@ -9,10 +9,8 @@ using Voxelis.Tick;
 
 namespace Voxelis.Simulation
 {
-    public class VoxelisXPhysicsWorld : MonoSingleton<VoxelisXPhysicsWorld>
+    public partial class VoxelisXPhysicsWorld : MonoSingleton<VoxelisXPhysicsWorld>
     {
-        protected List<VoxelBody> bodies = new();
-
         protected PhysicsWorld physicsWorld;
         protected Unity.Physics.Simulation simulation;
 
@@ -59,19 +57,9 @@ namespace Voxelis.Simulation
             haveStaticBodiesChanged = new NativeReference<int>(0, Allocator.Persistent);
         }
 
-        public void AddBody(VoxelBody b)
-        {
-            bodies.Add(b);
-        }
-
         internal void AddBodyToProperlySizedWorld(VoxelBody b)
         {
             
-        }
-
-        public void RemoveBody(VoxelBody b)
-        {
-            bodies.Remove(b);
         }
 
         public void SimulateStep(float dt, VoxelisXWorld.WorldStageInputs tickBuf)

@@ -117,6 +117,8 @@ namespace Voxelis
             // TEMP CODE -- Tick logic
             if ((!isFirst) && freeze) return;
             isFirst = false;
+
+            float deltaTime = targetTPS > 0f ? 1.0f / targetTPS : Time.deltaTime;
             
             // timer -= Time.deltaTime;
             // if (timer > 0)
@@ -132,13 +134,13 @@ namespace Voxelis
             // TODO: FIXME: Currently inf loaders will not work due to no proper sector loading transition
             // TickWorldLoaders();
             
-            Profiler.BeginSample("Player Ray Cast");
+Profiler.BeginSample("Player Ray Cast");
             rayCaster?.Tick();
-            Profiler.EndSample();
+Profiler.EndSample();
 
             // Fill native list by copying
             // TODO: Keep the unique instance in world and let VoxelEntity ref it?
-            Profiler.BeginSample("Fill TickBuffer");
+Profiler.BeginSample("Fill TickBuffer");
             tickBuf.VoxelEntities.Clear();
             tickBuf.VoxelBodies.Clear();
             foreach(var kvp in entities)
@@ -152,11 +154,11 @@ namespace Voxelis
                     tickBuf.VoxelBodies.Add(b.entity.PersistentGuid, b.GetDataCopy());
                 }
             }
-            Profiler.EndSample();
+Profiler.EndSample();
 
-            Profiler.BeginSample("WorldStage");
+Profiler.BeginSample("WorldStage");
             DoTick(tickBuf);
-            Profiler.EndSample();
+Profiler.EndSample();
             
             // Tick
             JobHandle tickHandle = new JobHandle();
@@ -167,7 +169,7 @@ namespace Voxelis
             // Automata stage
             // TODO: Wrap this up and handle this properly
             // Activate sector snapshotting for modifications
-            Profiler.BeginSample("Activate Sector Snapshots");
+Profiler.BeginSample("Activate Sector Snapshots");
             foreach (var e in entities.Values)
             {
                 foreach (var kvp in e.Sectors)
@@ -176,20 +178,20 @@ namespace Voxelis
                         kvp.Value.ActivateSnapshot();
                 }
             }
-            Profiler.EndSample();
+Profiler.EndSample();
 
             // Collect bricks to update
-            Profiler.BeginSample("Collect RequireUpdate Bricks");
+Profiler.BeginSample("Collect RequireUpdate Bricks");
             automataTickBuf.BricksRequiredUpdate.Clear();
             BrickCollector.Collect(ref tickBuf.VoxelEntities, ref automataTickBuf.BricksRequiredUpdate);
-            Profiler.EndSample();
-            Profiler.BeginSample("Build Alien Read Context");
+Profiler.EndSample();
+Profiler.BeginSample("Build Alien Read Context");
             BuildAlienReadContext();
-            Profiler.EndSample();
+Profiler.EndSample();
 
-            Profiler.BeginSample("Automata Stage Schedule");
+Profiler.BeginSample("Automata Stage Schedule");
             tickHandle = automataStage.Schedule(automataTickBuf, tickHandle);
-            Profiler.EndSample();
+Profiler.EndSample();
 
             // Random access updating stage
 
@@ -205,13 +207,13 @@ namespace Voxelis
             /////// End Tick stage
             // Clear dirtiness and propagate RequireBrickUpdate to self & neighbors
 
-            Profiler.BeginSample("Work Dispatch");
+Profiler.BeginSample("Work Dispatch");
             tickHandle.Complete();
-            Profiler.EndSample();
+Profiler.EndSample();
 
             // TODO: Wrap this up and handle this properly
             // Apply sector modifications
-            Profiler.BeginSample("Apply Sector Snapshots");
+Profiler.BeginSample("Apply Sector Snapshots");
             foreach(var e in entities.Values)
             {
                 foreach (var kvp in e.Sectors)
@@ -219,50 +221,41 @@ namespace Voxelis
                     kvp.Value.ApplySnapshot();
                 }
             }
-            Profiler.EndSample();
+Profiler.EndSample();
 
-            // Copy data back to VoxelEntities
-            Profiler.BeginSample("Burst -> Managed Boundary Copy Back");
-            foreach(var kvp in entities)
-            {
-                kvp.Value.CopyDataFrom(tickBuf.VoxelEntities[kvp.Key]);
-                kvp.Value.SyncTransformFromData();
-            }
-            Profiler.EndSample();
-
-            Profiler.BeginSample("Physics Step");
-            physicsWorld.SimulateStep(1.0f / targetTPS, tickBuf);
-            Profiler.EndSample();
+Profiler.BeginSample("Physics Step");
+            physicsWorld.SimulateStep(deltaTime, tickBuf);
+Profiler.EndSample();
             
             // Dirty propagation
-            Profiler.BeginSample("Dirty Propagation");
-            Profiler.BeginSample("Sync Transform");
-            float dirtyPropagationDeltaTime = targetTPS > 0f ? 1.0f / targetTPS : Time.deltaTime;
+Profiler.BeginSample("Dirty Propagation");
+    Profiler.BeginSample("Update Velocity");
             foreach(var e in entities.Values)
             {
-                e.SyncCurrentTransformToData(dirtyPropagationDeltaTime);
+                e.UpdateVelocity(deltaTime);
             }
-            Profiler.EndSample();
+    Profiler.EndSample();
 
-            Profiler.BeginSample("Clear Require Updates");
+    Profiler.BeginSample("Clear Require Updates");
             foreach (var e in entities.Values)
             {
                 e.ClearRequireUpdates();
             }
-            Profiler.EndSample();
+    Profiler.EndSample();
 
-            Profiler.BeginSample("Propagate Dirty Flags");
+    Profiler.BeginSample("Propagate Dirty Flags");
             JobHandle handle = new JobHandle();
             foreach(var e in entities.Values)
             {
                 handle = JobHandle.CombineDependencies(handle, e.PropagateDirtyFlags(DirtyFlags.All, true));
             }
 
-            Profiler.BeginSample("Burst");
+        Profiler.BeginSample("Burst");
             handle.Complete();
-            Profiler.EndSample();
+        Profiler.EndSample();
+    Profiler.EndSample();
 
-            Profiler.BeginSample("Alien Propagation");
+    Profiler.BeginSample("Alien Propagation");
             foreach(var kvp in entities)
             {
                 tickBuf.VoxelEntities[kvp.Key] = entities[kvp.Key].GetDataCopy();
@@ -275,21 +268,30 @@ namespace Voxelis
                 SpatialCellSize = alienSpatialCellSize,
                 DirtyHaloVoxels = alienDirtyHaloVoxels,
             });
-            Profiler.EndSample();
+    Profiler.EndSample();
 
-            Profiler.BeginSample("Clear Dirty Flags");
+    Profiler.BeginSample("Clear Dirty Flags");
             foreach(var e in entities.Values)
             {
                 e.ClearDirtyFlags();
             }
-            Profiler.EndSample();
-            Profiler.EndSample();
+    Profiler.EndSample();
+Profiler.EndSample();
+
+            // Copy data back to VoxelEntities
+Profiler.BeginSample("Burst -> Managed Boundary Copy Back");
+            foreach(var kvp in entities)
+            {
+                kvp.Value.CopyDataFrom(tickBuf.VoxelEntities[kvp.Key]);
+                kvp.Value.SyncTransformFromData();
+            }
+Profiler.EndSample();
             
             // Tick renderer
-            Profiler.BeginSample("Renderer Tick");
+Profiler.BeginSample("Renderer Tick");
             if (rayTracedRenderer?.enabled ?? false) rayTracedRenderer?.Tick();
             if (meshingRenderer?.enabled ?? false) meshingRenderer?.Tick();
-            Profiler.EndSample();
+Profiler.EndSample();
         }
 
         public virtual void DoTick(
@@ -364,7 +366,8 @@ namespace Voxelis
             var list = new List<(Guid128, VoxelEntity)>(entities.Count);
             foreach(var e in entities.Values)
             {
-                e.SyncCurrentTransformToData(0f);
+                // TODO: FIXME: Subtle bug -- will this break tick continuity? (this overwrites prevTransform)
+                e.SyncTransformToData();
                 list.Add((e.PersistentGuid, e));
             }
             WorldSaver.Save(path, list);
