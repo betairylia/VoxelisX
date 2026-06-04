@@ -6,6 +6,7 @@ using Unity.Physics;
 using UnityEngine;
 using UnityEngine.Profiling;
 using Voxelis.Tick;
+using Voxelis.Utils;
 
 namespace Voxelis.Simulation
 {
@@ -62,10 +63,17 @@ namespace Voxelis.Simulation
             
         }
 
+        private NativeArray<Guid128> bodyIndexToGuid;
+        private int nDynamic;
+
         public void SimulateStep(float dt, VoxelisXWorld.WorldStageInputs tickBuf)
         {
-            // TODO: Update physics World
-            // PhysicsWorldBuilder.cs:88
+            Profiler.BeginSample("Physics Build World");
+            var buildHandle = VoxelisXPhysicsInterface.SchedulePhysicsWorldBuild(
+                ref tickBuf, ref physicsWorld, out bodyIndexToGuid, out nDynamic, default);
+            buildHandle.Complete();
+            haveStaticBodiesChanged.Value = 1;
+            Profiler.EndSample();
 
             Profiler.BeginSample("Physics BeforeSimulationStart");
             BeforeSimulationStart();
@@ -164,6 +172,12 @@ namespace Voxelis.Simulation
 
             Profiler.BeginSample("Physics OnSimulationFinished");
             OnSimulationFinished();
+            Profiler.EndSample();
+
+            Profiler.BeginSample("Physics Export World");
+            var exportHandle = VoxelisXPhysicsInterface.SchedulePhysicsWorldExport(
+                ref tickBuf, ref physicsWorld, bodyIndexToGuid, nDynamic, default);
+            exportHandle.Complete();
             Profiler.EndSample();
 
             Profiler.BeginSample("Physics Complete Dispose Jobs");

@@ -48,8 +48,27 @@ namespace Voxelis
         {
             data = new VoxelBodyData(Allocator.Persistent);
             data.isStatic = _isStatic;
+            CreateCollider();
             InitializeBody();
             _entity = GetComponent<VoxelEntity>();
+        }
+
+        private void CreateCollider()
+        {
+            var material = new Unity.Physics.Material
+            {
+                Friction = 0.5f,
+                Restitution = 0.0f,
+                FrictionCombinePolicy = Unity.Physics.Material.CombinePolicy.GeometricMean,
+                RestitutionCombinePolicy = Unity.Physics.Material.CombinePolicy.GeometricMean,
+                CollisionResponse = Unity.Physics.CollisionResponsePolicy.CollideRaiseCollisionEvents
+            };
+
+            data.collider = Unity.Physics.VoxelCollider.Create(
+                null,
+                Unity.Physics.CollisionFilter.Default,
+                material
+            );
         }
 
         private void InitializeBody()

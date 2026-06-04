@@ -33,8 +33,10 @@ namespace Voxelis.IO
         public static unsafe void LoadEntity(IWorldSaveReader reader, int entityIndex, in EntityRecord rec, VoxelEntity entity)
         {
             // TODO: FIXME: Everything moved from 0,0,0 instantly to current position? That's not good.
+            // TODO: I think sync it twice simply solve that. Can someone verify?
             entity.transform.SetPositionAndRotation(rec.Transform.Position, rec.Transform.Rotation);
-            entity.SyncCurrentTransformToData(0f);
+            entity.SyncTransformToData();
+            entity.SyncTransformToData();
 
             var sectorIndex = reader.ReadSectorIndex(entityIndex);
             for (int s = 0; s < sectorIndex.Count; s++)

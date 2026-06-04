@@ -1,7 +1,9 @@
 using System;
 using Unity.Collections;
+using Unity.Entities;
 using Unity.Jobs;
 using Unity.Mathematics;
+using Unity.Physics;
 using Voxelis.Simulation;
 
 namespace Voxelis
@@ -21,6 +23,7 @@ namespace Voxelis
         private bool massCacheInitialized;
 
         public bool isStatic;
+        public BlobAssetReference<Collider> collider;
         public MassProperties massProperties { get; private set; }
 
         public VoxelBodyData(Allocator allocator)
@@ -30,6 +33,7 @@ namespace Voxelis
             cachedMassMoments = default;
             massCacheInitialized = false;
             isStatic = false;
+            collider = default;
             massProperties = default;
         }
 
@@ -146,6 +150,19 @@ namespace Voxelis
         public void Dispose()
         {
             ClearMassPropertiesCache();
+
+            if (collider.IsCreated)
+            {
+                unsafe
+                {
+                    if (collider.Value.Type == ColliderType.Voxel)
+                    {
+                        var vc = (VoxelCollider*)collider.GetUnsafePtr();
+                        vc->Dispose();
+                    }
+                }
+                collider.Dispose();
+            }
         }
 
         private void EnsureMassPropertiesCache(int sectorCount, bool rebuild)
