@@ -107,6 +107,7 @@ namespace Voxelis
         protected override void ReleaseResources()
         {
             tickBuf.VoxelEntities.Dispose();
+            tickBuf.VoxelBodies.Dispose();
             automataTickBuf.BricksRequiredUpdate.Dispose();
             alienEntityViews.Dispose();
             base.ReleaseResources();
@@ -289,6 +290,11 @@ Profiler.BeginSample("Burst -> Managed Boundary Copy Back");
             {
                 kvp.Value.CopyDataFrom(tickBuf.VoxelEntities[kvp.Key]);
                 kvp.Value.SyncTransformFromData();
+
+                if (bodies.TryGetValue(kvp.Key, out var body))
+                {
+                    body.CopyDataFrom(tickBuf.VoxelBodies[kvp.Key]);
+                }
             }
 Profiler.EndSample();
             

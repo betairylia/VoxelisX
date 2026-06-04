@@ -68,12 +68,13 @@ namespace Voxelis.Simulation
                         );
                         RigidTransform worldFromMotion = math.mul(entity.transform, bodyFromMotion);
 
+                        Unity.Physics.MotionData persistedMotionData = body.motionData;
                         motionDatas[bodyIndex] = new Unity.Physics.MotionData
                         {
                             WorldFromMotion = worldFromMotion,
                             BodyFromMotion = bodyFromMotion,
-                            LinearDamping = 0.01f,
-                            AngularDamping = 0.05f
+                            LinearDamping = persistedMotionData.LinearDamping,
+                            AngularDamping = persistedMotionData.AngularDamping
                         };
 
                         float inverseMass = massProps.mass > 0 ? 1.0f / massProps.mass : 0.0f;
@@ -82,14 +83,15 @@ namespace Voxelis.Simulation
                         if (massProps.inertiaTensor.y > 0) inverseInertia.y = 1.0f / massProps.inertiaTensor.y;
                         if (massProps.inertiaTensor.z > 0) inverseInertia.z = 1.0f / massProps.inertiaTensor.z;
 
+                        Unity.Physics.MotionVelocity persistedMotionVelocity = body.motionVelocity;
                         motionVelocities[bodyIndex] = new Unity.Physics.MotionVelocity
                         {
-                            LinearVelocity = entity.linearVelocity,
-                            AngularVelocity = entity.angularVelocity,
+                            LinearVelocity = persistedMotionVelocity.LinearVelocity,
+                            AngularVelocity = persistedMotionVelocity.AngularVelocity,
                             InverseInertia = inverseInertia,
                             InverseMass = inverseMass,
-                            AngularExpansionFactor = 0.0f,
-                            GravityFactor = 1.0f
+                            AngularExpansionFactor = persistedMotionVelocity.AngularExpansionFactor,
+                            GravityFactor = persistedMotionVelocity.GravityFactor
                         };
                     }
                 }
@@ -104,6 +106,7 @@ namespace Voxelis.Simulation
             public VoxelisXWorld.WorldStageInputs tickBuf;
 
             [ReadOnly] public NativeArray<Unity.Physics.MotionData> motionDatas;
+            [ReadOnly] public NativeArray<Unity.Physics.MotionVelocity> motionVelocities;
             [ReadOnly] public NativeArray<Guid128> bodyIndexToGuid;
 
             public int nDynamic;
@@ -113,6 +116,7 @@ namespace Voxelis.Simulation
                 for (int i = 0; i < nDynamic; i++)
                 {
                     Unity.Physics.MotionData md = motionDatas[i];
+                    Unity.Physics.MotionVelocity mv = motionVelocities[i];
                     Guid128 guid = bodyIndexToGuid[i];
 
                     RigidTransform worldFromBody = math.mul(
@@ -123,6 +127,11 @@ namespace Voxelis.Simulation
                     var entity = tickBuf.VoxelEntities[guid];
                     entity.transform = worldFromBody;
                     tickBuf.VoxelEntities[guid] = entity;
+
+                    var body = tickBuf.VoxelBodies[guid];
+                    body.motionData = md;
+                    body.motionVelocity = mv;
+                    tickBuf.VoxelBodies[guid] = body;
                 }
             }
         }
@@ -196,6 +205,7 @@ namespace Voxelis.Simulation
             {
                 tickBuf = tickBuf,
                 motionDatas = world.MotionDatas,
+                motionVelocities = world.MotionVelocities,
                 bodyIndexToGuid = bodyIndexToGuid,
                 nDynamic = nDynamic
             };

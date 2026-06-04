@@ -31,6 +31,12 @@ namespace Voxelis
 
         public VoxelBodyData GetDataCopy() => data;
 
+        public void CopyDataFrom(VoxelBodyData srcData)
+        {
+            data = srcData;
+            data.isStatic = _isStatic;
+        }
+
         public VoxelEntity entity
         {
             get

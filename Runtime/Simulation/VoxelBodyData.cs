@@ -25,6 +25,8 @@ namespace Voxelis
 
         public bool isStatic;
         public BlobAssetReference<Collider> collider;
+        public Unity.Physics.MotionData motionData;
+        public Unity.Physics.MotionVelocity motionVelocity;
         public MassProperties massProperties { get; private set; }
 
         public VoxelBodyData(Allocator allocator)
@@ -35,7 +37,33 @@ namespace Voxelis
             massCacheInitialized = false;
             isStatic = false;
             collider = default;
+            motionData = DefaultMotionData();
+            motionVelocity = DefaultMotionVelocity();
             massProperties = default;
+        }
+
+        private static Unity.Physics.MotionData DefaultMotionData()
+        {
+            return new Unity.Physics.MotionData
+            {
+                WorldFromMotion = RigidTransform.identity,
+                BodyFromMotion = RigidTransform.identity,
+                LinearDamping = 0.01f,
+                AngularDamping = 0.05f
+            };
+        }
+
+        private static Unity.Physics.MotionVelocity DefaultMotionVelocity()
+        {
+            return new Unity.Physics.MotionVelocity
+            {
+                LinearVelocity = float3.zero,
+                AngularVelocity = float3.zero,
+                InverseInertia = float3.zero,
+                InverseMass = 0.0f,
+                AngularExpansionFactor = 0.0f,
+                GravityFactor = 1.0f
+            };
         }
 
         public MassProperties ComputeMassProperties(LockableUnsafeHashMap<int3, SectorHandle> sectors)
