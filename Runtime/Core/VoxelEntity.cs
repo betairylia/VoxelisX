@@ -21,7 +21,7 @@ namespace Voxelis
         // public Dictionary<Vector3Int, Sector> sectors = new Dictionary<Vector3Int, Sector>();
         public LockableUnsafeHashMap<int3, SectorHandle> sectors;
         public LockableUnsafeHashMap<int3, SectorNeighborHandles> sectorNeighbors;
-        public NativeQueue<int3> sectorsToRemove;
+        // public NativeQueue<int3> sectorsToRemove;
 
         /// <summary>
         /// The rigid transform representing position and rotation of this entity.
@@ -43,7 +43,6 @@ namespace Voxelis
         {
             sectors = new(1, allocator);
             sectorNeighbors = new(1, allocator);
-            sectorsToRemove = new(allocator);
             transform = RigidTransform.identity;
             previousTransform = RigidTransform.identity;
             linearVelocity = float3.zero;
@@ -63,7 +62,6 @@ namespace Voxelis
         {
             sectors = new(1, allocator);
             sectorNeighbors = new(1, allocator);
-            sectorsToRemove = new(allocator);
             this.transform = new RigidTransform(transform.rotation, transform.position);
             previousTransform = this.transform;
             linearVelocity = float3.zero;
@@ -458,11 +456,11 @@ namespace Voxelis
                 sectorNeighbors.Dispose();
                 sectorNeighbors = default;
             }
-            if (sectorsToRemove.IsCreated)
-            {
-                sectorsToRemove.Dispose();
-                sectorsToRemove = default;
-            }
+            // if (sectorsToRemove.IsCreated)
+            // {
+            //     sectorsToRemove.Dispose();
+            //     sectorsToRemove = default;
+            // }
         }
     }
     

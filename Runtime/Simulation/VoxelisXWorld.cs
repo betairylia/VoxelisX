@@ -151,6 +151,7 @@ Profiler.BeginSample("Fill TickBuffer");
 
                 if (bodies.TryGetValue(kvp.Key, out var b))
                 {
+                    b.ComputeMassProperties();
                     tickBuf.VoxelBodies.Add(b.entity.PersistentGuid, b.GetDataCopy());
                 }
             }

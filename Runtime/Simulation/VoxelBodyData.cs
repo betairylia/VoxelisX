@@ -1,5 +1,6 @@
 using System;
 using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
 using Unity.Entities;
 using Unity.Jobs;
 using Unity.Mathematics;
@@ -18,7 +19,7 @@ namespace Voxelis
         }
 
         private Allocator allocator;
-        private NativeHashMap<int3, VoxelEntityPhysics.SectorMassMoments> sectorMassCache;
+        private UnsafeHashMap<int3, VoxelEntityPhysics.SectorMassMoments> sectorMassCache;
         private VoxelEntityPhysics.SectorMassMoments cachedMassMoments;
         private bool massCacheInitialized;
 
@@ -174,7 +175,7 @@ namespace Voxelis
 
             if (!sectorMassCache.IsCreated)
             {
-                sectorMassCache = new NativeHashMap<int3, VoxelEntityPhysics.SectorMassMoments>(
+                sectorMassCache = new UnsafeHashMap<int3, VoxelEntityPhysics.SectorMassMoments>(
                     math.max(1, sectorCount),
                     allocator == Allocator.Invalid ? Allocator.Persistent : allocator);
             }
