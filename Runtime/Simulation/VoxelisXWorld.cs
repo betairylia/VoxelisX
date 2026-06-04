@@ -116,6 +116,7 @@ namespace Voxelis
         {
             // TEMP CODE -- Tick logic
             if ((!isFirst) && freeze) return;
+            // TODO: FIXME: Check entity prevTransform lifespan; currently maybe treated as moved to current location from 0,0,0 in first frame, causing severe performance issues
             isFirst = false;
 
             float deltaTime = targetTPS > 0f ? 1.0f / targetTPS : Time.deltaTime;
@@ -228,19 +229,24 @@ Profiler.BeginSample("Physics Step");
             physicsWorld.SimulateStep(deltaTime, tickBuf);
 Profiler.EndSample();
             
-            // Dirty propagation
+            // Dirty propagation — operates on tickBuf to preserve physics-exported transforms
 Profiler.BeginSample("Dirty Propagation");
     Profiler.BeginSample("Update Velocity");
-            foreach(var e in entities.Values)
+            var entityKeys = tickBuf.VoxelEntities.GetKeyArray(Allocator.Temp);
+            for (int i = 0; i < entityKeys.Length; i++)
             {
-                e.UpdateVelocity(deltaTime);
+                var entity = tickBuf.VoxelEntities[entityKeys[i]];
+                entity.ComputeVelocityForDirtyPropagation(deltaTime);
+                tickBuf.VoxelEntities[entityKeys[i]] = entity;
             }
     Profiler.EndSample();
 
     Profiler.BeginSample("Clear Require Updates");
-            foreach (var e in entities.Values)
+            for (int i = 0; i < entityKeys.Length; i++)
             {
-                e.ClearRequireUpdates();
+                var entity = tickBuf.VoxelEntities[entityKeys[i]];
+                entity.ClearRequireUpdates();
+                tickBuf.VoxelEntities[entityKeys[i]] = entity;
             }
     Profiler.EndSample();
 
@@ -257,11 +263,6 @@ Profiler.BeginSample("Dirty Propagation");
     Profiler.EndSample();
 
     Profiler.BeginSample("Alien Propagation");
-            foreach(var kvp in entities)
-            {
-                tickBuf.VoxelEntities[kvp.Key] = entities[kvp.Key].GetDataCopy();
-            }
-
             AlienDirtyPropagation.Propagate(tickBuf.VoxelEntities.GetValueArray(Allocator.TempJob), new AlienDirtyPropagationSettings
             {
                 FlagsToPropagate = DirtyFlags.All,
@@ -272,10 +273,13 @@ Profiler.BeginSample("Dirty Propagation");
     Profiler.EndSample();
 
     Profiler.BeginSample("Clear Dirty Flags");
-            foreach(var e in entities.Values)
+            for (int i = 0; i < entityKeys.Length; i++)
             {
-                e.ClearDirtyFlags();
+                var entity = tickBuf.VoxelEntities[entityKeys[i]];
+                entity.ClearDirtyFlags();
+                tickBuf.VoxelEntities[entityKeys[i]] = entity;
             }
+            entityKeys.Dispose();
     Profiler.EndSample();
 Profiler.EndSample();
 
