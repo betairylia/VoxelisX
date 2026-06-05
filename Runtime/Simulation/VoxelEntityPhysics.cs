@@ -65,6 +65,16 @@ namespace Voxelis.Simulation
             }
         }
 
+        /// <remarks>
+        /// LIMITATION: only the diagonal of the inertia tensor is accumulated
+        /// (Ixx, Iyy, Izz). The products of inertia (Ixy, Ixz, Iyz) are not computed,
+        /// and the downstream rigid body forces its motion (principal-axis) frame to be
+        /// axis-aligned with the body (BodyFromMotion rotation = identity). This is exact
+        /// only when the mass distribution's principal axes coincide with the voxel-grid
+        /// axes (e.g. symmetric bodies); an asymmetric voxel body (L-shape, diagonally
+        /// weighted) will rotate without the correct inertial coupling. Computing the full
+        /// symmetric tensor + eigendecomposition for BodyFromMotion is future work.
+        /// </remarks>
         [BurstCompile]
         public static SectorMassMoments ComputeSectorMassMoments(
             Sector sector,

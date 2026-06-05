@@ -103,9 +103,8 @@ namespace Voxelis.Rendering
         /// Gets the estimated host memory usage in bytes for this renderer's buffers.
         /// </summary>
         public ulong MemoryUsage =>
-            (ulong)(hostBrickBuffer.IsCreated
-                ? (hostBrickBuffer.Capacity * sizeof(int))
-                : 0 + (hostAABBBuffer.IsCreated ? hostAABBBuffer.Capacity * sizeof(float) * 6 : 0));
+            (ulong)((hostBrickBuffer.IsCreated ? hostBrickBuffer.Capacity * sizeof(int) : 0)
+                  + (hostAABBBuffer.IsCreated ? hostAABBBuffer.Capacity * sizeof(float) * 6 : 0));
 
         /// <summary>
         /// Gets the estimated VRAM usage in bytes for this renderer's GPU buffers.

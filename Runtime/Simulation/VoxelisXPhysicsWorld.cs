@@ -48,6 +48,10 @@ namespace Voxelis.Simulation
 
         [Tooltip("Multithreading enabled")] public bool multiThreaded = true;
 
+        [Header("Debug")]
+        [Tooltip("Log per-step collision-world / broadphase diagnostics for the first few frames.")]
+        public bool verboseLogging = false;
+
         [HideInInspector] public NativeReference<int> haveStaticBodiesChanged;
 
         public override void Init()
@@ -109,7 +113,7 @@ namespace Voxelis.Simulation
             debugFrameCount++;
 
             // Debug: Check collision world before simulation (first 10 frames only)
-            if (debugFrameCount <= 10)
+            if (verboseLogging && debugFrameCount <= 10)
             {
                 UnityEngine.Debug.Log($"[SimStep {debugFrameCount}] CollisionWorld NumBodies: {physicsWorld.CollisionWorld.NumBodies}, NumDynamic: {physicsWorld.CollisionWorld.NumDynamicBodies}, NumStatic: {physicsWorld.CollisionWorld.NumStaticBodies}");
             }
@@ -125,7 +129,7 @@ namespace Voxelis.Simulation
             Profiler.EndSample();
 
             Profiler.BeginSample("Physics Debug Post-Broadphase");
-            if (debugFrameCount <= 10)
+            if (verboseLogging && debugFrameCount <= 10)
             {
                 UnityEngine.Debug.Log($"[SimStep {debugFrameCount}] Broadphase built successfully");
             }
@@ -201,8 +205,8 @@ namespace Voxelis.Simulation
             simulation.Dispose();
             physicsWorld.Dispose();
             haveStaticBodiesChanged.Dispose();
-            
-            Debug.Log("Physics Disposed!");
+
+            if (verboseLogging) Debug.Log("Physics Disposed!");
         }
     }
 }
