@@ -307,14 +307,18 @@ namespace Voxelis
                 ref Sector sector = ref kvp.Value.Get();
 
                 // O(1) check: Skip if sector has no cross-sector propagation needs
-                if (sector.sectorNeighborsToCreate == 0) continue;
+                uint candidateDirs = sector.sectorNeighborsToCreate;
+                if (candidateDirs == 0) continue;
 
-                // O(26) loop: Check each of 26 possible neighbor sectors
+                // Single O(bricks) pass accumulating which boundary directions actually have an
+                // allocation-capable dirty brick pointing across them. Replaces the previous
+                // O(bricks * 26) (a full brick scan repeated once per candidate direction).
+                uint allocatingDirs = AllocatingNeighborDirections(ref sector, allocationFlags, candidateDirs);
+                if (allocatingDirs == 0) continue;
+
                 for (int dir = 0; dir < NeighborhoodSettings.neighborhoodCount; dir++)
                 {
-                    // Skip if this neighbor sector doesn't need creation
-                    if (!NeighborhoodSettings.HasDirection(sector.sectorNeighborsToCreate, dir)) continue;
-                    if (!HasDirtyBrickThatCanAllocateNeighbor(ref sector, dir, allocationFlags)) continue;
+                    if (!NeighborhoodSettings.HasDirection(allocatingDirs, dir)) continue;
 
                     int3 neighborSectorPos = sectorPos + NeighborhoodSettings.Directions[dir];
 
@@ -333,20 +337,32 @@ namespace Voxelis
             }
         }
 
-        private static bool HasDirtyBrickThatCanAllocateNeighbor(ref Sector sector, int dir, ushort allocationFlags)
+        /// <summary>
+        /// One pass over a sector's bricks accumulating which boundary directions have at least
+        /// one dirty brick (carrying an allocation-capable flag) whose direction mask points across
+        /// that boundary. Restricted to <paramref name="candidateDirs"/> (the sector-level
+        /// neighbors-to-create mask) so the scan can stop as soon as every candidate is satisfied.
+        /// Semantically equivalent to the previous per-direction scan, but O(bricks) instead of
+        /// O(bricks * directions).
+        /// </summary>
+        private static uint AllocatingNeighborDirections(ref Sector sector, ushort allocationFlags, uint candidateDirs)
         {
             int totalBricks = Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS;
+            uint found = 0;
 
             for (int brickIdx = 0; brickIdx < totalBricks; brickIdx++)
             {
                 if ((sector.brickDirtyFlags[brickIdx] & allocationFlags) == 0) continue;
-                if (!NeighborhoodSettings.HasDirection(sector.brickDirtyDirectionMask[brickIdx], dir)) continue;
-                if (!NeighborhoodSettings.HasDirection(Sector.GetBrickSectorNeighborMask(brickIdx), dir)) continue;
 
-                return true;
+                found |= sector.brickDirtyDirectionMask[brickIdx]
+                         & Sector.GetBrickSectorNeighborMask(brickIdx)
+                         & candidateDirs;
+
+                // Every candidate direction already accounted for — no need to scan further.
+                if (found == candidateDirs) break;
             }
 
-            return false;
+            return found;
         }
 
         /// <summary>
