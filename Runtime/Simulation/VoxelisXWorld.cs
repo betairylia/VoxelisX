@@ -273,6 +273,11 @@ Profiler.BeginSample("Dirty Propagation");
                 // by the final copy-back — still pointed at (a use-after-free that only surfaced when a
                 // boundary brick spawned a new neighbor sector mid-tick). Operating on tickBuf keeps a
                 // single consistent sectors map across the whole propagation phase.
+                //
+                // INVARIANT (load-bearing): the propagation phase may only ADD sectors to this working
+                // copy — it must never free or relocate an existing Sector* — so the managed entity's
+                // still-aliased pre-realloc sectors entries keep pointing at live Sector structs until
+                // copy-back adopts the grown map. Don't introduce RemoveSectorAt / Sector disposal here.
                 tickBuf.VoxelEntities[entityKeys[i]] = entity;
             }
 
