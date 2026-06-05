@@ -317,15 +317,15 @@ namespace VoxelisX.Tests
                 tickBuf.VoxelEntities.Add(guid, scope.Data);
                 tickBuf.VoxelBodies.Add(guid, bodyData);
 
+                // AsJobWriter now reserves capacity for N commands and returns a
+                // ParallelWriter-backed writer (AddNoResize); no foreach-index bookkeeping.
                 VoxelBodyForceCommandStream.JobWriter writer = commands.AsJobWriter(1);
-                writer.BeginForEachIndex(0);
                 float3 centerOfMass = bodyData.massProperties.centerOfMass;
                 writer.AddForceAtPosition(
                     guid,
                     new float3(2f, 0f, 0f),
                     centerOfMass + new float3(0f, 1f, 0f),
                     VoxelBodyForceMode.Impulse);
-                writer.EndForEachIndex();
                 commands.ApplyTo(ref tickBuf, 1f);
 
                 VoxelBodyData updatedBody = tickBuf.VoxelBodies[guid];
