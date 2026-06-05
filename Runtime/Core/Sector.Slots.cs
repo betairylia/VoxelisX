@@ -1,7 +1,5 @@
 using System;
 using System.Runtime.CompilerServices;
-using System.Threading;
-using Codice.CM.SEIDInfo;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
@@ -183,8 +181,7 @@ namespace Voxelis
                 if (value.Equals(default)) return;
 
                 // Lock and alloc
-                while (Interlocked.Read(ref _sectorAllocLock) != 0) {}
-                Interlocked.Increment(ref _sectorAllocLock);
+                AcquireSpinGate(ref _sectorAllocLock);
 
                 targetBrickMap.AddBrick(new int3(bx, by, bz), out int newId, out bool exceedsCapacity);
                 bid = (short)newId;
@@ -202,7 +199,7 @@ namespace Voxelis
                 }
                 
                 // Release the lock
-                Interlocked.Decrement(ref _sectorAllocLock);
+                ReleaseSpinGate(ref _sectorAllocLock);
             }
 
             // Brick exists, corresponding slot may not be allocated yet
@@ -221,14 +218,13 @@ namespace Voxelis
             // Allocate the slot if not yet allocated for this sector
             if (!slot->IsCreated)
             {
-                while (Interlocked.Read(ref _sectorAllocLock) != 0) {}
-                Interlocked.Increment(ref _sectorAllocLock);
-                
+                AcquireSpinGate(ref _sectorAllocLock);
+
                 // TODO: Is this _allocator okay?
                 targetSlots[(int)slotId] =
                     SectorSlotStorage.New(UnsafeUtility.SizeOf<T>(), targetBrickMap.Capacity, _allocator);
-                
-                Interlocked.Decrement(ref _sectorAllocLock);
+
+                ReleaseSpinGate(ref _sectorAllocLock);
             }
             
             // Set the data

@@ -74,9 +74,30 @@ namespace Voxelis
         /// </summary>
         public bool IsRendererRequireUpdate => (sectorRequireUpdateFlags & (ushort)(DirtyFlags.GeometryWithLocalNeighbor | DirtyFlags.BlockBrickAdded | DirtyFlags.BlockBrickRemoved)) != 0;
 
-        // Lock for brick-thread-safe write
+        // Binary spin gates (0 = free, 1 = held) guarding the rare brick-/slot-allocation
+        // and sector-flag-aggregation critical sections. Acquired/released only through
+        // AcquireSpinGate/ReleaseSpinGate so the test-and-set stays a single atomic op.
         private long _sectorAllocLock, _sectorSetDirtyLock;
         private Allocator _allocator;
+
+        /// <summary>
+        /// Atomically acquires a binary spin gate. Burst-safe (Interlocked only, no managed
+        /// SpinWait). Unlike the previous Read-then-Increment pair, CompareExchange performs
+        /// the test-and-set as one atomic operation, so two threads can never both observe
+        /// the gate as free and both "acquire" it.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void AcquireSpinGate(ref long gate)
+        {
+            while (Interlocked.CompareExchange(ref gate, 1L, 0L) != 0L) { }
+        }
+
+        /// <summary>Releases a binary spin gate acquired via <see cref="AcquireSpinGate"/>.</summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void ReleaseSpinGate(ref long gate)
+        {
+            Interlocked.Exchange(ref gate, 0L);
+        }
 
         /// <summary>
         /// Gets the number of non-empty bricks allocated in this sector.
@@ -435,24 +456,16 @@ namespace Voxelis
             uint crossSectorPropagation = directionMask & brickSectorNeighborMask;
             if (crossSectorPropagation != 0)
             {
-                // Wait until lock release
-                while (Interlocked.Read(ref _sectorSetDirtyLock) != 0) { }
-                Interlocked.Increment(ref _sectorSetDirtyLock);
-                
+                AcquireSpinGate(ref _sectorSetDirtyLock);
                 sectorNeighborsToCreate |= crossSectorPropagation;
-                
-                Interlocked.Decrement(ref _sectorSetDirtyLock);
+                ReleaseSpinGate(ref _sectorSetDirtyLock);
             }
 
             if ((sectorDirtyFlags & (ushort)flags) == (ushort)flags) return;
 
-            // Wait until lock release
-            while(Interlocked.Read(ref _sectorSetDirtyLock) != 0) {}
-            Interlocked.Increment(ref _sectorSetDirtyLock);
-
+            AcquireSpinGate(ref _sectorSetDirtyLock);
             sectorDirtyFlags |= (ushort)flags;
-
-            Interlocked.Decrement(ref _sectorSetDirtyLock);
+            ReleaseSpinGate(ref _sectorSetDirtyLock);
         }
 
         /// <summary>
