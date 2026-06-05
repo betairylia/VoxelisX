@@ -75,26 +75,25 @@ namespace Voxelis
     /// </summary>
     public sealed class VoxelBodyForceCommandStream : IDisposable
     {
-        public const int MainThreadForEachIndex = 0;
-        public const int DefaultForEachCount = 128;
+        public const int DefaultInitialCapacity = 128;
 
+        /// <summary>
+        /// Parallel writer for jobs, backed by <see cref="NativeList{T}.ParallelWriter"/>. The owning
+        /// stream must reserve capacity via <see cref="VoxelBodyForceCommandStream.AsJobWriter"/> before
+        /// the job is scheduled — the writer only does AddNoResize and will not grow the buffer.
+        /// </summary>
         public struct JobWriter
         {
-            public NativeStream.Writer StreamWriter;
-
-            public void BeginForEachIndex(int jobIndex)
-            {
-                StreamWriter.BeginForEachIndex(VoxelBodyForceCommandStream.JobForEachIndex(jobIndex));
-            }
+            public NativeList<VoxelBodyForceCommand>.ParallelWriter Writer;
 
             public void AddForce(Guid128 bodyId, float3 force, VoxelBodyForceMode mode = VoxelBodyForceMode.Force)
             {
-                StreamWriter.Write(VoxelBodyForceCommand.Force(bodyId, force, mode));
+                Writer.AddNoResize(VoxelBodyForceCommand.Force(bodyId, force, mode));
             }
 
             public void AddTorque(Guid128 bodyId, float3 torque, VoxelBodyForceMode mode = VoxelBodyForceMode.Force)
             {
-                StreamWriter.Write(VoxelBodyForceCommand.Torque(bodyId, torque, mode));
+                Writer.AddNoResize(VoxelBodyForceCommand.Torque(bodyId, torque, mode));
             }
 
             public void AddForceAtPosition(
@@ -103,61 +102,60 @@ namespace Voxelis
                 float3 worldPosition,
                 VoxelBodyForceMode mode = VoxelBodyForceMode.Force)
             {
-                StreamWriter.Write(VoxelBodyForceCommand.ForceAtPosition(bodyId, force, worldPosition, mode));
-            }
-
-            public void EndForEachIndex()
-            {
-                StreamWriter.EndForEachIndex();
+                Writer.AddNoResize(VoxelBodyForceCommand.ForceAtPosition(bodyId, force, worldPosition, mode));
             }
         }
 
         private readonly Allocator allocator;
         private readonly object syncRoot = new object();
-        private NativeStream stream;
-        private NativeStream.Writer mainThreadWriter;
-        private int forEachCount;
-        private bool mainThreadWriterOpen;
 
-        public VoxelBodyForceCommandStream(Allocator allocator, int initialForEachCount = DefaultForEachCount)
+        // Persistent command buffer, reused across frames (cleared in ApplyTo) so steady-state
+        // force submission allocates nothing. Replaces the previous per-frame NativeStream churn.
+        private NativeList<VoxelBodyForceCommand> commands;
+
+        public VoxelBodyForceCommandStream(Allocator allocator, int initialCapacity = DefaultInitialCapacity)
         {
             this.allocator = allocator;
-            BeginFrame(initialForEachCount);
+            commands = new NativeList<VoxelBodyForceCommand>(math.max(1, initialCapacity), allocator);
         }
 
-        public int ForEachCount => forEachCount;
-
-        public static int JobForEachIndex(int jobIndex) => jobIndex + 1;
+        public int Count
+        {
+            get { lock (syncRoot) { return commands.IsCreated ? commands.Length : 0; } }
+        }
 
         /// <summary>
-        /// Returns a writer for jobs. Job writers must use unique foreach indices in
-        /// [1, ForEachCount); index 0 is reserved for main-thread convenience calls.
-        /// For an IJobParallelFor, schedule at most ForEachCount - 1 iterations and
-        /// call JobWriter.BeginForEachIndex(index) in each Execute.
+        /// Reserves room for <paramref name="additionalCommands"/> more entries and returns a parallel
+        /// writer for jobs. Call on the main thread before scheduling; the returned writer only does
+        /// AddNoResize, so the reservation must cover every concurrent write the job will perform.
         /// </summary>
-        public JobWriter AsJobWriter(int jobForEachCount)
+        public JobWriter AsJobWriter(int additionalCommands)
         {
             lock (syncRoot)
             {
-                if (jobForEachCount < 0 || JobForEachIndex(jobForEachCount - 1) >= forEachCount)
+                if (additionalCommands < 0)
                 {
-                    throw new ArgumentOutOfRangeException(
-                        nameof(jobForEachCount),
-                        $"Force command stream supports {forEachCount - 1} job foreach indices.");
+                    throw new ArgumentOutOfRangeException(nameof(additionalCommands));
                 }
 
-                return new JobWriter { StreamWriter = stream.AsWriter() };
+                int required = commands.Length + additionalCommands;
+                if (commands.Capacity < required)
+                {
+                    commands.Capacity = required;
+                }
+
+                return new JobWriter { Writer = commands.AsParallelWriter() };
             }
         }
 
         public void AddForce(Guid128 bodyId, float3 force, VoxelBodyForceMode mode = VoxelBodyForceMode.Force)
         {
-            WriteMainThread(VoxelBodyForceCommand.Force(bodyId, force, mode));
+            Write(VoxelBodyForceCommand.Force(bodyId, force, mode));
         }
 
         public void AddTorque(Guid128 bodyId, float3 torque, VoxelBodyForceMode mode = VoxelBodyForceMode.Force)
         {
-            WriteMainThread(VoxelBodyForceCommand.Torque(bodyId, torque, mode));
+            Write(VoxelBodyForceCommand.Torque(bodyId, torque, mode));
         }
 
         public void AddForceAtPosition(
@@ -166,27 +164,20 @@ namespace Voxelis
             float3 worldPosition,
             VoxelBodyForceMode mode = VoxelBodyForceMode.Force)
         {
-            WriteMainThread(VoxelBodyForceCommand.ForceAtPosition(bodyId, force, worldPosition, mode));
+            Write(VoxelBodyForceCommand.ForceAtPosition(bodyId, force, worldPosition, mode));
         }
 
         public void ApplyTo(ref VoxelisXWorld.WorldStageInputs tickBuf, float deltaTime)
         {
             lock (syncRoot)
             {
-                EndMainThreadWrites();
-
-                NativeStream.Reader reader = stream.AsReader();
-                for (int forEachIndex = 0; forEachIndex < forEachCount; forEachIndex++)
+                for (int i = 0; i < commands.Length; i++)
                 {
-                    int itemCount = reader.BeginForEachIndex(forEachIndex);
-                    for (int i = 0; i < itemCount; i++)
-                    {
-                        ApplyCommand(ref tickBuf, reader.Read<VoxelBodyForceCommand>(), deltaTime);
-                    }
-                    reader.EndForEachIndex();
+                    ApplyCommand(ref tickBuf, commands[i], deltaTime);
                 }
 
-                BeginFrame(forEachCount);
+                // Reuse the buffer next frame; Clear keeps capacity, so steady state allocates nothing.
+                commands.Clear();
             }
         }
 
@@ -194,51 +185,18 @@ namespace Voxelis
         {
             lock (syncRoot)
             {
-                EndMainThreadWrites();
-                if (stream.IsCreated)
+                if (commands.IsCreated)
                 {
-                    stream.Dispose();
+                    commands.Dispose();
                 }
             }
         }
 
-        private void BeginFrame(int requestedForEachCount)
-        {
-            if (stream.IsCreated)
-            {
-                stream.Dispose();
-            }
-
-            forEachCount = math.max(1, requestedForEachCount);
-            stream = new NativeStream(forEachCount, allocator);
-            mainThreadWriter = stream.AsWriter();
-            mainThreadWriter.BeginForEachIndex(MainThreadForEachIndex);
-            mainThreadWriterOpen = true;
-        }
-
-        private void EndMainThreadWrites()
-        {
-            if (!mainThreadWriterOpen)
-            {
-                return;
-            }
-
-            mainThreadWriter.EndForEachIndex();
-            mainThreadWriterOpen = false;
-        }
-
-        private void WriteMainThread(VoxelBodyForceCommand command)
+        private void Write(VoxelBodyForceCommand command)
         {
             lock (syncRoot)
             {
-                if (!mainThreadWriterOpen)
-                {
-                    mainThreadWriter = stream.AsWriter();
-                    mainThreadWriter.BeginForEachIndex(MainThreadForEachIndex);
-                    mainThreadWriterOpen = true;
-                }
-
-                mainThreadWriter.Write(command);
+                commands.Add(command);
             }
         }
 
