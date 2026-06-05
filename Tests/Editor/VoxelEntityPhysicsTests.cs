@@ -216,15 +216,17 @@ namespace VoxelisX.Tests
                     default);
                 buildHandle.Complete();
 
-                Unity.Physics.MotionData exportedMotionData = world.MotionDatas[0];
+                NativeArray<Unity.Physics.MotionData> motionDatas = world.MotionDatas;
+                Unity.Physics.MotionData exportedMotionData = motionDatas[0];
                 exportedMotionData.WorldFromMotion = new RigidTransform(quaternion.identity, new float3(10f, 20f, 30f));
-                world.MotionDatas[0] = exportedMotionData;
+                motionDatas[0] = exportedMotionData;
 
-                Unity.Physics.MotionVelocity exportedMotionVelocity = world.MotionVelocities[0];
+                NativeArray<Unity.Physics.MotionVelocity> motionVelocities = world.MotionVelocities;
+                Unity.Physics.MotionVelocity exportedMotionVelocity = motionVelocities[0];
                 exportedMotionVelocity.LinearVelocity = new float3(2f, 4f, 6f);
                 exportedMotionVelocity.AngularVelocity = new float3(1f, 3f, 5f);
                 exportedMotionVelocity.GravityFactor = 0.75f;
-                world.MotionVelocities[0] = exportedMotionVelocity;
+                motionVelocities[0] = exportedMotionVelocity;
 
                 JobHandle exportHandle = VoxelisXPhysicsInterface.SchedulePhysicsWorldExport(
                     ref tickBuf,
@@ -249,6 +251,90 @@ namespace VoxelisX.Tests
                 }
 
                 world.Dispose();
+                tickBuf.VoxelEntities.Dispose();
+                tickBuf.VoxelBodies.Dispose();
+                bodyData.Dispose();
+            }
+        }
+
+        [Test]
+        public void BodyForceCommandStreamAppliesMainThreadForceBeforePhysicsBuild()
+        {
+            using var scope = new EntityDataTestScope();
+            SectorHandle sector = scope.AddSector(int3.zero);
+            sector.SetBlock(0, 0, 0, new Block(1));
+
+            Guid128 guid = new Guid128(9, 10, 11, 12);
+            var bodyData = new VoxelBodyData(Allocator.Persistent);
+            var tickBuf = new VoxelisXWorld.WorldStageInputs
+            {
+                VoxelEntities = new NativeHashMap<Guid128, VoxelEntityData>(1, Allocator.Persistent),
+                VoxelBodies = new NativeHashMap<Guid128, VoxelBodyData>(1, Allocator.Persistent)
+            };
+            var commands = new VoxelBodyForceCommandStream(Allocator.Persistent);
+
+            try
+            {
+                bodyData.ComputeMassProperties(scope.Data.sectors);
+                tickBuf.VoxelEntities.Add(guid, scope.Data);
+                tickBuf.VoxelBodies.Add(guid, bodyData);
+
+                commands.AddForce(guid, new float3(4f, 0f, 0f), VoxelBodyForceMode.Force);
+                commands.ApplyTo(ref tickBuf, 0.5f);
+
+                VoxelBodyData updatedBody = tickBuf.VoxelBodies[guid];
+                Assert.That(updatedBody.motionVelocity.LinearVelocity, Is.EqualTo(new float3(2f, 0f, 0f)));
+            }
+            finally
+            {
+                commands.Dispose();
+                tickBuf.VoxelEntities.Dispose();
+                tickBuf.VoxelBodies.Dispose();
+                bodyData.Dispose();
+            }
+        }
+
+        [Test]
+        public void BodyForceCommandStreamAppliesOffCenterImpulseTorque()
+        {
+            using var scope = new EntityDataTestScope();
+            SectorHandle sector = scope.AddSector(int3.zero);
+            sector.SetBlock(0, 0, 0, new Block(1));
+            sector.SetBlock(2, 0, 0, new Block(1));
+
+            Guid128 guid = new Guid128(13, 14, 15, 16);
+            var bodyData = new VoxelBodyData(Allocator.Persistent);
+            var tickBuf = new VoxelisXWorld.WorldStageInputs
+            {
+                VoxelEntities = new NativeHashMap<Guid128, VoxelEntityData>(1, Allocator.Persistent),
+                VoxelBodies = new NativeHashMap<Guid128, VoxelBodyData>(1, Allocator.Persistent)
+            };
+            var commands = new VoxelBodyForceCommandStream(Allocator.Persistent);
+
+            try
+            {
+                bodyData.ComputeMassProperties(scope.Data.sectors);
+                tickBuf.VoxelEntities.Add(guid, scope.Data);
+                tickBuf.VoxelBodies.Add(guid, bodyData);
+
+                VoxelBodyForceCommandStream.JobWriter writer = commands.AsJobWriter(1);
+                writer.BeginForEachIndex(0);
+                float3 centerOfMass = bodyData.massProperties.centerOfMass;
+                writer.AddForceAtPosition(
+                    guid,
+                    new float3(2f, 0f, 0f),
+                    centerOfMass + new float3(0f, 1f, 0f),
+                    VoxelBodyForceMode.Impulse);
+                writer.EndForEachIndex();
+                commands.ApplyTo(ref tickBuf, 1f);
+
+                VoxelBodyData updatedBody = tickBuf.VoxelBodies[guid];
+                Assert.That(updatedBody.motionVelocity.LinearVelocity, Is.EqualTo(new float3(1f, 0f, 0f)));
+                Assert.That(updatedBody.motionVelocity.AngularVelocity, Is.EqualTo(new float3(0f, 0f, -1f)));
+            }
+            finally
+            {
+                commands.Dispose();
                 tickBuf.VoxelEntities.Dispose();
                 tickBuf.VoxelBodies.Dispose();
                 bodyData.Dispose();

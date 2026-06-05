@@ -1,6 +1,9 @@
 ﻿using Unity.Collections;
+using Unity.Entities;
+using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Serialization;
+using Voxelis.Utils;
 
 namespace Voxelis
 {
@@ -30,6 +33,8 @@ namespace Voxelis
         private VoxelBodyData data;
 
         public VoxelBodyData GetDataCopy() => data;
+
+        public Guid128 PersistentGuid => entity.PersistentGuid;
 
         public void CopyDataFrom(VoxelBodyData srcData)
         {
@@ -96,6 +101,24 @@ namespace Voxelis
 
         public VoxelBodyData.MassProperties massProperties => data.massProperties;
 
+        public void AddForce(Vector3 force, VoxelBodyForceMode mode = VoxelBodyForceMode.Force)
+        {
+            CurrentForceCommands()?.AddForce(PersistentGuid, ToFloat3(force), mode);
+        }
+
+        public void AddTorque(Vector3 torque, VoxelBodyForceMode mode = VoxelBodyForceMode.Force)
+        {
+            CurrentForceCommands()?.AddTorque(PersistentGuid, ToFloat3(torque), mode);
+        }
+
+        public void AddForceAtPosition(
+            Vector3 force,
+            Vector3 worldPosition,
+            VoxelBodyForceMode mode = VoxelBodyForceMode.Force)
+        {
+            CurrentForceCommands()?.AddForceAtPosition(PersistentGuid, ToFloat3(force), ToFloat3(worldPosition), mode);
+        }
+
         /// <summary>
         /// Computes mass properties (mass, center of mass, inertia tensor) for this voxel body.
         /// Uses cached per-sector origin moments and only refreshes geometry-dirty sectors after the initial build.
@@ -126,6 +149,16 @@ namespace Voxelis
             if (body == null) return;
             Gizmos.color = Color.red;
             Gizmos.DrawSphere(transform.TransformPoint(body.centerOfMass), 0.25f);
+        }
+
+        private static VoxelBodyForceCommandStream CurrentForceCommands()
+        {
+            return (VoxelisXCoreWorld.instance as VoxelisXWorld)?.BodyForceCommands;
+        }
+
+        private static float3 ToFloat3(Vector3 value)
+        {
+            return new float3(value.x, value.y, value.z);
         }
     }
 }

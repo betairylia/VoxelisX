@@ -66,6 +66,9 @@ namespace Voxelis
         private WorldStageInputs tickBuf;
         private AutomataStageInputs automataTickBuf;
         private NativeList<AlienEntityView> alienEntityViews;
+        private VoxelBodyForceCommandStream bodyForceCommands;
+
+        public VoxelBodyForceCommandStream BodyForceCommands => bodyForceCommands;
         
         public override void Init()
         {
@@ -78,6 +81,7 @@ namespace Voxelis
             tickBuf.VoxelBodies = new NativeHashMap<Guid128, VoxelBodyData>(1, Allocator.Persistent);
             automataTickBuf.BricksRequiredUpdate = new NativeList<BrickInfo>(Allocator.Persistent);
             alienEntityViews = new NativeList<AlienEntityView>(Allocator.Persistent);
+            bodyForceCommands = new VoxelBodyForceCommandStream(Allocator.Persistent);
         }
 
         /// <summary>
@@ -101,7 +105,7 @@ namespace Voxelis
         /// <param name="e">The entity to remove.</param>
         public void RemoveBody(VoxelBody b)
         {
-            entities.Remove(b.entity.PersistentGuid);
+            bodies.Remove(b.entity.PersistentGuid);
         }
 
         protected override void ReleaseResources()
@@ -110,6 +114,7 @@ namespace Voxelis
             tickBuf.VoxelBodies.Dispose();
             automataTickBuf.BricksRequiredUpdate.Dispose();
             alienEntityViews.Dispose();
+            bodyForceCommands?.Dispose();
             base.ReleaseResources();
         }
 
@@ -224,6 +229,10 @@ Profiler.BeginSample("Apply Sector Snapshots");
                     kvp.Value.ApplySnapshot();
                 }
             }
+Profiler.EndSample();
+
+Profiler.BeginSample("Apply Body Force Commands");
+            bodyForceCommands?.ApplyTo(ref tickBuf, deltaTime);
 Profiler.EndSample();
 
 Profiler.BeginSample("Physics Step");
