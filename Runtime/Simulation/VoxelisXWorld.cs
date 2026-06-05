@@ -262,9 +262,18 @@ Profiler.BeginSample("Dirty Propagation");
 
     Profiler.BeginSample("Propagate Dirty Flags");
             JobHandle handle = new JobHandle();
-            foreach(var e in entities.Values)
+            for (int i = 0; i < entityKeys.Length; i++)
             {
-                handle = JobHandle.CombineDependencies(handle, e.PropagateDirtyFlags(DirtyFlags.All, true));
+                var entity = tickBuf.VoxelEntities[entityKeys[i]];
+                handle = JobHandle.CombineDependencies(handle, entity.PropagateDirtyFlags(DirtyFlags.All, true));
+
+                // Persist sector growth from EnsureNeighborSectorsForDirtyBoundaries into the working
+                // copy. This previously ran on the managed entities, whose sectors hashmap could
+                // realloc and free the buffer that tickBuf — read just below by Alien Propagation and
+                // by the final copy-back — still pointed at (a use-after-free that only surfaced when a
+                // boundary brick spawned a new neighbor sector mid-tick). Operating on tickBuf keeps a
+                // single consistent sectors map across the whole propagation phase.
+                tickBuf.VoxelEntities[entityKeys[i]] = entity;
             }
 
         Profiler.BeginSample("Burst");
