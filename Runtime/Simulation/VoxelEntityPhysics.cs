@@ -66,7 +66,7 @@ namespace Voxelis.Simulation
         }
 
         /// <remarks>
-        /// LIMITATION: only the diagonal of the inertia tensor is accumulated
+        /// TODO: LIMITATION: only the diagonal of the inertia tensor is accumulated
         /// (Ixx, Iyy, Izz). The products of inertia (Ixy, Ixz, Iyz) are not computed,
         /// and the downstream rigid body forces its motion (principal-axis) frame to be
         /// axis-aligned with the body (BodyFromMotion rotation = identity). This is exact
