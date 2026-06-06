@@ -27,25 +27,36 @@ namespace Voxelis
         public TickStage<WorldStageInputs> physicsStage;
         public TickStage<AutomataStageInputs> automataStage;
 
+        // ---------------- COMPONENTS ------------------
         [Header("Components")]
         [SerializeField] protected VoxelisXPhysicsWorld physicsWorld;
 
         [SerializeField] protected VoxelRayCast rayCaster;
         [SerializeField] protected VoxelisXRenderer rayTracedRenderer;
         [SerializeField] protected VoxelMeshRendererComponent meshingRenderer;
-        
-        [Header("Performance")] public float targetTPS = 100.0f;
+
+        // ---------------- PERFORMANCE ------------------
+        [Header("Performance")]
+        public float targetTPS = 100.0f;
         public float slowmo = 1.0f;
+
+        // ---------------- ALIEN DIRTY PROPAGATION ------------------
         [Header("Alien Dirty Propagation")]
+        public bool doAlienPropagation = false;
         [SerializeField] private int alienSpatialCellSize = 64;
         [SerializeField] private DirtyFlags alienMotionDirtyMask = DirtyFlags.GeneralAutomata;
         [SerializeField] private int alienDirtyHaloVoxels = 1;
-        [Header("Debug")] public bool freeze = true;
+        
+        // ---------------- DEBUG ------------------
+        [Header("Debug")]
+        public bool freeze = true;
         public bool isFirst = true;
+
         private float timer = 0.0f;
 
         private const string DefaultSaveLoadFileName = "voxelisx-world.vxw";
 
+        // ---------------- SAVE / LOAD ------------------
         [Header("Save / Load")]
         [SerializeField] private string saveLoadPath = DefaultSaveLoadFileName;
         
@@ -287,13 +298,16 @@ Profiler.BeginSample("Dirty Propagation");
     Profiler.EndSample();
 
     Profiler.BeginSample("Alien Propagation");
-            AlienDirtyPropagation.Propagate(tickBuf.VoxelEntities.GetValueArray(Allocator.TempJob), new AlienDirtyPropagationSettings
+            if (doAlienPropagation)
             {
-                FlagsToPropagate = DirtyFlags.All,
-                AlienMotionDirtyMask = alienMotionDirtyMask,
-                SpatialCellSize = alienSpatialCellSize,
-                DirtyHaloVoxels = alienDirtyHaloVoxels,
-            });
+                AlienDirtyPropagation.Propagate(tickBuf.VoxelEntities.GetValueArray(Allocator.TempJob), new AlienDirtyPropagationSettings
+                {
+                    FlagsToPropagate = DirtyFlags.All,
+                    AlienMotionDirtyMask = alienMotionDirtyMask,
+                    SpatialCellSize = alienSpatialCellSize,
+                    DirtyHaloVoxels = alienDirtyHaloVoxels,
+                });
+            }
     Profiler.EndSample();
 
     Profiler.BeginSample("Clear Dirty Flags");

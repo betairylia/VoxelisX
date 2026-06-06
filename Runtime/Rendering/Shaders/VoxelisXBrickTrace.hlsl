@@ -293,9 +293,8 @@ inline float VoxelisXTraceBrickRay(float3 entryPositionInBrick, float3 rayDir, f
     int3 cell = int3(floor(origin));
     int3 prevCell = cell;
     
-    // hit.t = entryT;
-    // hit.materialID_faceNormal = ((entryNormal_coarseOccupancy & 0xFFFF) << 16) + (entryNormal_coarseOccupancy >> 26);
-    // return true;
+    // attrib.matID_faceNormal = ((entryNormal_coarseOccupancy & 0xFFFF) << 16) + (entryNormal_coarseOccupancy >> 26);
+    // return entryT;
 
     [loop] for (uint rayStep = 0; rayStep < BRICK_RAY_MAX_STEPS; rayStep++)
     {
