@@ -47,4 +47,17 @@ namespace Voxelis.Mathematics
             return new AABB { Min = worldMin, Max = worldMax };
         }
     }
+
+    [BurstCompile]
+    public struct AABBInt
+    {
+        public int3 Min;
+        public int3 Max;
+
+        public void Update(int3 point)
+        {
+            Min = math.min(Min, point);
+            Max = math.max(Max, point);
+        }
+    }
 }

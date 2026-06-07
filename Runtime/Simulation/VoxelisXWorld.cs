@@ -169,7 +169,6 @@ Profiler.BeginSample("Fill TickBuffer");
 
                 if (bodies.TryGetValue(kvp.Key, out var b))
                 {
-                    b.ComputeMassProperties();
                     tickBuf.VoxelBodies.Add(b.entity.PersistentGuid, b.GetDataCopy());
                 }
             }
@@ -239,6 +238,15 @@ Profiler.BeginSample("Apply Sector Snapshots");
                 {
                     kvp.Value.ApplySnapshot();
                 }
+            }
+Profiler.EndSample();
+
+Profiler.BeginSample("Recompute body mass properties");
+            foreach (var b in tickBuf.VoxelBodies.GetKeyArray(Allocator.Temp))
+            {
+                var body = tickBuf.VoxelBodies[b];
+                body.ComputePhysicsProperties(tickBuf.VoxelEntities[b].sectors);
+                tickBuf.VoxelBodies[b] = body;
             }
 Profiler.EndSample();
 

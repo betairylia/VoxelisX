@@ -76,7 +76,7 @@ namespace VoxelisX.Tests
             try
             {
                 VoxelBodyData.MassProperties massProperties =
-                    bodyData.ComputeMassProperties(scope.Data.sectors);
+                    bodyData.ComputePhysicsProperties(scope.Data.sectors);
 
                 Assert.That(massProperties.mass, Is.EqualTo(1f));
                 Assert.That(massProperties.centerOfMass, Is.EqualTo(new float3(0.5f, 0.5f, 0.5f)));
@@ -98,11 +98,11 @@ namespace VoxelisX.Tests
             var bodyData = new VoxelBodyData(Allocator.Persistent);
             try
             {
-                Assert.That(bodyData.ComputeMassProperties(scope.Data.sectors).mass, Is.EqualTo(1f));
+                Assert.That(bodyData.ComputePhysicsProperties(scope.Data.sectors).mass, Is.EqualTo(1f));
 
                 bodyData.isStatic = true;
                 VoxelBodyData.MassProperties massProperties =
-                    bodyData.ComputeMassProperties(scope.Data.sectors);
+                    bodyData.ComputePhysicsProperties(scope.Data.sectors);
 
                 Assert.That(massProperties.mass, Is.EqualTo(0f));
                 Assert.That(massProperties.centerOfMass, Is.EqualTo(float3.zero));
@@ -133,7 +133,7 @@ namespace VoxelisX.Tests
 
             try
             {
-                bodyData.ComputeMassProperties(scope.Data.sectors);
+                bodyData.ComputePhysicsProperties(scope.Data.sectors);
                 bodyData.motionData = new Unity.Physics.MotionData
                 {
                     WorldFromMotion = RigidTransform.identity,
@@ -204,7 +204,7 @@ namespace VoxelisX.Tests
 
             try
             {
-                bodyData.ComputeMassProperties(scope.Data.sectors);
+                bodyData.ComputePhysicsProperties(scope.Data.sectors);
                 tickBuf.VoxelEntities.Add(guid, scope.Data);
                 tickBuf.VoxelBodies.Add(guid, bodyData);
 
@@ -275,7 +275,7 @@ namespace VoxelisX.Tests
 
             try
             {
-                bodyData.ComputeMassProperties(scope.Data.sectors);
+                bodyData.ComputePhysicsProperties(scope.Data.sectors);
                 tickBuf.VoxelEntities.Add(guid, scope.Data);
                 tickBuf.VoxelBodies.Add(guid, bodyData);
 
@@ -313,7 +313,7 @@ namespace VoxelisX.Tests
 
             try
             {
-                bodyData.ComputeMassProperties(scope.Data.sectors);
+                bodyData.ComputePhysicsProperties(scope.Data.sectors);
                 tickBuf.VoxelEntities.Add(guid, scope.Data);
                 tickBuf.VoxelBodies.Add(guid, bodyData);
 

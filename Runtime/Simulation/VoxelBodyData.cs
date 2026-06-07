@@ -9,7 +9,7 @@ using Voxelis.Simulation;
 
 namespace Voxelis
 {
-    public struct VoxelBodyData : IDisposable
+    public partial struct VoxelBodyData : IDisposable
     {
         public struct MassProperties
         {
@@ -66,10 +66,10 @@ namespace Voxelis
             };
         }
 
-        public MassProperties ComputeMassProperties(LockableUnsafeHashMap<int3, SectorHandle> sectors)
+        public void ComputePhysicsProperties(LockableUnsafeHashMap<int3, SectorHandle> sectors)
         {
             RefreshMassPropertiesCache(sectors);
-            return massProperties;
+            RefreshPhysicsSlot(sectors);
         }
 
         private void RefreshMassPropertiesCache(

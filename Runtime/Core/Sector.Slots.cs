@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.CompilerServices;
+using System.Xml.Serialization;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
@@ -232,6 +233,13 @@ namespace Voxelis
                 ? DirtyPropagationSettings.DefaultSetBlockFlags
                 : DirtyFlags.GeneralAutomata;
             MarkBrickDirty(brickIdx, dirtyFlags, GetVoxelPropagationMask(voxelIdx));
+            
+            // Update AABB
+            // TODO: Rescan AABB occasionally to handle block removal
+            // TODO: Make AABB tight with current snapshot logic -- current version is correct (always superset) but may not be ideal
+            if(slotId == SectorSlotId.Block && !value.Equals(default))
+                blockAABB.Update(new int3(x, y, z));
+
             slot->Set(bid, voxelIdx, value);
         }
     }

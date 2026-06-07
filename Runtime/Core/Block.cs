@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.CompilerServices;
 using Unity.Mathematics;
 
 namespace Voxelis
@@ -22,9 +23,9 @@ namespace Voxelis
         // Perhaps we can just use a LUT and free those bits
         // private const uint PhaseMask = 0xC0000000; // 00 - Gas; 01 - Liquid; 10 - Powder; 11 - Solid
         // private const uint PhaseShift= 30;
-        private const  int OpaqueMask= 0x8000;
+        private const int OpaqueMask = 0x8000;
         private const uint TransMask = 0x01FF;      // Transparent blocks have 0~1FF (512) valid blockID slots
-        private const  int TFaceShift= 9;           // 6 bits for transparent blocks will be used to represent boundaries
+        private const int TFaceShift = 9;           // 6 bits for transparent blocks will be used to represent boundaries
 
         /// <summary>
         /// Gets the block ID portion of the packed data.
@@ -95,8 +96,8 @@ namespace Voxelis
         /// </summary>
         public static readonly Block Empty = new Block() { data = 0 };
 
-        public static bool operator == (Block a, Block b) => a.data == b.data;
-        public static bool operator != (Block a, Block b) => a.data != b.data;
+        public static bool operator ==(Block a, Block b) => a.data == b.data;
+        public static bool operator !=(Block a, Block b) => a.data != b.data;
 
         public bool Equals(Block other)
         {
@@ -114,17 +115,45 @@ namespace Voxelis
         }
     }
 
+    public struct PhysicsInfo : IEquatable<PhysicsInfo>
+    {
+        // Packed data for physics info.
+        // Data layout:
+        // (data & 0b11000000) >> 6: Physics flags.
+        //   - 0 = None (Have 3 axes surrounded by solid blocks, i.e., interior)
+        //   - 1 = Face (Have 2 axes surrounded by solid blocks)
+        //   - 2 = Edge (Have 1 axis surrounded by solid blocks)
+        //   - 3 = Corner (Have 0 axis surrounded by solid blocks; maximum 3 solid Von Neumann neighbors)
+        // 
+        // (data & 0x00111111) : Connectivity flags.
+        //   - Similar to SectorRenderer.GenerateSectorRenderDataJob.GetRendererBlockData's faceMask layout
+        //   - a "1" means the block does NOT have neighbor in that direction.
+        // Therefore, data == 0 (default) means an interior block with no exposed faces (thus can be ignored during collision detection).
+        public byte data;
+
+        public bool Equals(PhysicsInfo other)
+        {
+            return data == other.data;
+        }
+
+        public override int GetHashCode()
+        {
+            return (int)data;
+        }
+
+    }
+
     // TODO: Make this customizable
     public enum SectorSlotId
     {
         Block = 0,
-        Reserved1 = 1,
-        Reserved2 = 2,
-        Reserved3 = 3,
-        Reserved4 = 4,
-        Reserved5 = 5,
-        Reserved6 = 6,
-        Reserved7 = 7,
+        PhysicsInfo = 1,
+        Reserved1 = 2,
+        Reserved2 = 3,
+        Reserved3 = 4,
+        Reserved4 = 5,
+        Reserved5 = 6,
+        Reserved6 = 7,
     }
 
     /// <summary>

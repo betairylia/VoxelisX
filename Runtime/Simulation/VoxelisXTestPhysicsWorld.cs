@@ -14,6 +14,7 @@ using Math = Unity.Physics.Math;
 
 namespace Voxelis.Simulation
 {
+    [Obsolete]
     public class VoxelisXTestPhysicsWorld : VoxelisXPhysicsWorld
     {
         [Header("Test zone")]
@@ -43,6 +44,7 @@ namespace Voxelis.Simulation
 
         public override void Init()
         {
+            throw new NotImplementedException("Do not use this!");
             base.Init();
             // PrepareTestWorld();
         }
@@ -134,7 +136,8 @@ namespace Voxelis.Simulation
 
                 // Compute mass properties using VoxelBody API
                 Profiler.BeginSample("TestPhysics Compute Mass Properties");
-                var massProps = vb.ComputeMassProperties();
+                vb.ComputeMassProperties();
+                var massProps = vb.massProperties;
                 Profiler.EndSample();
 
                 //// Dynamics

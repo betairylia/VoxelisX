@@ -114,6 +114,8 @@ namespace Voxelis
         /// </summary>
         public bool IsRendererEmpty => brickMap.Count == 0;
 
+        public Voxelis.Mathematics.AABBInt blockAABB;
+
         /// <summary>
         /// Gets the approximate host memory usage of this sector in bytes.
         /// </summary>
@@ -164,6 +166,11 @@ namespace Voxelis
                 sectorNeighborsToCreate = 0,
                 _snapshot_enabled = false,
                 _allocator = allocator,
+                blockAABB = new Mathematics.AABBInt
+                {
+                    Min = new int3(int.MaxValue, int.MaxValue, int.MaxValue),
+                    Max = new int3(int.MinValue, int.MinValue, int.MinValue)
+                },
             };
 
             UnsafeUtility.MemClear(s.slots, MAX_SLOTS * sizeof(SectorSlotStorage));
@@ -214,6 +221,8 @@ namespace Voxelis
                 NativeArrayOptions.UninitializedMemory,
                 copyFrom: from.brickMap,
                 createDefaultSlots: false);
+
+            s.blockAABB = from.blockAABB;
 
             CopySlotsTo(from.slots, s.slots, allocator);
 

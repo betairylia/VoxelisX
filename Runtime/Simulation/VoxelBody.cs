@@ -123,10 +123,10 @@ namespace Voxelis
         /// Computes mass properties (mass, center of mass, inertia tensor) for this voxel body.
         /// Uses cached per-sector origin moments and only refreshes geometry-dirty sectors after the initial build.
         /// </summary>
-        public VoxelBodyData.MassProperties ComputeMassProperties()
+        public void ComputeMassProperties()
         {
             data.isStatic = _isStatic;
-            return data.ComputeMassProperties(entity.Sectors);
+            data.ComputePhysicsProperties(entity.Sectors);
         }
 
         private void OnDestroy()
