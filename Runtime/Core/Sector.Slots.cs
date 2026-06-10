@@ -159,6 +159,26 @@ namespace Voxelis
             return slot->Get<T>(bid, ToBlockIdx(x & BRICK_MASK, y & BRICK_MASK, z & BRICK_MASK));
         }
 
+        /// <summary>
+        /// Ensures the storage for <paramref name="slotId"/> exists and can hold every currently
+        /// allocated brick. Uses the sector's own allocator and <c>sizeof(T)</c> as the stride.
+        /// Safe to call repeatedly; only allocates or grows when needed. Intended for bulk
+        /// slot producers (e.g. physics-info generation) that write directly into slot storage
+        /// instead of going through <see cref="SetSlot{T}"/>.
+        /// </summary>
+        public void EnsureSlotAllocated<T>(SectorSlotId slotId) where T : unmanaged
+        {
+            SectorSlotStorage* slot = slots + (int)slotId;
+            if (!slot->IsCreated)
+            {
+                slots[(int)slotId] = SectorSlotStorage.New(UnsafeUtility.SizeOf<T>(), brickMap.Capacity, _allocator);
+            }
+            else
+            {
+                slot->EnsureBrickCapacity(brickMap.Capacity);
+            }
+        }
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void SetBlock(int x, int y, int z, Block block)
             => SetSlot(SectorSlotId.Block, x, y, z, block);

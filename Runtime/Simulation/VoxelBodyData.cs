@@ -66,10 +66,13 @@ namespace Voxelis
             };
         }
 
-        public void ComputePhysicsProperties(LockableUnsafeHashMap<int3, SectorHandle> sectors)
+        public MassProperties ComputePhysicsProperties(
+            LockableUnsafeHashMap<int3, SectorHandle> sectors,
+            LockableUnsafeHashMap<int3, SectorNeighborHandles> sectorNeighbors)
         {
             RefreshMassPropertiesCache(sectors);
-            RefreshPhysicsSlot(sectors);
+            RefreshPhysicsSlot(sectors, sectorNeighbors);
+            return massProperties;
         }
 
         private void RefreshMassPropertiesCache(

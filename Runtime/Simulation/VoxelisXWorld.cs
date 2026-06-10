@@ -245,7 +245,8 @@ Profiler.BeginSample("Recompute body mass properties");
             foreach (var b in tickBuf.VoxelBodies.GetKeyArray(Allocator.Temp))
             {
                 var body = tickBuf.VoxelBodies[b];
-                body.ComputePhysicsProperties(tickBuf.VoxelEntities[b].sectors);
+                var entityData = tickBuf.VoxelEntities[b];
+                body.ComputePhysicsProperties(entityData.sectors, entityData.sectorNeighbors);
                 tickBuf.VoxelBodies[b] = body;
             }
 Profiler.EndSample();

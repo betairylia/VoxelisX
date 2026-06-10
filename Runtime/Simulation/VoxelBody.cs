@@ -126,7 +126,7 @@ namespace Voxelis
         public void ComputeMassProperties()
         {
             data.isStatic = _isStatic;
-            data.ComputePhysicsProperties(entity.Sectors);
+            data.ComputePhysicsProperties(entity.Sectors, entity.Neighbors);
         }
 
         private void OnDestroy()

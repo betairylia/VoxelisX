@@ -234,12 +234,14 @@ namespace Voxelis.Rendering
                     // We are done
                     return;
                 }
-                
+
                 brickData[rendererBrickBase] = PackBrickInfo(bidAbsolute, coarseOccupancy);
 
                 // AABB
                 // Only do for new bricks
-                // TODO: Handle removal -- this is tricky since we cannot leave holes in AABB buf
+                // TODO: Handle removal -- we can leave holes in AABB buf!
+                // TODO: FIXME: AABBs are considered inactive if AABB.MinX is NaN.
+                // https://microsoft.github.io/DirectX-Specs/d3d/Raytracing.html
                 if (isAdded)
                 {
                     Vector3 brickPosf3 = brickPos.ToVector3Int();

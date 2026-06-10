@@ -76,7 +76,7 @@ namespace VoxelisX.Tests
             try
             {
                 VoxelBodyData.MassProperties massProperties =
-                    bodyData.ComputePhysicsProperties(scope.Data.sectors);
+                    bodyData.ComputePhysicsProperties(scope.Data.sectors, scope.Data.sectorNeighbors);
 
                 Assert.That(massProperties.mass, Is.EqualTo(1f));
                 Assert.That(massProperties.centerOfMass, Is.EqualTo(new float3(0.5f, 0.5f, 0.5f)));
@@ -98,11 +98,11 @@ namespace VoxelisX.Tests
             var bodyData = new VoxelBodyData(Allocator.Persistent);
             try
             {
-                Assert.That(bodyData.ComputePhysicsProperties(scope.Data.sectors).mass, Is.EqualTo(1f));
+                Assert.That(bodyData.ComputePhysicsProperties(scope.Data.sectors, scope.Data.sectorNeighbors).mass, Is.EqualTo(1f));
 
                 bodyData.isStatic = true;
                 VoxelBodyData.MassProperties massProperties =
-                    bodyData.ComputePhysicsProperties(scope.Data.sectors);
+                    bodyData.ComputePhysicsProperties(scope.Data.sectors, scope.Data.sectorNeighbors);
 
                 Assert.That(massProperties.mass, Is.EqualTo(0f));
                 Assert.That(massProperties.centerOfMass, Is.EqualTo(float3.zero));
@@ -112,6 +112,55 @@ namespace VoxelisX.Tests
             {
                 bodyData.Dispose();
             }
+        }
+
+        [Test]
+        public void RefreshPhysicsSlotClassifiesBlockExposure()
+        {
+            using var scope = new EntityDataTestScope();
+            SectorHandle sector = scope.AddSector(int3.zero);
+
+            // Solid 3x3x3 cube hugging the origin corner; entirely inside brick (0,0,0).
+            for (int z = 0; z < 3; z++)
+            {
+                for (int y = 0; y < 3; y++)
+                {
+                    for (int x = 0; x < 3; x++)
+                    {
+                        sector.SetBlock(x, y, z, new Block(1));
+                    }
+                }
+            }
+
+            // Physics-slot generation is gated on the require-update (read) buffer that dirty
+            // propagation would normally populate; mark it directly since no propagation runs here.
+            sector.Get().MarkBrickRequireUpdate(Sector.ToBrickIdx(0, 0, 0), DirtyFlags.GeometryWithLocalNeighbor);
+
+            var bodyData = new VoxelBodyData(Allocator.Persistent);
+            try
+            {
+                bodyData.ComputePhysicsProperties(scope.Data.sectors, scope.Data.sectorNeighbors);
+
+                // Interior center: all 6 neighbors solid -> no exposed faces, 3 axes surrounded (None).
+                Assert.That(PhysicsData(sector, 1, 1, 1), Is.EqualTo(0));
+                // Face block (only -Z exposed): bit 5 set, 2 axes surrounded -> flag 1 (Face).
+                Assert.That(PhysicsData(sector, 1, 1, 0), Is.EqualTo((1 << 6) | (1 << 5)));
+                // Edge block (-Y and -Z exposed): bits 3,5 set, 1 axis surrounded -> flag 2 (Edge).
+                Assert.That(PhysicsData(sector, 1, 0, 0), Is.EqualTo((2 << 6) | (1 << 3) | (1 << 5)));
+                // Corner block (-X,-Y,-Z exposed): bits 1,3,5 set, 0 axes surrounded -> flag 3 (Corner).
+                Assert.That(PhysicsData(sector, 0, 0, 0), Is.EqualTo((3 << 6) | (1 << 1) | (1 << 3) | (1 << 5)));
+                // Air block inside the allocated brick is cleared, not stale.
+                Assert.That(PhysicsData(sector, 5, 5, 5), Is.EqualTo(0));
+            }
+            finally
+            {
+                bodyData.Dispose();
+            }
+        }
+
+        private static int PhysicsData(SectorHandle sector, int x, int y, int z)
+        {
+            return sector.GetSlot<PhysicsInfo>(SectorSlotId.PhysicsInfo, x, y, z).data;
         }
 
         [Test]
@@ -133,7 +182,7 @@ namespace VoxelisX.Tests
 
             try
             {
-                bodyData.ComputePhysicsProperties(scope.Data.sectors);
+                bodyData.ComputePhysicsProperties(scope.Data.sectors, scope.Data.sectorNeighbors);
                 bodyData.motionData = new Unity.Physics.MotionData
                 {
                     WorldFromMotion = RigidTransform.identity,
@@ -204,7 +253,7 @@ namespace VoxelisX.Tests
 
             try
             {
-                bodyData.ComputePhysicsProperties(scope.Data.sectors);
+                bodyData.ComputePhysicsProperties(scope.Data.sectors, scope.Data.sectorNeighbors);
                 tickBuf.VoxelEntities.Add(guid, scope.Data);
                 tickBuf.VoxelBodies.Add(guid, bodyData);
 
@@ -275,7 +324,7 @@ namespace VoxelisX.Tests
 
             try
             {
-                bodyData.ComputePhysicsProperties(scope.Data.sectors);
+                bodyData.ComputePhysicsProperties(scope.Data.sectors, scope.Data.sectorNeighbors);
                 tickBuf.VoxelEntities.Add(guid, scope.Data);
                 tickBuf.VoxelBodies.Add(guid, bodyData);
 
@@ -313,7 +362,7 @@ namespace VoxelisX.Tests
 
             try
             {
-                bodyData.ComputePhysicsProperties(scope.Data.sectors);
+                bodyData.ComputePhysicsProperties(scope.Data.sectors, scope.Data.sectorNeighbors);
                 tickBuf.VoxelEntities.Add(guid, scope.Data);
                 tickBuf.VoxelBodies.Add(guid, bodyData);
 
