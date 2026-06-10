@@ -39,8 +39,13 @@
 #define BRICK_MICRO_RAY_MAX_STEPS 10
 #endif
 
-// One metadata word plus one padding word so uint64_t occupancy loads are 8-byte aligned.
+// Word 0: absolute brick index + coarse occupancy. Word 1: packed tight occupied
+// bounds (also keeps uint64_t occupancy loads 8-byte aligned).
+// Word 1 layout (matches SectorRenderer.PackBrickTightBounds, both bounds inclusive):
+// [minX:0-2][minY:3-5][minZ:6-8][maxX:9-11][maxY:12-14][maxZ:15-17]
 #define BRICK_INFO_WORDS 2
+#define BRICK_TIGHT_AXIS_MASK 7u
+#define BRICK_TIGHT_MAX_SHIFT 9u
 #define BRICK_OCCUPANCY_WORDS 16
 #define BRICK_BLOCK_DATA_OFFSET 18
 #define BRICK_DATA_LENGTH 274
@@ -351,22 +356,34 @@ inline float VoxelisXTraceBrickRay(float3 entryPositionInBrick, float3 rayDir, f
 
 inline float VoxelisXTraceBrickPrimitive(out AttributeData attrib)
 {
-    uint brickInfo = g_bricks.Load(VoxelisXBrickBase(PrimitiveIndex()) << 2);
-    
+    uint2 brickInfo = g_bricks.Load2(VoxelisXBrickBase(PrimitiveIndex()) << 2);
+
     // Empty brick
-    // if(VoxelisXGetCoarseOccupancy(brickInfo) == 0)
+    // if(VoxelisXGetCoarseOccupancy(brickInfo.x) == 0)
     // {
     //     return false;
     // }
 
-    // AABB Intersection
-    uint idx = brickInfo & BRICK_INFO_ABSOLUTE_INDEX_MASK;
+    // AABB Intersection against the tight occupied-bounds box (word 1).
+    // The DDA below still runs in full-brick coordinates; only the entry point moves.
+    uint idx = brickInfo.x & BRICK_INFO_ABSOLUTE_INDEX_MASK;
     int bX = int((idx & BRICK_POS_MASK) << SHIFT_SIZE_IN_BLOCKS);
     int bY = int(((idx >> SHIFT_SIZE_IN_BRICKS) & BRICK_POS_MASK) << SHIFT_SIZE_IN_BLOCKS);
     int bZ = int((idx >> (SHIFT_SIZE_IN_BRICKS + SHIFT_SIZE_IN_BRICKS)) << SHIFT_SIZE_IN_BLOCKS);
 
-    float3 aabbMin = float3(bX, bY, bZ);
-    float3 aabbMax = float3(bX + SIZE_IN_BLOCKS, bY + SIZE_IN_BLOCKS, bZ + SIZE_IN_BLOCKS);
+    uint tightBounds = brickInfo.y;
+    float3 tightMin = float3(
+        tightBounds & BRICK_TIGHT_AXIS_MASK,
+        (tightBounds >> 3u) & BRICK_TIGHT_AXIS_MASK,
+        (tightBounds >> 6u) & BRICK_TIGHT_AXIS_MASK);
+    float3 tightMax = float3(
+        (tightBounds >> BRICK_TIGHT_MAX_SHIFT) & BRICK_TIGHT_AXIS_MASK,
+        (tightBounds >> (BRICK_TIGHT_MAX_SHIFT + 3u)) & BRICK_TIGHT_AXIS_MASK,
+        (tightBounds >> (BRICK_TIGHT_MAX_SHIFT + 6u)) & BRICK_TIGHT_AXIS_MASK) + 1.0f;
+
+    float3 brickOrigin = float3(bX, bY, bZ);
+    float3 aabbMin = brickOrigin + tightMin;
+    float3 aabbMax = brickOrigin + tightMax;
 
     float3 rayDir = ObjectRayDirection();
     half3 invDir = 1.0h / rayDir;
@@ -386,10 +403,10 @@ inline float VoxelisXTraceBrickPrimitive(out AttributeData attrib)
     }
     
     float t = max(0, largestTmin);
-    float3 entryPositionInBrick = ObjectRayOrigin() + rayDir * t - float3(bX, bY, bZ);
-    
-    // TODO: Do coarse bit (2x2x2) early reject here? 
-    // VoxelisXGetCoarseOccupancy(brickInfo)
+    float3 entryPositionInBrick = ObjectRayOrigin() + rayDir * t - brickOrigin;
+
+    // TODO: Do coarse bit (2x2x2) early reject here?
+    // VoxelisXGetCoarseOccupancy(brickInfo.x)
 
     // TODO: branchless?
     uint normalFlags;
@@ -408,7 +425,7 @@ inline float VoxelisXTraceBrickPrimitive(out AttributeData attrib)
 
     VoxelisXBrickHit result = VoxelisXMakeBrickMiss();
     return VoxelisXTraceBrickRay(entryPositionInBrick, rayDir, t,
-        (normalFlags << 26)  | VoxelisXGetCoarseOccupancy(brickInfo),
+        (normalFlags << 26)  | VoxelisXGetCoarseOccupancy(brickInfo.x),
         attrib);
 }
 

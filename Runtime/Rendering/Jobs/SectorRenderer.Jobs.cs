@@ -128,6 +128,8 @@ namespace Voxelis.Rendering
                 int rendererBrickBase = -1;
 
                 uint coarseOccupancy = 0;
+                int3 occupiedMin = new int3(Sector.SIZE_IN_BLOCKS);
+                int3 occupiedMax = new int3(-1);
 
                 // Brick data
                 for (int bz = 0; bz < Sector.SIZE_IN_BLOCKS; bz++)
@@ -205,11 +207,15 @@ namespace Voxelis.Rendering
                             if (!Block.IsRendererDataEmpty(block0Data))
                             {
                                 AccumulateOccupancy(ref coarseOccupancy, rendererBrickBase, bx, by, bz);
+                                occupiedMin = math.min(occupiedMin, new int3(bx, by, bz));
+                                occupiedMax = math.max(occupiedMax, new int3(bx, by, bz));
                             }
 
                             if (!Block.IsRendererDataEmpty(block1Data))
                             {
                                 AccumulateOccupancy(ref coarseOccupancy, rendererBrickBase, bx + 1, by, bz);
+                                occupiedMin = math.min(occupiedMin, new int3(bx + 1, by, bz));
+                                occupiedMax = math.max(occupiedMax, new int3(bx + 1, by, bz));
                             }
                         }
                     }
@@ -229,6 +235,16 @@ namespace Voxelis.Rendering
                         brickData[removed * BRICK_DATA_LENGTH] = PackBrickInfo(bidAbsolute, coarseOccupancy);
                         syncRecord[0] = math.min(syncRecord[0], removed);
                         syncRecord[1] = math.max(syncRecord[1], removed);
+
+                        // A NaN min.x marks the AABB as an inactive primitive (DXR spec),
+                        // so the freed slot drops out of the BLAS at the next build instead
+                        // of leaving a stale full-brick box over dead data.
+                        aabbBuffer[removed] = new AABB()
+                        {
+                            min = new Vector3(float.NaN, float.NaN, float.NaN),
+                            max = new Vector3(float.NaN, float.NaN, float.NaN)
+                        };
+                        syncRecord[2] = 1;
                     }
 
                     // We are done
@@ -236,20 +252,34 @@ namespace Voxelis.Rendering
                 }
 
                 brickData[rendererBrickBase] = PackBrickInfo(bidAbsolute, coarseOccupancy);
+                brickData[rendererBrickBase + 1] = PackBrickTightBounds(occupiedMin, occupiedMax);
 
-                // AABB
-                // Only do for new bricks
-                // TODO: Handle removal -- we can leave holes in AABB buf!
-                // TODO: FIXME: AABBs are considered inactive if AABB.MinX is NaN.
-                // https://microsoft.github.io/DirectX-Specs/d3d/Raytracing.html
-                if (isAdded)
+                // AABB tight to the occupied blocks, in sector-local block coordinates.
+                // Rewritten on every rebuild since edits can grow or shrink the bounds;
+                // syncRecord[2] (=> BLAS rebuild) is raised only when the box actually
+                // changed, or for new bricks whose slot may hold garbage/NaN.
+                AABB tightAABB = new AABB()
                 {
-                    Vector3 brickPosf3 = brickPos.ToVector3Int();
-                    aabbBuffer[rendererBrickId] = new AABB()
-                    {
-                        min = brickPosf3 * Sector.SIZE_IN_BLOCKS,
-                        max = (brickPosf3 + Vector3.one) * Sector.SIZE_IN_BLOCKS
-                    };
+                    min = new Vector3(brickBlockPos.x + occupiedMin.x,
+                                      brickBlockPos.y + occupiedMin.y,
+                                      brickBlockPos.z + occupiedMin.z),
+                    max = new Vector3(brickBlockPos.x + occupiedMax.x + 1,
+                                      brickBlockPos.y + occupiedMax.y + 1,
+                                      brickBlockPos.z + occupiedMax.z + 1)
+                };
+
+                AABB previousAABB = aabbBuffer[rendererBrickId];
+                bool boundsChanged = isAdded
+                    || previousAABB.min.x != tightAABB.min.x
+                    || previousAABB.min.y != tightAABB.min.y
+                    || previousAABB.min.z != tightAABB.min.z
+                    || previousAABB.max.x != tightAABB.max.x
+                    || previousAABB.max.y != tightAABB.max.y
+                    || previousAABB.max.z != tightAABB.max.z;
+
+                if (boundsChanged)
+                {
+                    aabbBuffer[rendererBrickId] = tightAABB;
                     syncRecord[2] = 1;
                 }
             }

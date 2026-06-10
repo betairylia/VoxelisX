@@ -1,4 +1,5 @@
 using NUnit.Framework;
+using Unity.Mathematics;
 using Voxelis.Rendering;
 
 namespace VoxelisX.Tests
@@ -34,6 +35,25 @@ namespace VoxelisX.Tests
             Assert.That((packed >> 12) & 0xF, Is.EqualTo(0));
             Assert.That((packed >> 16) & 0xFF, Is.EqualTo(0b1010_0101));
             Assert.That((packed >> 24) & 0xFF, Is.EqualTo(0));
+        }
+
+        // Mirrors the unpack in VoxelisXBrickTrace.hlsl (VoxelisXTraceBrickPrimitive):
+        // [minX:0-2][minY:3-5][minZ:6-8][maxX:9-11][maxY:12-14][maxZ:15-17], bounds inclusive.
+        [TestCase(0, 0, 0, 7, 7, 7)]
+        [TestCase(0, 0, 0, 0, 0, 0)]
+        [TestCase(1, 2, 3, 4, 5, 6)]
+        [TestCase(7, 7, 7, 7, 7, 7)]
+        public void PackBrickTightBoundsRoundTripsPerAxis(int minX, int minY, int minZ, int maxX, int maxY, int maxZ)
+        {
+            int packed = SectorRenderer.PackBrickTightBounds(new int3(minX, minY, minZ), new int3(maxX, maxY, maxZ));
+
+            Assert.That(packed & 7, Is.EqualTo(minX));
+            Assert.That((packed >> 3) & 7, Is.EqualTo(minY));
+            Assert.That((packed >> 6) & 7, Is.EqualTo(minZ));
+            Assert.That((packed >> 9) & 7, Is.EqualTo(maxX));
+            Assert.That((packed >> 12) & 7, Is.EqualTo(maxY));
+            Assert.That((packed >> 15) & 7, Is.EqualTo(maxZ));
+            Assert.That(packed >> 18, Is.EqualTo(0));
         }
     }
 }

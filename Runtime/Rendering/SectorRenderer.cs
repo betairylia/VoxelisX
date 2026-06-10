@@ -37,7 +37,8 @@ namespace Voxelis.Rendering
             internal Vector3 max;
         }
 
-        // One metadata word plus one padding word so uint64 occupancy loads are 8-byte aligned.
+        // Word 0: absolute brick index + coarse occupancy. Word 1: packed tight occupied
+        // bounds (also keeps uint64 occupancy loads 8-byte aligned).
         public const int BRICK_INFO_WORDS = 2;
         public const int BRICK_OCCUPANCY_WORDS = 16;
         public const int BRICK_BLOCK_DATA_OFFSET = BRICK_INFO_WORDS + BRICK_OCCUPANCY_WORDS;
@@ -62,6 +63,16 @@ namespace Voxelis.Rendering
         public static int PackBrickInfo(int brickIdxAbsolute, uint coarseOccupancy)
         {
             return unchecked((int)(((uint)brickIdxAbsolute & 0xFFFu) | ((coarseOccupancy & 0xFFu) << 16)));
+        }
+
+        /// <summary>
+        /// Packs the brick-local occupied block bounds (both inclusive, 0..7 per axis)
+        /// into brick info word 1. Layout: [minX:0-2][minY:3-5][minZ:6-8][maxX:9-11][maxY:12-14][maxZ:15-17].
+        /// </summary>
+        public static int PackBrickTightBounds(int3 occupiedMin, int3 occupiedMax)
+        {
+            return occupiedMin.x | (occupiedMin.y << 3) | (occupiedMin.z << 6)
+                 | (occupiedMax.x << 9) | (occupiedMax.y << 12) | (occupiedMax.z << 15);
         }
         
         /// <summary>
@@ -366,6 +377,12 @@ namespace Voxelis.Rendering
                 {
                     AABBconfig = new RayTracingAABBsInstanceConfig(
                         aabbBuffer, BrickBufferSize, false, sectorMaterial);
+                    // Tight AABBs change whenever an edit moves a brick's occupied bounds,
+                    // with buffer and aabbCount staying identical. Unity builds static AABB
+                    // geometry once and ignores later buffer writes (Remove+Add reuses the
+                    // cached BLAS), which leaves stale boxes that crop newly grown voxels.
+                    // dynamicGeometry makes every RTAS build re-read the current AABBs.
+                    AABBconfig.dynamicGeometry = true;
                     AABBconfig.accelerationStructureBuildFlags = RayTracingAccelerationStructureBuildFlags.PreferFastTrace;
                     AABBconfig.materialProperties = matProps;
                 }
