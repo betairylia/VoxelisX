@@ -75,6 +75,8 @@ public class VoxelisXRenderPass : ScriptableRenderPass
     private static readonly int SeparableFilterDistanceSigmaID = Shader.PropertyToID("_SeparableFilterDistanceSigma");
     private static readonly int ATrousStepWidthID = Shader.PropertyToID("_ATrousStepWidth");
     private static readonly int ATrousUseFaceHashID = Shader.PropertyToID("_ATrousUseFaceHash");
+    private static readonly int ATrousJitterTapsID = Shader.PropertyToID("_ATrousJitterTaps");
+    private static readonly int ATrousFrameIndexID = Shader.PropertyToID("_ATrousFrameIndex");
     private static readonly int ATrousNormalPowerID = Shader.PropertyToID("_ATrousNormalPower");
     private static readonly int ATrousDepthSigmaID = Shader.PropertyToID("_ATrousDepthSigma");
     private static readonly int ATrousRelativeDepthSigmaID = Shader.PropertyToID("_ATrousRelativeDepthSigma");
@@ -235,6 +237,7 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         internal int width;
         internal int height;
         internal int stepWidth;
+        internal int frameIndex;
         internal VoxelisXATrousFilterSettings settings;
         internal TextureHandle SourceIndirectRadiance;
         internal TextureHandle Normal;
@@ -806,6 +809,7 @@ public class VoxelisXRenderPass : ScriptableRenderPass
                 passData.width = width;
                 passData.height = height;
                 passData.stepWidth = 1 << iteration;
+                passData.frameIndex = Time.frameCount;
                 passData.settings = indirectDenoisingSettings.aTrous;
                 passData.SourceIndirectRadiance = source;
                 passData.Normal = normal;
@@ -996,6 +1000,8 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         SetIndirectPipelineFrameParams(data.material, data.width, data.height);
         data.material.SetInt(ATrousStepWidthID, data.stepWidth);
         data.material.SetInt(ATrousUseFaceHashID, data.settings.useFaceHash ? 1 : 0);
+        data.material.SetInt(ATrousJitterTapsID, data.settings.jitterTaps ? 1 : 0);
+        data.material.SetInt(ATrousFrameIndexID, data.frameIndex);
         data.material.SetFloat(ATrousNormalPowerID, data.settings.normalPower);
         data.material.SetFloat(ATrousDepthSigmaID, data.settings.depthSigma);
         data.material.SetFloat(ATrousRelativeDepthSigmaID, data.settings.relativeDepthSigma);

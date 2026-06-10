@@ -26,6 +26,8 @@ public struct VoxelisXATrousFilterSettings
 {
     [Range(1, 6)] public int iterations;
     public bool useFaceHash;
+    [Tooltip("Jitter the sparse taps of iterations with step width > 1 by a per-pixel/per-frame hash. Breaks the structured checkerboard / grid-dot patterns the a-trous hole pattern leaves in heavy noise; the stochastic residue is removed by temporal accumulation.")]
+    public bool jitterTaps;
     [Min(0.0f)] public float normalPower;
     [Tooltip("Multiplier on the screen-space depth gradient (slope) term of the depth weight. ~1 is a good start; larger accepts more depth variation.")]
     [Min(0.0001f)] public float depthSigma;
@@ -38,6 +40,7 @@ public struct VoxelisXATrousFilterSettings
     {
         iterations = 4,
         useFaceHash = false,
+        jitterTaps = true,
         normalPower = 64.0f,
         depthSigma = 1.0f,
         relativeDepthSigma = 0.01f,

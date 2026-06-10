@@ -13,6 +13,8 @@ Shader "Hidden/VoxelisX/IndirectATrousFilter"
         float4 _VoxelisXFrameSize;
         int _ATrousStepWidth;
         int _ATrousUseFaceHash;
+        int _ATrousJitterTaps;
+        int _ATrousFrameIndex;
         float _ATrousNormalPower;
         float _ATrousDepthSigma;
         float _ATrousRelativeDepthSigma;
@@ -57,6 +59,17 @@ Shader "Hidden/VoxelisX/IndirectATrousFilter"
             return dot(color, float3(0.2126f, 0.7152f, 0.0722f));
         }
 
+        // lowbias32 integer hash.
+        uint VoxelisXHashUint(uint x)
+        {
+            x ^= x >> 16;
+            x *= 0x7feb352dU;
+            x ^= x >> 15;
+            x *= 0x846ca68bU;
+            x ^= x >> 16;
+            return x;
+        }
+
         float4 ATrousFilter(Varyings input) : SV_Target
         {
             UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
@@ -93,41 +106,67 @@ Shader "Hidden/VoxelisX/IndirectATrousFilter"
                 ? depthUp - centerDepth
                 : centerDepth - depthDown;
 
-            // Local luminance std-dev (3x3 at the current step spacing) normalizes the
-            // radiance edge-stopping weight. Without it, 1spp noise (sun-disk hits are
-            // huge HDR outliers next to near-zero pixels) rejects its own smoothing.
-            float momentSum = 0.0f;
-            float momentSqSum = 0.0f;
-            float momentCount = 0.0f;
+            // The first iteration (step 1) skips the luminance weight entirely: at raw
+            // 1spp the luminance channel IS the noise (no real edge information), and an
+            // unweighted B3 kernel has an exact zero at the Nyquist frequency, which is
+            // where STBN concentrates its energy (checkerboard pattern). Any luminance
+            // weighting at step 1 breaks that zero and lets the checkerboard survive —
+            // later iterations sample at even strides (same parity) and can never
+            // remove it. Geometry (normal/depth) weights still protect real edges.
+            bool useLuminanceWeight = stepWidth > 1;
 
-            [unroll]
-            for (int my = -1; my <= 1; my++)
+            float radianceDenom = 1.0f;
+            if (useLuminanceWeight)
             {
+                // Local luminance std-dev (3x3 at the current step spacing) normalizes
+                // the radiance edge-stopping weight. Without it, sun-disk HDR outliers
+                // next to near-zero pixels reject their own smoothing.
+                float momentSum = 0.0f;
+                float momentSqSum = 0.0f;
+                float momentCount = 0.0f;
+
                 [unroll]
-                for (int mx = -1; mx <= 1; mx++)
+                for (int my = -1; my <= 1; my++)
                 {
-                    uint2 momentCoord = VoxelisXClampCoord(int2(centerCoord) + int2(mx, my) * stepWidth);
-                    float4 momentIndirect = LOAD_TEXTURE2D(_IndirectRadianceTex, momentCoord);
-                    if (momentIndirect.a <= 0.001f)
+                    [unroll]
+                    for (int mx = -1; mx <= 1; mx++)
                     {
-                        continue;
+                        uint2 momentCoord = VoxelisXClampCoord(int2(centerCoord) + int2(mx, my) * stepWidth);
+                        float4 momentIndirect = LOAD_TEXTURE2D(_IndirectRadianceTex, momentCoord);
+                        if (momentIndirect.a <= 0.001f)
+                        {
+                            continue;
+                        }
+
+                        float momentLuminance = VoxelisXLuminance(momentIndirect.rgb);
+                        momentSum += momentLuminance;
+                        momentSqSum += momentLuminance * momentLuminance;
+                        momentCount += 1.0f;
                     }
-
-                    float momentLuminance = VoxelisXLuminance(momentIndirect.rgb);
-                    momentSum += momentLuminance;
-                    momentSqSum += momentLuminance * momentLuminance;
-                    momentCount += 1.0f;
                 }
+
+                float luminanceStdDev = 0.0f;
+                if (momentCount > 0.5f)
+                {
+                    float luminanceMean = momentSum / momentCount;
+                    luminanceStdDev = sqrt(max(momentSqSum / momentCount - luminanceMean * luminanceMean, 0.0f));
+                }
+
+                radianceDenom = _ATrousRadianceSigma * luminanceStdDev + 0.01f;
             }
 
-            float luminanceStdDev = 0.0f;
-            if (momentCount > 0.5f)
-            {
-                float luminanceMean = momentSum / momentCount;
-                luminanceStdDev = sqrt(max(momentSqSum / momentCount - luminanceMean * luminanceMean, 0.0f));
-            }
-
-            float radianceDenom = _ATrousRadianceSigma * luminanceStdDev + 0.01f;
+            // Sparse iterations (step > 1) jitter every non-center tap inside its own
+            // step-sized cell (per pixel, per tap, per frame). This breaks the parity
+            // lock of the a-trous hole pattern (structured checkerboard / grid-dot
+            // artifacts around HDR outliers); the stochastic residue is unstructured
+            // and averages out in temporal accumulation. stepWidth is a power of two.
+            bool applyJitter = _ATrousJitterTaps != 0 && stepWidth > 1;
+            uint jitterMask = (uint)(stepWidth - 1);
+            int jitterHalf = stepWidth >> 1;
+            uint pixelSeed = VoxelisXHashUint(
+                centerCoord.x ^ (centerCoord.y << 16)
+                ^ ((uint)_ATrousFrameIndex * 0x68bc21ebU)
+                ^ ((uint)stepWidth * 0x02e5be93U));
 
             float3 radianceSum = 0.0f;
             float weightSum = 0.0f;
@@ -139,6 +178,12 @@ Shader "Hidden/VoxelisX/IndirectATrousFilter"
                 for (int x = -2; x <= 2; x++)
                 {
                     int2 sampleOffset = int2(x, y) * stepWidth;
+                    if (applyJitter && (x != 0 || y != 0))
+                    {
+                        uint tapHash = VoxelisXHashUint(pixelSeed + (uint)((y + 2) * 5 + (x + 2)));
+                        sampleOffset += int2((int)(tapHash & jitterMask), (int)((tapHash >> 16) & jitterMask)) - jitterHalf;
+                    }
+
                     uint2 sampleCoord = VoxelisXClampCoord(int2(centerCoord) + sampleOffset);
 
                     float4 sampleIndirect = LOAD_TEXTURE2D(_IndirectRadianceTex, sampleCoord);
@@ -162,8 +207,12 @@ Shader "Hidden/VoxelisX/IndirectATrousFilter"
                         + max(_ATrousRelativeDepthSigma * abs(centerDepth), 0.001f);
                     float depthWeight = exp(-abs(sampleDepth - centerDepth) / depthDenom);
 
-                    float sampleLuminance = VoxelisXLuminance(sampleIndirect.rgb);
-                    float radianceWeight = exp(-abs(sampleLuminance - centerLuminance) / radianceDenom);
+                    float radianceWeight = 1.0f;
+                    if (useLuminanceWeight)
+                    {
+                        float sampleLuminance = VoxelisXLuminance(sampleIndirect.rgb);
+                        radianceWeight = exp(-abs(sampleLuminance - centerLuminance) / radianceDenom);
+                    }
 
                     float kernelWeight = VoxelisXATrousKernel(x) * VoxelisXATrousKernel(y);
                     float weight = kernelWeight * normalWeight * depthWeight * radianceWeight;
