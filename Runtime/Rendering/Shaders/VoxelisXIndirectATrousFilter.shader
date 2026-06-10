@@ -72,10 +72,65 @@ Shader "Hidden/VoxelisX/IndirectATrousFilter"
             float centerFaceHash = round(centerNormalPacked.b);
             float3 centerNormal = normalize(VoxelisXUnpackNormal(centerNormalPacked.rg));
             float centerDepth = LOAD_TEXTURE2D(_CurrentDepthHistoryTex, centerCoord).r;
+            float centerLuminance = VoxelisXLuminance(centerIndirect.rgb);
+
+            int stepWidth = max(_ATrousStepWidth, 1);
+
+            // Screen-space depth gradient (world units per pixel) makes the depth weight
+            // slope-aware: surfaces seen at an angle tolerate the depth change their own
+            // slope produces instead of rejecting their whole neighborhood. The smaller
+            // one-sided difference is used so a silhouette on one side does not inflate
+            // the gradient and let taps leak across the edge.
+            float depthRight = LOAD_TEXTURE2D(_CurrentDepthHistoryTex, VoxelisXClampCoord(int2(centerCoord) + int2(1, 0))).r;
+            float depthLeft = LOAD_TEXTURE2D(_CurrentDepthHistoryTex, VoxelisXClampCoord(int2(centerCoord) - int2(1, 0))).r;
+            float depthUp = LOAD_TEXTURE2D(_CurrentDepthHistoryTex, VoxelisXClampCoord(int2(centerCoord) + int2(0, 1))).r;
+            float depthDown = LOAD_TEXTURE2D(_CurrentDepthHistoryTex, VoxelisXClampCoord(int2(centerCoord) - int2(0, 1))).r;
+            float2 depthGradient;
+            depthGradient.x = abs(depthRight - centerDepth) < abs(centerDepth - depthLeft)
+                ? depthRight - centerDepth
+                : centerDepth - depthLeft;
+            depthGradient.y = abs(depthUp - centerDepth) < abs(centerDepth - depthDown)
+                ? depthUp - centerDepth
+                : centerDepth - depthDown;
+
+            // Local luminance std-dev (3x3 at the current step spacing) normalizes the
+            // radiance edge-stopping weight. Without it, 1spp noise (sun-disk hits are
+            // huge HDR outliers next to near-zero pixels) rejects its own smoothing.
+            float momentSum = 0.0f;
+            float momentSqSum = 0.0f;
+            float momentCount = 0.0f;
+
+            [unroll]
+            for (int my = -1; my <= 1; my++)
+            {
+                [unroll]
+                for (int mx = -1; mx <= 1; mx++)
+                {
+                    uint2 momentCoord = VoxelisXClampCoord(int2(centerCoord) + int2(mx, my) * stepWidth);
+                    float4 momentIndirect = LOAD_TEXTURE2D(_IndirectRadianceTex, momentCoord);
+                    if (momentIndirect.a <= 0.001f)
+                    {
+                        continue;
+                    }
+
+                    float momentLuminance = VoxelisXLuminance(momentIndirect.rgb);
+                    momentSum += momentLuminance;
+                    momentSqSum += momentLuminance * momentLuminance;
+                    momentCount += 1.0f;
+                }
+            }
+
+            float luminanceStdDev = 0.0f;
+            if (momentCount > 0.5f)
+            {
+                float luminanceMean = momentSum / momentCount;
+                luminanceStdDev = sqrt(max(momentSqSum / momentCount - luminanceMean * luminanceMean, 0.0f));
+            }
+
+            float radianceDenom = _ATrousRadianceSigma * luminanceStdDev + 0.01f;
 
             float3 radianceSum = 0.0f;
             float weightSum = 0.0f;
-            int stepWidth = max(_ATrousStepWidth, 1);
 
             [unroll]
             for (int y = -2; y <= 2; y++)
@@ -103,11 +158,12 @@ Shader "Hidden/VoxelisX/IndirectATrousFilter"
                     float normalWeight = pow(saturate(dot(centerNormal, sampleNormal)), _ATrousNormalPower);
 
                     float sampleDepth = LOAD_TEXTURE2D(_CurrentDepthHistoryTex, sampleCoord).r;
-                    float depthSigma = max(_ATrousDepthSigma, abs(centerDepth) * _ATrousRelativeDepthSigma);
-                    float depthWeight = exp(-abs(sampleDepth - centerDepth) / max(depthSigma, 0.0001f));
+                    float depthDenom = _ATrousDepthSigma * abs(dot(depthGradient, float2(sampleOffset)))
+                        + max(_ATrousRelativeDepthSigma * abs(centerDepth), 0.001f);
+                    float depthWeight = exp(-abs(sampleDepth - centerDepth) / depthDenom);
 
-                    float radianceDelta = VoxelisXLuminance(abs(sampleIndirect.rgb - centerIndirect.rgb));
-                    float radianceWeight = exp(-(radianceDelta * radianceDelta) / max(_ATrousRadianceSigma * _ATrousRadianceSigma, 0.0001f));
+                    float sampleLuminance = VoxelisXLuminance(sampleIndirect.rgb);
+                    float radianceWeight = exp(-abs(sampleLuminance - centerLuminance) / radianceDenom);
 
                     float kernelWeight = VoxelisXATrousKernel(x) * VoxelisXATrousKernel(y);
                     float weight = kernelWeight * normalWeight * depthWeight * radianceWeight;
@@ -117,7 +173,12 @@ Shader "Hidden/VoxelisX/IndirectATrousFilter"
                 }
             }
 
-            return float4(radianceSum / max(weightSum, 0.0001f), centerIndirect.a);
+            if (weightSum <= 0.0001f)
+            {
+                return centerIndirect;
+            }
+
+            return float4(radianceSum / weightSum, centerIndirect.a);
         }
 
     ENDHLSL

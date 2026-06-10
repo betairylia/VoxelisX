@@ -246,7 +246,7 @@ public class VoxelisXRenderPass : ScriptableRenderPass
     {
         internal int width;
         internal int height;
-        internal int convergenceStep;
+        internal int maxFrames;
         internal bool enableTemporalRadiance;
         internal float temporalRadianceCurrentFrameMinWeight;
         internal bool temporalRadianceDepthRejection;
@@ -587,9 +587,7 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         {
             passData.width = cameraData.scaledWidth;
             passData.height = cameraData.scaledHeight;
-            passData.convergenceStep = cameraState.history.IsValid
-                ? Mathf.Min(cameraState.frames + 1, maximumAverageFrames)
-                : 0;
+            passData.maxFrames = Mathf.Max(1, maximumAverageFrames);
             passData.enableTemporalRadiance = enableTemporalRadiance;
             passData.temporalRadianceCurrentFrameMinWeight = temporalRadianceCurrentFrameMinWeight;
             passData.temporalRadianceDepthRejection = temporalRadianceDepthRejection;
@@ -1018,7 +1016,7 @@ public class VoxelisXRenderPass : ScriptableRenderPass
         data.material.SetFloat("_TemporalRadianceDepthTolerance", data.temporalRadianceDepthTolerance);
         data.material.SetFloat("_TemporalRadianceRelativeDepthTolerance", data.temporalRadianceRelativeDepthTolerance);
         data.material.SetFloat("_TemporalRadianceNormalThreshold", data.temporalRadianceNormalThreshold);
-        data.material.SetFloat("_ConvergenceStep", data.convergenceStep);
+        data.material.SetFloat("_TemporalRadianceMaxFrames", data.maxFrames);
         data.material.SetTexture(PreviousIndirectRadianceHistoryTexID, data.PreviousIndirectRadianceHistory);
         data.material.SetTexture(PreviousDepthHistoryTexID, data.PreviousDepthHistory);
         data.material.SetTexture(PreviousNormalHistoryTexID, data.PreviousNormalHistory);

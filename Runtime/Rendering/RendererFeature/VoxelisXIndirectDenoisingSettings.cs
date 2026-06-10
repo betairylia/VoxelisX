@@ -27,18 +27,21 @@ public struct VoxelisXATrousFilterSettings
     [Range(1, 6)] public int iterations;
     public bool useFaceHash;
     [Min(0.0f)] public float normalPower;
+    [Tooltip("Multiplier on the screen-space depth gradient (slope) term of the depth weight. ~1 is a good start; larger accepts more depth variation.")]
     [Min(0.0001f)] public float depthSigma;
+    [Tooltip("Depth tolerance floor as a fraction of the center depth. Covers depth quantization on surfaces facing the camera.")]
     [Min(0.0f)] public float relativeDepthSigma;
+    [Tooltip("Multiplier on the local luminance std-dev for the radiance edge-stopping weight (SVGF-style). ~4 is a good start; larger blurs more across lighting edges.")]
     [Min(0.0001f)] public float radianceSigma;
 
     public static VoxelisXATrousFilterSettings Default => new VoxelisXATrousFilterSettings
     {
         iterations = 4,
-        useFaceHash = true,
+        useFaceHash = false,
         normalPower = 64.0f,
-        depthSigma = 0.25f,
-        relativeDepthSigma = 0.02f,
-        radianceSigma = 2.0f
+        depthSigma = 1.0f,
+        relativeDepthSigma = 0.01f,
+        radianceSigma = 4.0f
     };
 }
 

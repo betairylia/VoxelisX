@@ -242,7 +242,9 @@ void MainRayGenShader()
         g_CurrentDepthHistory[outputLaunchIndex] = distanceFromCamera;
         float2 packedNormal = saturate(PackNormalOctQuadEncode(primaryShade.worldNormal) * 0.5f + 0.5f);
         NormalTarget[outputLaunchIndex] = float4(packedNormal, float(payload.materialID_voxelFaceHash & 0xFFFFu), 0);
-        g_CurrentNormalHistory[outputLaunchIndex] = float4(packedNormal, 0, 1.0f);
+        // .b carries the view depth this surface had last frame so temporal reprojection
+        // can validate history against an exact expectation even while the camera moves.
+        g_CurrentNormalHistory[outputLaunchIndex] = float4(packedNormal, previousSurfaceViewDepth, 1.0f);
         AlbedoTarget[outputLaunchIndex] = float4(primaryShade.albedo, 1);
 
         MotionVectorTarget[outputLaunchIndex] = motionVector;
