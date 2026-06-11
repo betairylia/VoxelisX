@@ -446,6 +446,42 @@ namespace VoxelisX.Tests
         }
 
         [Test]
+        public void LongSnugRail_EqualityPointsReduceToLateralExtremes()
+        {
+            using var a = new VoxelBodyFixture();
+            using var b = new VoxelBodyFixture();
+
+            // 1x1x6 pole inside a 6-long snug slot (walls at x=0 and x=2).
+            for (int z = 0; z < 6; z++)
+            {
+                a.Set(0, 0, z);
+                b.Set(0, 0, z);
+                b.Set(2, 0, z);
+            }
+
+            a.Build();
+            b.Build();
+
+            List<ParsedManifold> manifolds = Collide(
+                a, b,
+                new RigidTransform(quaternion.identity, new float3(1f, 0f, 0f)),
+                RigidTransform.identity,
+                out _);
+
+            // 6 per-voxel fusions share one normal, so the constraint space has rank <= 3 and the
+            // manifold must reduce to the lateral extremes (the two rail ends) without losing
+            // rigidity.
+            Assert.That(manifolds.Count, Is.EqualTo(1));
+            ParsedManifold m = manifolds[0];
+            Assert.That(m.IsBilateral, Is.True);
+            Assert.That(math.distance(math.abs(m.Header.Normal), new float3(1f, 0f, 0f)), Is.LessThan(Tolerance));
+            Assert.That(m.Points.Count, Is.LessThanOrEqualTo(4), "Equality group must reduce to its extremes");
+            Assert.That(m.Points.Count, Is.GreaterThanOrEqualTo(2));
+            Assert.That(HasPointNear(m, new float3(1.5f, 0.5f, 0.5f)), Is.True, "Rail end must survive reduction");
+            Assert.That(HasPointNear(m, new float3(1.5f, 0.5f, 5.5f)), Is.True, "Rail end must survive reduction");
+        }
+
+        [Test]
         public void RotatedVoxelInSnugSlot_StillFusesBilateral_SphereMetricIsRotationInvariant()
         {
             using var a = new VoxelBodyFixture();
