@@ -211,18 +211,10 @@ namespace VoxelisX.Tests
             Assert.That(m.IsBilateral, Is.False);
             Assert.That(math.distance(m.Header.Normal, new float3(0f, 1f, 0f)), Is.LessThan(Tolerance));
 
-            // 4 corner support points on the face plane y = 1, all touching (distance ~ 0).
-            Assert.That(m.Points.Count, Is.EqualTo(4));
-            foreach (ContactPoint point in m.Points)
-            {
-                Assert.That(point.Distance, Is.EqualTo(0f).Within(Tolerance));
-                Assert.That(point.Position.y, Is.EqualTo(1f).Within(Tolerance));
-            }
-
-            Assert.That(HasPointNear(m, new float3(0f, 1f, 0f)), Is.True);
-            Assert.That(HasPointNear(m, new float3(1f, 1f, 0f)), Is.True);
-            Assert.That(HasPointNear(m, new float3(0f, 1f, 1f)), Is.True);
-            Assert.That(HasPointNear(m, new float3(1f, 1f, 1f)), Is.True);
+            // One sphere contact per voxel, snapped under the voxel center on the face plane.
+            Assert.That(m.Points.Count, Is.EqualTo(1));
+            Assert.That(m.Points[0].Distance, Is.EqualTo(0f).Within(Tolerance));
+            Assert.That(HasPointNear(m, new float3(0.5f, 1f, 0.5f)), Is.True);
 
             // The per-block-pair gameplay event is still emitted.
             Assert.That(events.Count, Is.EqualTo(1));
@@ -253,12 +245,11 @@ namespace VoxelisX.Tests
             Assert.That(manifolds.Count, Is.EqualTo(1));
             ParsedManifold m = manifolds[0];
             Assert.That(math.distance(m.Header.Normal, new float3(0f, 1f, 0f)), Is.LessThan(Tolerance),
-                "Resting contact must use the face normal, not a center-to-center diagonal");
-            Assert.That(m.Points.Count, Is.EqualTo(4));
-            foreach (ContactPoint point in m.Points)
-            {
-                Assert.That(point.Distance, Is.EqualTo(0f).Within(Tolerance));
-            }
+                "Resting above a flat surface must use the face normal (exposure masking), not a diagonal");
+            Assert.That(m.Points.Count, Is.EqualTo(1));
+            Assert.That(m.Points[0].Distance, Is.EqualTo(0f).Within(Tolerance));
+            Assert.That(HasPointNear(m, new float3(1f, 1f, 0.5f)), Is.True,
+                "Contact must sit under the voxel center on the surface plane");
         }
 
         [Test]
@@ -395,8 +386,8 @@ namespace VoxelisX.Tests
             a.Build();
             b.Build();
 
-            // 2x2 slab resting on a 4x4 floor: 4 (A voxel, +y) buckets whose corner points merge
-            // into a single shared manifold with a (2+1)x(2+1) corner lattice.
+            // 2x2 slab resting on a 4x4 floor: one bucket per slab voxel, all sharing the +y
+            // normal, merged into a single manifold.
             List<ParsedManifold> manifolds = Collide(
                 a, b,
                 new RigidTransform(quaternion.identity, new float3(1f, 1f, 1f)),
@@ -406,7 +397,11 @@ namespace VoxelisX.Tests
             Assert.That(manifolds.Count, Is.EqualTo(1), "All same-normal contacts must merge into one manifold");
             ParsedManifold m = manifolds[0];
             Assert.That(math.distance(m.Header.Normal, new float3(0f, 1f, 0f)), Is.LessThan(Tolerance));
-            Assert.That(m.Points.Count, Is.EqualTo(9), "Shared corners between neighboring voxels must deduplicate");
+            Assert.That(m.Points.Count, Is.EqualTo(4), "One merged contact per slab voxel");
+            Assert.That(HasPointNear(m, new float3(1.5f, 1f, 1.5f)), Is.True);
+            Assert.That(HasPointNear(m, new float3(2.5f, 1f, 1.5f)), Is.True);
+            Assert.That(HasPointNear(m, new float3(1.5f, 1f, 2.5f)), Is.True);
+            Assert.That(HasPointNear(m, new float3(2.5f, 1f, 2.5f)), Is.True);
         }
 
         [Test]
@@ -433,7 +428,7 @@ namespace VoxelisX.Tests
             a.Build();
             b.Build();
 
-            // 10x10 slab on a 12x12 floor: 121 corner points reduce to the 32 point manifold
+            // 10x10 slab on a 12x12 floor: 100 contact points reduce to the 32 point manifold
             // limit, and the reduction must keep the rim extremes (support polygon).
             List<ParsedManifold> manifolds = Collide(
                 a, b,
@@ -444,10 +439,70 @@ namespace VoxelisX.Tests
             Assert.That(manifolds.Count, Is.EqualTo(1));
             ParsedManifold m = manifolds[0];
             Assert.That(m.Points.Count, Is.EqualTo(32));
-            Assert.That(HasPointNear(m, new float3(1f, 1f, 1f)), Is.True, "Rim corner must survive reduction");
-            Assert.That(HasPointNear(m, new float3(11f, 1f, 1f)), Is.True, "Rim corner must survive reduction");
-            Assert.That(HasPointNear(m, new float3(1f, 1f, 11f)), Is.True, "Rim corner must survive reduction");
-            Assert.That(HasPointNear(m, new float3(11f, 1f, 11f)), Is.True, "Rim corner must survive reduction");
+            Assert.That(HasPointNear(m, new float3(1.5f, 1f, 1.5f)), Is.True, "Rim point must survive reduction");
+            Assert.That(HasPointNear(m, new float3(10.5f, 1f, 1.5f)), Is.True, "Rim point must survive reduction");
+            Assert.That(HasPointNear(m, new float3(1.5f, 1f, 10.5f)), Is.True, "Rim point must survive reduction");
+            Assert.That(HasPointNear(m, new float3(10.5f, 1f, 10.5f)), Is.True, "Rim point must survive reduction");
+        }
+
+        [Test]
+        public void RotatedVoxelInSnugSlot_StillFusesBilateral_SphereMetricIsRotationInvariant()
+        {
+            using var a = new VoxelBodyFixture();
+            using var b = new VoxelBodyFixture();
+            a.Set(0, 0, 0);
+            b.Set(0, 0, 0);
+            b.Set(2, 0, 0);
+            a.Build();
+            b.Build();
+
+            // Same snug slot, but A is rotated 30 degrees around Y with its voxel center kept at
+            // the slot center. Rounded (sphere) voxels must neither jam nor change the contact:
+            // this is what lets a 1-wide pole spin freely inside a 1-wide hole.
+            float3 center = new float3(1.5f, 0.5f, 0.5f);
+            quaternion rotation = quaternion.RotateY(math.radians(30f));
+            float3 translation = center - math.rotate(rotation, new float3(0.5f, 0.5f, 0.5f));
+
+            List<ParsedManifold> manifolds = Collide(
+                a, b,
+                new RigidTransform(rotation, translation),
+                RigidTransform.identity,
+                out _);
+
+            Assert.That(manifolds.Count, Is.EqualTo(1));
+            ParsedManifold m = manifolds[0];
+            Assert.That(m.IsBilateral, Is.True, "Rotation must not break the snug-fit fusion");
+            Assert.That(m.Points.Count, Is.EqualTo(1));
+            Assert.That(math.abs(m.Points[0].Distance), Is.LessThan(1e-3f),
+                "Rotation must not create penetration (no jamming of rotated voxels)");
+        }
+
+        [Test]
+        public void CornerContact_KeepsRoundedDiagonalNormal()
+        {
+            using var a = new VoxelBodyFixture();
+            using var b = new VoxelBodyFixture();
+            a.Set(0, 0, 0);
+            b.Set(0, 0, 0);
+            a.Build();
+            b.Build();
+
+            // A touches B's corner region diagonally (center-to-center distance exactly 1).
+            // Real corners keep their diagonal sphere normal: voxels are rounded, so poles can
+            // roll/pivot over edges instead of catching on them.
+            List<ParsedManifold> manifolds = Collide(
+                a, b,
+                new RigidTransform(quaternion.identity, new float3(0.8f, 0.6f, 0f)),
+                RigidTransform.identity,
+                out _);
+
+            Assert.That(manifolds.Count, Is.EqualTo(1));
+            ParsedManifold m = manifolds[0];
+            Assert.That(m.IsBilateral, Is.False);
+            Assert.That(m.Points.Count, Is.EqualTo(1));
+            Assert.That(m.Points[0].Distance, Is.EqualTo(0f).Within(1e-3f));
+            Assert.That(math.distance(m.Header.Normal, new float3(0.8f, 0.6f, 0f)), Is.LessThan(1e-3f),
+                "Corner contact must keep the rounded diagonal normal");
         }
 
         [Test]
