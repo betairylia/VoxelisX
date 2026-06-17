@@ -22,7 +22,9 @@ namespace Voxelis
             public SectorHandle Sector;
             public SectorNeighborHandles Neighbors;
             
-            public ushort BrickDirtyFlag;
+            // Raw source flag; consumers should read BrickRequireUpdateFlag instead (cleared every
+            // tick at the end of dirty propagation). Underscore-prefixed to flag the foot-gun.
+            public ushort _BrickDirtyFlag;
             public ushort BrickRequireUpdateFlag;
         }
         

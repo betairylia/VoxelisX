@@ -34,7 +34,7 @@ namespace Simulation.Utils
                             BrickOrigin = b.position,
                             BrickId = b.brickIdx,
                             LocalToWorld = e.transform,
-                            BrickDirtyFlag = sec.brickDirtyFlags[b.brickIdx],
+                            _BrickDirtyFlag = sec.brickDirtyFlags[b.brickIdx],
                             BrickRequireUpdateFlag = sec.brickRequireUpdateFlags[b.brickIdx],
 
                             Sector = s.Value,

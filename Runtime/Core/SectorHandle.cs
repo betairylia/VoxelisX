@@ -124,7 +124,9 @@ namespace Voxelis
 
         public bool IsRendererRequireUpdate => _ptr->IsRendererRequireUpdate;
 
-        public ushort DirtyFlags => _ptr->sectorDirtyFlags;
+        // Raw source flag; consumers should use RequireUpdateFlags instead (DirtyFlags get cleared
+        // every tick at the end of dirty propagation). Underscore-prefixed to flag the foot-gun.
+        public ushort _DirtyFlags => _ptr->sectorDirtyFlags;
         public ushort RequireUpdateFlags => _ptr->sectorRequireUpdateFlags;
         
         public void ActivateSnapshot(Allocator allocator = Allocator.Persistent) 
