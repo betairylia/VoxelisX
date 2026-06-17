@@ -52,6 +52,13 @@ namespace Voxelis
             new int3(-1, 1, 1), new int3(-1, 1, -1), new int3(-1, -1, 1), new int3(-1, -1, -1),
         };
 
+        public const int Xpos = 0;
+        public const int Xneg = 1;
+        public const int Ypos = 2;
+        public const int Yneg = 3;
+        public const int Zpos = 4;
+        public const int Zneg = 5;
+
         // Precomputed opposite direction indices for O(1) lookup
         // OppositeDirectionIndices[i] gives the index of the opposite direction for Directions[i]
         public static readonly int[] OppositeDirectionIndices = new int[26]

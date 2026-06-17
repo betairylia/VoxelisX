@@ -240,25 +240,7 @@ Profiler.BeginSample("Apply Sector Snapshots");
                 }
             }
 Profiler.EndSample();
-
-Profiler.BeginSample("Recompute body mass properties");
-            foreach (var b in tickBuf.VoxelBodies.GetKeyArray(Allocator.Temp))
-            {
-                var body = tickBuf.VoxelBodies[b];
-                var entityData = tickBuf.VoxelEntities[b];
-                body.ComputePhysicsProperties(entityData.sectors, entityData.sectorNeighbors);
-                tickBuf.VoxelBodies[b] = body;
-            }
-Profiler.EndSample();
-
-Profiler.BeginSample("Apply Body Force Commands");
-            bodyForceCommands?.ApplyTo(ref tickBuf, deltaTime);
-Profiler.EndSample();
-
-Profiler.BeginSample("Physics Step");
-            physicsWorld.SimulateStep(deltaTime, tickBuf);
-Profiler.EndSample();
-            
+ 
             // Dirty propagation — operates on tickBuf to preserve physics-exported transforms
 Profiler.BeginSample("Dirty Propagation");
     Profiler.BeginSample("Update Velocity");
@@ -328,6 +310,25 @@ Profiler.BeginSample("Dirty Propagation");
             }
             entityKeys.Dispose();
     Profiler.EndSample();
+Profiler.EndSample();
+
+            // Physics after dirty propagation
+Profiler.BeginSample("Recompute body mass properties");
+            foreach (var b in tickBuf.VoxelBodies.GetKeyArray(Allocator.Temp))
+            {
+                var body = tickBuf.VoxelBodies[b];
+                var entityData = tickBuf.VoxelEntities[b];
+                body.ComputePhysicsProperties(entityData.sectors, entityData.sectorNeighbors);
+                tickBuf.VoxelBodies[b] = body;
+            }
+Profiler.EndSample();
+
+Profiler.BeginSample("Apply Body Force Commands");
+            bodyForceCommands?.ApplyTo(ref tickBuf, deltaTime);
+Profiler.EndSample();
+
+Profiler.BeginSample("Physics Step");
+            physicsWorld.SimulateStep(deltaTime, tickBuf);
 Profiler.EndSample();
 
             // Copy data back to VoxelEntities
