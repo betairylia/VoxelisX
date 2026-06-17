@@ -106,7 +106,13 @@ namespace Voxelis
                 {
                     ref Sector sector = ref kvp.Value.Get();
                     bool cached = sectorMassCache.ContainsKey(kvp.Key);
-                    if (cached && (sector.sectorDirtyFlags & (ushort)dirtyMask) == 0)
+                    // Use sectorRequireUpdateFlags (the propagated, consumer-facing flag), not
+                    // sectorDirtyFlags (the raw source flag). The source flag is cleared by
+                    // VoxelisXWorld's Clear Dirty Flags step at the end of dirty propagation,
+                    // which runs BEFORE this refresh, so reading it here would always see 0 and
+                    // mass properties would never be recomputed after a SetBlock. This now
+                    // matches RefreshPhysicsSlot, which has always read the require-update flag.
+                    if (cached && (sector.sectorRequireUpdateFlags & (ushort)dirtyMask) == 0)
                     {
                         continue;
                     }
