@@ -147,32 +147,11 @@ namespace Voxelis.Simulation
             handles.FinalExecutionHandle.Complete();
             Profiler.EndSample();
 
-            // Debug: Check for collision events (first 10 frames only)
-            // if (debugFrameCount <= 10)
-            // {
-            //     // var collisionEvents = simulation.CollisionEvents;
-            //     var voxelContactEvents = simulation.VoxelContactEvents;
-            //     if (true)
-            //     {
-            //         int eventCount = 0;
-            //         foreach (var contactEvent in voxelContactEvents)
-            //         {
-            //             eventCount++;
-            //             if (eventCount <= 5) // Only log first 5 collision events per frame
-            //             {
-            //                 UnityEngine.Debug.Log($"[Collision] BodyA: {contactEvent.BodyIndexA}:{contactEvent.VoxelCoordsInA}, BodyB: {contactEvent.BodyIndexB}:{contactEvent.VoxelCoordsInB}, Normal: {contactEvent.Normal}");
-            //             }
-            //         }
-            //         if (eventCount > 0)
-            //         {
-            //             UnityEngine.Debug.Log($"[Collision] Total events in frame {debugFrameCount}: {eventCount}");
-            //         }
-            //         else
-            //         {
-            //             UnityEngine.Debug.Log($"[Collision] No collision events in frame {debugFrameCount}");
-            //         }
-            //     }
-            // }
+            // Read-only contact diagnostics: must run after Complete() and before the next
+            // ResetSimulationContext, while this frame's voxel contact event stream is valid.
+            Profiler.BeginSample("Physics Contact Debug Logging");
+            LogVoxelContactsAfterStep();
+            Profiler.EndSample();
 
             Profiler.BeginSample("Physics OnSimulationFinished");
             OnSimulationFinished();
