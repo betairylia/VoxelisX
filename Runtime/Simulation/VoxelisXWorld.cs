@@ -450,6 +450,7 @@ Profiler.EndSample();
         {
             if (!e.TryGetComponent<VoxelBody>(out var body) || !body.enabled || !body.physicsEnabled)
             {
+                Debug.LogWarning($"Captured VoxelBodyState.Off for {e.name}");
                 return VoxelBodyState.Off;
             }
 
@@ -483,6 +484,8 @@ Profiler.EndSample();
 
                 var e = go.AddComponent<VoxelEntity>();
                 if (e != null) e.PersistentGuid = rec.Guid;
+
+                Debug.Log($"{rec.Guid}: {rec.Body}");
 
                 if (rec.Body != VoxelBodyState.Off)
                 {
