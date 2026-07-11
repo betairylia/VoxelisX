@@ -58,6 +58,7 @@ namespace Voxelis
 
         // ---------------- SAVE / LOAD ------------------
         [Header("Save / Load")]
+        [SerializeField] private bool autoLoadOnStart = false;
         [SerializeField] private string saveLoadPath = DefaultSaveLoadFileName;
         
         public struct WorldStageInputs
@@ -80,19 +81,27 @@ namespace Voxelis
         private VoxelBodyForceCommandStream bodyForceCommands;
 
         public VoxelBodyForceCommandStream BodyForceCommands => bodyForceCommands;
-        
+
         public override void Init()
         {
             base.Init();
-            
+
             physicsStage = new();
             automataStage = new();
-            
+
             tickBuf.VoxelEntities = new NativeHashMap<Guid128, VoxelEntityData>(1, Allocator.Persistent);
             tickBuf.VoxelBodies = new NativeHashMap<Guid128, VoxelBodyData>(1, Allocator.Persistent);
             automataTickBuf.BricksRequiredUpdate = new NativeList<BrickInfo>(Allocator.Persistent);
             alienEntityViews = new NativeList<AlienEntityView>(Allocator.Persistent);
             bodyForceCommands = new VoxelBodyForceCommandStream(Allocator.Persistent);
+        }
+
+        protected void Start()
+        {
+            if(autoLoadOnStart)
+            {
+                Load();
+            }
         }
 
         /// <summary>
