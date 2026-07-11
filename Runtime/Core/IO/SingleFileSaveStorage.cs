@@ -147,6 +147,7 @@ namespace Voxelis.IO
                 _writer.Write(rec.Transform.Rotation.value.z);
                 _writer.Write(rec.Transform.Rotation.value.w);
                 _writer.Write(rec.EntityRequireUpdateFlags);
+                _writer.Write((byte)rec.Body);
                 _writer.Write((ulong)_entityIndexLocations[i].IndexOffset);
                 _writer.Write((uint)_entityIndexLocations[i].SectorCount);
             }
@@ -211,10 +212,13 @@ namespace Voxelis.IO
                     _reader.ReadSingle());
                 var rot = new quaternion(rotV);
                 ushort entFlags = _reader.ReadUInt16();
+                // Body-state byte exists from format v3 onward; older saves have no body info.
+                var body = version >= 3 ? (VoxelBodyState)_reader.ReadByte() : VoxelBodyState.Off;
+                if (body > VoxelBodyState.Dynamic) body = VoxelBodyState.Off;
                 ulong idxOff = _reader.ReadUInt64();
                 uint sectCount = _reader.ReadUInt32();
 
-                _readEntities.Add(new EntityRecord(guid, new EntityTransformRecord(pos, rot), entFlags));
+                _readEntities.Add(new EntityRecord(guid, new EntityTransformRecord(pos, rot), entFlags, body));
                 indexLocations[i] = ((long)idxOff, (int)sectCount);
             }
 

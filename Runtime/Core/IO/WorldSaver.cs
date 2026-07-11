@@ -22,11 +22,23 @@ namespace Voxelis.IO
             writer.Commit();
         }
 
-        public static unsafe void SaveEntity(IWorldSaveWriter writer, Guid128 guid, VoxelEntity entity)
+        public static void Save(string path, IReadOnlyList<(Guid128 Guid, VoxelEntity Entity, VoxelBodyState Body)> entities)
+        {
+            using var writer = SingleFileSaveStorage.OpenWrite(path);
+            for (int i = 0; i < entities.Count; i++)
+            {
+                var (guid, entity, body) = entities[i];
+                SaveEntity(writer, guid, entity, body);
+            }
+            writer.Commit();
+        }
+
+        public static unsafe void SaveEntity(
+            IWorldSaveWriter writer, Guid128 guid, VoxelEntity entity, VoxelBodyState body = VoxelBodyState.Off)
         {
             var data = entity.GetDataCopy();
             var transformRec = new EntityTransformRecord(data.transform.pos, data.transform.rot);
-            var entityRecord = new EntityRecord(guid, transformRec, data.entityRequireUpdateFlags);
+            var entityRecord = new EntityRecord(guid, transformRec, data.entityRequireUpdateFlags, body);
             writer.WriteEntity(in entityRecord, EnumerateSectors(data));
         }
 

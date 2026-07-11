@@ -351,6 +351,8 @@ namespace VoxelisX.Tests
             Assert.That(rec.Transform.Rotation.value.x, Is.EqualTo(transform.Rotation.value.x).Within(1e-6f));
             Assert.That(rec.Transform.Rotation.value.w, Is.EqualTo(transform.Rotation.value.w).Within(1e-6f));
             Assert.That(rec.EntityRequireUpdateFlags, Is.EqualTo(entityFlags));
+            Assert.That(rec.Body, Is.EqualTo(VoxelBodyState.Off),
+                "Records written without a body state must read back as Off");
 
             var index = reader.ReadSectorIndex(0);
             Assert.That(index.Count, Is.EqualTo(2));
@@ -461,6 +463,81 @@ namespace VoxelisX.Tests
                 finally { loaded.Dispose(Allocator.Persistent); }
             }
             finally { handle.Dispose(Allocator.Persistent); }
+        }
+
+        [Test]
+        public void WriteRead_RoundTripsVoxelBodyState()
+        {
+            uint[] preview = new uint[Sector.BRICKS_IN_SECTOR];
+            byte[] payload = new byte[] { 1, 2, 3 };
+
+            Guid128 guidOff = NewGuid128();
+            Guid128 guidStatic = NewGuid128();
+            Guid128 guidDynamic = NewGuid128();
+
+            using (var writer = SingleFileSaveStorage.OpenWrite(_tempPath))
+            {
+                var recOff = new EntityRecord(guidOff, default, 0, VoxelBodyState.Off);
+                var recStatic = new EntityRecord(guidStatic, default, 0, VoxelBodyState.Static);
+                var recDynamic = new EntityRecord(guidDynamic, default, 0, VoxelBodyState.Dynamic);
+
+                writer.WriteEntity(in recOff, new[]
+                {
+                    new SectorWriteRecord(new int3(0, 0, 0), preview, payload),
+                });
+                writer.WriteEntity(in recStatic, new[]
+                {
+                    new SectorWriteRecord(new int3(0, 0, 0), preview, payload),
+                });
+                writer.WriteEntity(in recDynamic, Array.Empty<SectorWriteRecord>());
+                writer.Commit();
+            }
+
+            using var reader = SingleFileSaveStorage.OpenRead(_tempPath);
+            Assert.That(reader.EntityCount, Is.EqualTo(3));
+            Assert.That(reader.ReadEntityRecord(0).Body, Is.EqualTo(VoxelBodyState.Off));
+            Assert.That(reader.ReadEntityRecord(1).Body, Is.EqualTo(VoxelBodyState.Static));
+            Assert.That(reader.ReadEntityRecord(2).Body, Is.EqualTo(VoxelBodyState.Dynamic));
+            Assert.That(reader.ReadEntityRecord(1).Guid, Is.EqualTo(guidStatic));
+        }
+
+        [Test]
+        public void OpenRead_Version2Save_ReadsBodyStateAsOff()
+        {
+            // Hand-write a v2 file: its entity records have no body-state byte.
+            Guid128 guid = NewGuid128();
+            using (var fs = new FileStream(_tempPath, FileMode.Create, FileAccess.Write))
+            using (var bw = new BinaryWriter(fs))
+            {
+                bw.Write(new byte[WorldSaveFormat.HeaderBytes]);
+                long tableOffset = fs.Position;
+
+                bw.Write(1u); // entityCount
+                uint4 g = guid.Value;
+                bw.Write(g.x);
+                bw.Write(g.y);
+                bw.Write(g.z);
+                bw.Write(g.w);
+                for (int i = 0; i < 7; i++) bw.Write(0f); // pos.xyz + rot.xyzw
+                bw.Write((ushort)0x0042); // entityRequireUpdateFlags — v2 record ends here + index location
+                bw.Write((ulong)tableOffset); // sectorIndexOffset (no sectors, never dereferenced)
+                bw.Write(0u); // sectorCount
+
+                fs.Position = 0;
+                bw.Write(WorldSaveFormat.FileMagic);
+                bw.Write((ushort)2); // version 2
+                bw.Write((ushort)SaveFlags.Deflate);
+                bw.Write((ulong)tableOffset);
+            }
+
+            using var reader = SingleFileSaveStorage.OpenRead(_tempPath);
+            Assert.That(reader.Header.Version, Is.EqualTo(2));
+            Assert.That(reader.EntityCount, Is.EqualTo(1));
+
+            var rec = reader.ReadEntityRecord(0);
+            Assert.That(rec.Guid, Is.EqualTo(guid));
+            Assert.That(rec.EntityRequireUpdateFlags, Is.EqualTo((ushort)0x0042));
+            Assert.That(rec.Body, Is.EqualTo(VoxelBodyState.Off));
         }
 
         private void WriteMinimalSave()

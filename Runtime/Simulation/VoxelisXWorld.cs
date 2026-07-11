@@ -430,14 +430,30 @@ Profiler.EndSample();
         /// </summary>
         public void Save(string path)
         {
-            var list = new List<(Guid128, VoxelEntity)>(entities.Count);
+            var list = new List<(Guid128, VoxelEntity, VoxelBodyState)>(entities.Count);
             foreach(var e in entities.Values)
             {
                 // TODO: FIXME: Subtle bug -- will this break tick continuity? (this overwrites prevTransform)
                 e.SyncTransformToData();
-                list.Add((e.PersistentGuid, e));
+                list.Add((e.PersistentGuid, e, CaptureBodyState(e)));
             }
             WorldSaver.Save(path, list);
+        }
+
+        /// <summary>
+        /// Maps an entity's <see cref="VoxelBody"/> component to its three-state serialized form:
+        /// Off (no component, component disabled, or physics disabled), Static, or Dynamic.
+        /// Uses GetComponent rather than the <see cref="bodies"/> dictionary so bodies on
+        /// entities that are not currently registered are still captured.
+        /// </summary>
+        private static VoxelBodyState CaptureBodyState(VoxelEntity e)
+        {
+            if (!e.TryGetComponent<VoxelBody>(out var body) || !body.enabled || !body.physicsEnabled)
+            {
+                return VoxelBodyState.Off;
+            }
+
+            return body.isStatic ? VoxelBodyState.Static : VoxelBodyState.Dynamic;
         }
 
         /// <summary>
@@ -467,7 +483,16 @@ Profiler.EndSample();
 
                 var e = go.AddComponent<VoxelEntity>();
                 if (e != null) e.PersistentGuid = rec.Guid;
-                
+
+                if (rec.Body != VoxelBodyState.Off)
+                {
+                    // Fields must be assigned while the GameObject is still inactive:
+                    // VoxelBody.Awake consumes physicsEnabled (Rigidbody creation) and isStatic.
+                    var body = go.AddComponent<VoxelBody>();
+                    body.physicsEnabled = true;
+                    body.isStatic = rec.Body == VoxelBodyState.Static;
+                }
+
                 go.SetActive(true);
 
                 return e;
