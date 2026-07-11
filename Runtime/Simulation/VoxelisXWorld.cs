@@ -442,13 +442,17 @@ Profiler.EndSample();
 
         /// <summary>
         /// Maps an entity's <see cref="VoxelBody"/> component to its three-state serialized form:
-        /// Off (no component, component disabled, or physics disabled), Static, or Dynamic.
+        /// Off (no component or component disabled), Static, or Dynamic.
+        /// physicsEnabled is deliberately NOT consulted: it only controls Unity Rigidbody
+        /// creation in VoxelBody.Awake — participation in the voxel physics world is purely
+        /// registration (enabled component) + isStatic, and static colliders are typically
+        /// authored with physicsEnabled = false.
         /// Uses GetComponent rather than the <see cref="bodies"/> dictionary so bodies on
         /// entities that are not currently registered are still captured.
         /// </summary>
         private static VoxelBodyState CaptureBodyState(VoxelEntity e)
         {
-            if (!e.TryGetComponent<VoxelBody>(out var body) || !body.enabled || !body.physicsEnabled)
+            if (!e.TryGetComponent<VoxelBody>(out var body) || !body.enabled)
             {
                 Debug.LogWarning($"Captured VoxelBodyState.Off for {e.name}");
                 return VoxelBodyState.Off;
@@ -491,8 +495,10 @@ Profiler.EndSample();
                 {
                     // Fields must be assigned while the GameObject is still inactive:
                     // VoxelBody.Awake consumes physicsEnabled (Rigidbody creation) and isStatic.
+                    // physicsEnabled itself is not persisted — derive it from the state to
+                    // match typical authoring (Rigidbody on dynamic bodies only).
                     var body = go.AddComponent<VoxelBody>();
-                    body.physicsEnabled = true;
+                    body.physicsEnabled = rec.Body == VoxelBodyState.Dynamic;
                     body.isStatic = rec.Body == VoxelBodyState.Static;
                 }
 

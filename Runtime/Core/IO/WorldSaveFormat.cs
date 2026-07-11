@@ -86,8 +86,9 @@ namespace Voxelis.IO
 
     /// <summary>
     /// Serialized physics state of an entity's <c>VoxelBody</c> component, stored on disk as one byte.
-    /// <see cref="Off"/> covers "no component" and "component present but physics disabled" alike;
-    /// pre-v3 saves read as <see cref="Off"/>. Unknown byte values are treated as <see cref="Off"/>.
+    /// <see cref="Off"/> covers "no component" and "component disabled" alike; pre-v3 saves read as
+    /// <see cref="Off"/>. Unknown byte values are treated as <see cref="Off"/>. The component's
+    /// <c>physicsEnabled</c> flag is not persisted — loaders derive it (Dynamic → true).
     /// </summary>
     public enum VoxelBodyState : byte
     {
