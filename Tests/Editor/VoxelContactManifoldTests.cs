@@ -11,9 +11,10 @@ using VoxelisX.Tests.TestSupport;
 namespace VoxelisX.Tests
 {
     /// <summary>
-    /// Tests for the voxel-voxel narrowphase (ManifoldQueries.VoxelVoxel): face-aligned contact
-    /// generation, voxel-center snapping + merging, corner support points, and the fusion of
-    /// exactly opposing contacts into bilateral (equality) constraints.
+    /// Tests for the voxel-voxel narrowphase (ManifoldQueries.VoxelVoxel): raw sphere-metric
+    /// contact generation with exposure masking and the per-cell footprint gate. The narrowphase
+    /// intentionally performs no merging or reduction (one single-point manifold per raw
+    /// contact); contact merging is a separate upcoming stage.
     /// </summary>
     public unsafe class VoxelContactManifoldTests
     {
@@ -171,9 +172,20 @@ namespace VoxelisX.Tests
             return manifolds;
         }
 
-        static bool HasPointNear(ParsedManifold manifold, float3 position, float tolerance = 1e-3f)
+        static List<ContactPoint> AllPoints(List<ParsedManifold> manifolds)
         {
-            foreach (ContactPoint point in manifold.Points)
+            var points = new List<ContactPoint>();
+            foreach (ParsedManifold manifold in manifolds)
+            {
+                points.AddRange(manifold.Points);
+            }
+
+            return points;
+        }
+
+        static bool HasPointNear(List<ContactPoint> points, float3 position, float tolerance = 1e-3f)
+        {
+            foreach (ContactPoint point in points)
             {
                 if (math.all(math.abs(point.Position - position) < tolerance))
                 {
@@ -187,7 +199,7 @@ namespace VoxelisX.Tests
         // ------------------------------------------------------------------ tests
 
         [Test]
-        public void StackedCube_ProducesOneManifoldWithFaceNormalAndFourCorners()
+        public void StackedCube_ProducesOneFaceContactUnderVoxelCenter()
         {
             using var a = new VoxelBodyFixture();
             using var b = new VoxelBodyFixture();
@@ -203,20 +215,19 @@ namespace VoxelisX.Tests
                 RigidTransform.identity,
                 out List<ParsedEvent> events);
 
-            // Exactly one manifold: no duplicate write of the last manifold (old bug), and no
-            // spurious side contacts.
+            // Exactly one raw contact: the face-aligned cell below, nothing spurious.
             Assert.That(manifolds.Count, Is.EqualTo(1));
 
             ParsedManifold m = manifolds[0];
             Assert.That(m.IsBilateral, Is.False);
             Assert.That(math.distance(m.Header.Normal, new float3(0f, 1f, 0f)), Is.LessThan(Tolerance));
 
-            // One sphere contact per voxel, snapped under the voxel center on the face plane.
+            // One sphere contact, snapped under the voxel center on the face plane.
             Assert.That(m.Points.Count, Is.EqualTo(1));
             Assert.That(m.Points[0].Distance, Is.EqualTo(0f).Within(Tolerance));
-            Assert.That(HasPointNear(m, new float3(0.5f, 1f, 0.5f)), Is.True);
+            Assert.That(HasPointNear(m.Points, new float3(0.5f, 1f, 0.5f)), Is.True);
 
-            // The per-block-pair gameplay event is still emitted.
+            // The per-contact gameplay event is still emitted.
             Assert.That(events.Count, Is.EqualTo(1));
             Assert.That(events[0].IsPhysicsContact, Is.True);
             Assert.That(math.all(events[0].VoxelInA == int3.zero), Is.True);
@@ -224,7 +235,7 @@ namespace VoxelisX.Tests
         }
 
         [Test]
-        public void OffsetStack_RestsOnFaceNormal_NoDiagonalNormals()
+        public void OffsetStack_RestsOnFaceNormals_NoDiagonalNormals()
         {
             using var a = new VoxelBodyFixture();
             using var b = new VoxelBodyFixture();
@@ -234,26 +245,28 @@ namespace VoxelisX.Tests
             a.Build();
             b.Build();
 
-            // A resting on top of B, shifted half a voxel sideways. The old sphere-based contacts
-            // either missed this entirely or produced a diagonal normal.
+            // A resting on top of B, shifted half a voxel sideways: it straddles the seam of the
+            // two floor cells, so both emit the same plane contact (raw generation, no dedup).
             List<ParsedManifold> manifolds = Collide(
                 a, b,
                 new RigidTransform(quaternion.identity, new float3(0.5f, 1f, 0f)),
                 RigidTransform.identity,
                 out _);
 
-            Assert.That(manifolds.Count, Is.EqualTo(1));
-            ParsedManifold m = manifolds[0];
-            Assert.That(math.distance(m.Header.Normal, new float3(0f, 1f, 0f)), Is.LessThan(Tolerance),
-                "Resting above a flat surface must use the face normal (exposure masking), not a diagonal");
-            Assert.That(m.Points.Count, Is.EqualTo(1));
-            Assert.That(m.Points[0].Distance, Is.EqualTo(0f).Within(Tolerance));
-            Assert.That(HasPointNear(m, new float3(1f, 1f, 0.5f)), Is.True,
-                "Contact must sit under the voxel center on the surface plane");
+            Assert.That(manifolds.Count, Is.EqualTo(2), "One raw contact per facing cell at a seam");
+            foreach (ParsedManifold m in manifolds)
+            {
+                Assert.That(math.distance(m.Header.Normal, new float3(0f, 1f, 0f)), Is.LessThan(Tolerance),
+                    "Resting above a flat surface must use the face normal (exposure masking), not a diagonal");
+                Assert.That(m.Points.Count, Is.EqualTo(1));
+                Assert.That(m.Points[0].Distance, Is.EqualTo(0f).Within(Tolerance));
+                Assert.That(HasPointNear(m.Points, new float3(1f, 1f, 0.5f)), Is.True,
+                    "Contact must sit under the voxel center on the surface plane");
+            }
         }
 
         [Test]
-        public void SnugSlot_FusesOpposingContactsIntoBilateralConstraint()
+        public void SnugSlot_ProducesTwoOpposingUnilateralContacts()
         {
             using var a = new VoxelBodyFixture();
             using var b = new VoxelBodyFixture();
@@ -263,28 +276,35 @@ namespace VoxelisX.Tests
             a.Build();
             b.Build();
 
-            // A sits exactly in the 1-voxel slot between the walls.
+            // A sits exactly in the 1-voxel slot between the walls: one raw touching contact per
+            // wall, no merging (fusion into equality constraints is the future merging stage).
             List<ParsedManifold> manifolds = Collide(
                 a, b,
                 new RigidTransform(quaternion.identity, new float3(1f, 0f, 0f)),
                 RigidTransform.identity,
                 out _);
 
-            Assert.That(manifolds.Count, Is.EqualTo(1), "Opposing contacts must fuse into one constraint");
+            Assert.That(manifolds.Count, Is.EqualTo(2));
 
-            ParsedManifold m = manifolds[0];
-            Assert.That(m.IsBilateral, Is.True);
-            Assert.That(m.Header.CoefficientOfRestitution, Is.EqualTo(0f));
-            Assert.That(math.distance(math.abs(m.Header.Normal), new float3(1f, 0f, 0f)), Is.LessThan(Tolerance));
+            float normalSumX = 0f;
+            foreach (ParsedManifold m in manifolds)
+            {
+                Assert.That(m.IsBilateral, Is.False);
+                Assert.That(math.abs(math.abs(m.Header.Normal.x) - 1f), Is.LessThan(Tolerance));
+                Assert.That(m.Points.Count, Is.EqualTo(1));
+                Assert.That(m.Points[0].Distance, Is.EqualTo(0f).Within(Tolerance));
+                normalSumX += m.Header.Normal.x;
+            }
 
-            // A single equality point at the voxel center, already centered (target distance 0).
-            Assert.That(m.Points.Count, Is.EqualTo(1));
-            Assert.That(math.all(math.abs(m.Points[0].Position - new float3(1.5f, 0.5f, 0.5f)) < 1e-3f), Is.True);
-            Assert.That(m.Points[0].Distance, Is.EqualTo(0f).Within(Tolerance));
+            Assert.That(math.abs(normalSumX), Is.LessThan(Tolerance), "The two wall normals must oppose");
+
+            List<ContactPoint> points = AllPoints(manifolds);
+            Assert.That(HasPointNear(points, new float3(1f, 0.5f, 0.5f)), Is.True, "Left wall face contact");
+            Assert.That(HasPointNear(points, new float3(2f, 0.5f, 0.5f)), Is.True, "Right wall face contact");
         }
 
         [Test]
-        public void ShiftedSnugSlot_BilateralConstraintTargetsSlackCenter()
+        public void ShiftedSnugSlot_ReportsPerSideGaps()
         {
             using var a = new VoxelBodyFixture();
             using var b = new VoxelBodyFixture();
@@ -294,25 +314,24 @@ namespace VoxelisX.Tests
             a.Build();
             b.Build();
 
-            // A pushed 0.02 into the right wall (still within the equality slop).
+            // A pushed 0.02 into the right wall: the raw contacts carry the true per-side gaps
+            // (+0.02 separation from the left wall, -0.02 penetration into the right wall).
             List<ParsedManifold> manifolds = Collide(
                 a, b,
                 new RigidTransform(quaternion.identity, new float3(1.02f, 0f, 0f)),
                 RigidTransform.identity,
                 out _);
 
-            Assert.That(manifolds.Count, Is.EqualTo(1));
-            ParsedManifold m = manifolds[0];
-            Assert.That(m.IsBilateral, Is.True);
-
-            // distance = (gap(+x face) - gap(-x face)) / 2 = (0.02 - (-0.02)) / 2 = 0.02 with the
-            // +x normal: the solver pulls A back towards the slot center.
-            float sign = m.Header.Normal.x > 0f ? 1f : -1f;
-            Assert.That(sign * m.Points[0].Distance, Is.EqualTo(0.02f).Within(1e-3f));
+            Assert.That(manifolds.Count, Is.EqualTo(2));
+            foreach (ParsedManifold m in manifolds)
+            {
+                float expected = m.Header.Normal.x > 0f ? 0.02f : -0.02f;
+                Assert.That(m.Points[0].Distance, Is.EqualTo(expected).Within(1e-3f));
+            }
         }
 
         [Test]
-        public void LooseSlot_KeepsUnilateralContact()
+        public void LooseSlot_KeepsSingleLeaningContact()
         {
             using var a = new VoxelBodyFixture();
             using var b = new VoxelBodyFixture();
@@ -322,7 +341,7 @@ namespace VoxelisX.Tests
             a.Build();
             b.Build();
 
-            // A leans against the left wall of a loose slot.
+            // A leans against the left wall of a loose slot; the far wall is out of reach.
             List<ParsedManifold> manifolds = Collide(
                 a, b,
                 new RigidTransform(quaternion.identity, new float3(1f, 0f, 0f)),
@@ -330,7 +349,7 @@ namespace VoxelisX.Tests
                 out _);
 
             Assert.That(manifolds.Count, Is.EqualTo(1));
-            Assert.That(manifolds[0].IsBilateral, Is.False, "A loose fit must stay unilateral (free to rattle)");
+            Assert.That(manifolds[0].IsBilateral, Is.False);
             Assert.That(math.distance(manifolds[0].Header.Normal, new float3(1f, 0f, 0f)), Is.LessThan(Tolerance));
         }
 
@@ -363,7 +382,7 @@ namespace VoxelisX.Tests
         }
 
         [Test]
-        public void FlatPatch_MergesIntoOneManifoldWithDedupedCorners()
+        public void FlatPatch_OneFaceContactPerSlabVoxel()
         {
             using var a = new VoxelBodyFixture();
             using var b = new VoxelBodyFixture();
@@ -386,26 +405,31 @@ namespace VoxelisX.Tests
             a.Build();
             b.Build();
 
-            // 2x2 slab resting on a 4x4 floor: one bucket per slab voxel, all sharing the +y
-            // normal, merged into a single manifold.
+            // 2x2 slab resting grid-aligned on a 4x4 floor: exactly one raw contact per slab
+            // voxel (the footprint gate stops the neighboring floor cells from re-emitting the
+            // same plane), all sharing the +y face normal.
             List<ParsedManifold> manifolds = Collide(
                 a, b,
                 new RigidTransform(quaternion.identity, new float3(1f, 1f, 1f)),
                 RigidTransform.identity,
                 out _);
 
-            Assert.That(manifolds.Count, Is.EqualTo(1), "All same-normal contacts must merge into one manifold");
-            ParsedManifold m = manifolds[0];
-            Assert.That(math.distance(m.Header.Normal, new float3(0f, 1f, 0f)), Is.LessThan(Tolerance));
-            Assert.That(m.Points.Count, Is.EqualTo(4), "One merged contact per slab voxel");
-            Assert.That(HasPointNear(m, new float3(1.5f, 1f, 1.5f)), Is.True);
-            Assert.That(HasPointNear(m, new float3(2.5f, 1f, 1.5f)), Is.True);
-            Assert.That(HasPointNear(m, new float3(1.5f, 1f, 2.5f)), Is.True);
-            Assert.That(HasPointNear(m, new float3(2.5f, 1f, 2.5f)), Is.True);
+            Assert.That(manifolds.Count, Is.EqualTo(4), "One raw contact per slab voxel");
+            foreach (ParsedManifold m in manifolds)
+            {
+                Assert.That(math.distance(m.Header.Normal, new float3(0f, 1f, 0f)), Is.LessThan(Tolerance));
+                Assert.That(m.Points.Count, Is.EqualTo(1));
+            }
+
+            List<ContactPoint> points = AllPoints(manifolds);
+            Assert.That(HasPointNear(points, new float3(1.5f, 1f, 1.5f)), Is.True);
+            Assert.That(HasPointNear(points, new float3(2.5f, 1f, 1.5f)), Is.True);
+            Assert.That(HasPointNear(points, new float3(1.5f, 1f, 2.5f)), Is.True);
+            Assert.That(HasPointNear(points, new float3(2.5f, 1f, 2.5f)), Is.True);
         }
 
         [Test]
-        public void LargePatch_ReducesToManifoldLimitKeepingRimCorners()
+        public void LargePatch_EmitsRawContactsWithoutReduction()
         {
             using var a = new VoxelBodyFixture();
             using var b = new VoxelBodyFixture();
@@ -428,61 +452,30 @@ namespace VoxelisX.Tests
             a.Build();
             b.Build();
 
-            // 10x10 slab on a 12x12 floor: 100 contact points reduce to the 32 point manifold
-            // limit, and the reduction must keep the rim extremes (support polygon).
+            // 10x10 slab on a 12x12 floor: raw generation keeps all 100 per-voxel contacts (no
+            // reduction; that is the future merging stage's job).
             List<ParsedManifold> manifolds = Collide(
                 a, b,
                 new RigidTransform(quaternion.identity, new float3(1f, 1f, 1f)),
                 RigidTransform.identity,
                 out _);
 
-            Assert.That(manifolds.Count, Is.EqualTo(1));
-            ParsedManifold m = manifolds[0];
-            Assert.That(m.Points.Count, Is.EqualTo(32));
-            Assert.That(HasPointNear(m, new float3(1.5f, 1f, 1.5f)), Is.True, "Rim point must survive reduction");
-            Assert.That(HasPointNear(m, new float3(10.5f, 1f, 1.5f)), Is.True, "Rim point must survive reduction");
-            Assert.That(HasPointNear(m, new float3(1.5f, 1f, 10.5f)), Is.True, "Rim point must survive reduction");
-            Assert.That(HasPointNear(m, new float3(10.5f, 1f, 10.5f)), Is.True, "Rim point must survive reduction");
-        }
-
-        [Test]
-        public void LongSnugRail_EqualityPointsReduceToLateralExtremes()
-        {
-            using var a = new VoxelBodyFixture();
-            using var b = new VoxelBodyFixture();
-
-            // 1x1x6 pole inside a 6-long snug slot (walls at x=0 and x=2).
-            for (int z = 0; z < 6; z++)
+            Assert.That(manifolds.Count, Is.EqualTo(100));
+            foreach (ParsedManifold m in manifolds)
             {
-                a.Set(0, 0, z);
-                b.Set(0, 0, z);
-                b.Set(2, 0, z);
+                Assert.That(m.Points.Count, Is.EqualTo(1));
+                Assert.That(math.distance(m.Header.Normal, new float3(0f, 1f, 0f)), Is.LessThan(Tolerance));
             }
 
-            a.Build();
-            b.Build();
-
-            List<ParsedManifold> manifolds = Collide(
-                a, b,
-                new RigidTransform(quaternion.identity, new float3(1f, 0f, 0f)),
-                RigidTransform.identity,
-                out _);
-
-            // 6 per-voxel fusions share one normal, so the constraint space has rank <= 3 and the
-            // manifold must reduce to the lateral extremes (the two rail ends) without losing
-            // rigidity.
-            Assert.That(manifolds.Count, Is.EqualTo(1));
-            ParsedManifold m = manifolds[0];
-            Assert.That(m.IsBilateral, Is.True);
-            Assert.That(math.distance(math.abs(m.Header.Normal), new float3(1f, 0f, 0f)), Is.LessThan(Tolerance));
-            Assert.That(m.Points.Count, Is.LessThanOrEqualTo(4), "Equality group must reduce to its extremes");
-            Assert.That(m.Points.Count, Is.GreaterThanOrEqualTo(2));
-            Assert.That(HasPointNear(m, new float3(1.5f, 0.5f, 0.5f)), Is.True, "Rail end must survive reduction");
-            Assert.That(HasPointNear(m, new float3(1.5f, 0.5f, 5.5f)), Is.True, "Rail end must survive reduction");
+            List<ContactPoint> points = AllPoints(manifolds);
+            Assert.That(HasPointNear(points, new float3(1.5f, 1f, 1.5f)), Is.True);
+            Assert.That(HasPointNear(points, new float3(10.5f, 1f, 1.5f)), Is.True);
+            Assert.That(HasPointNear(points, new float3(1.5f, 1f, 10.5f)), Is.True);
+            Assert.That(HasPointNear(points, new float3(10.5f, 1f, 10.5f)), Is.True);
         }
 
         [Test]
-        public void RotatedVoxelInSnugSlot_StillFusesBilateral_SphereMetricIsRotationInvariant()
+        public void RotatedVoxelInSnugSlot_NoJamming_SphereMetricIsRotationInvariant()
         {
             using var a = new VoxelBodyFixture();
             using var b = new VoxelBodyFixture();
@@ -505,12 +498,13 @@ namespace VoxelisX.Tests
                 RigidTransform.identity,
                 out _);
 
-            Assert.That(manifolds.Count, Is.EqualTo(1));
-            ParsedManifold m = manifolds[0];
-            Assert.That(m.IsBilateral, Is.True, "Rotation must not break the snug-fit fusion");
-            Assert.That(m.Points.Count, Is.EqualTo(1));
-            Assert.That(math.abs(m.Points[0].Distance), Is.LessThan(1e-3f),
-                "Rotation must not create penetration (no jamming of rotated voxels)");
+            Assert.That(manifolds.Count, Is.EqualTo(2));
+            foreach (ParsedManifold m in manifolds)
+            {
+                Assert.That(m.Points.Count, Is.EqualTo(1));
+                Assert.That(math.abs(m.Points[0].Distance), Is.LessThan(1e-3f),
+                    "Rotation must not create penetration (no jamming of rotated voxels)");
+            }
         }
 
         [Test]
@@ -542,7 +536,7 @@ namespace VoxelisX.Tests
         }
 
         [Test]
-        public void PegInSnugHole_LocksBothLateralAxes_LeavesSlideAxisFree()
+        public void PegInSnugHole_ContactsOnlyOnLateralFaces()
         {
             using var a = new VoxelBodyFixture();
             using var b = new VoxelBodyFixture();
@@ -571,25 +565,30 @@ namespace VoxelisX.Tests
             a.Build();
             b.Build();
 
-            // Peg exactly inside the hole.
+            // Peg exactly inside the hole: each peg voxel touches the four wall faces of its own
+            // layer (the footprint gate keeps other layers and the collar corners silent), and
+            // nothing constrains the slide axis.
             List<ParsedManifold> manifolds = Collide(
                 a, b,
                 new RigidTransform(quaternion.identity, new float3(1f, 0f, 1f)),
                 RigidTransform.identity,
                 out _);
 
-            int bilateralX = 0;
-            int bilateralZ = 0;
+            Assert.That(manifolds.Count, Is.EqualTo(8), "Four wall contacts per peg voxel");
+
+            int contactsX = 0;
+            int contactsZ = 0;
             foreach (ParsedManifold m in manifolds)
             {
-                Assert.That(m.IsBilateral, Is.True, "A snug peg must produce only equality constraints");
+                Assert.That(m.Points.Count, Is.EqualTo(1));
+                Assert.That(math.abs(m.Points[0].Distance), Is.LessThan(1e-3f));
                 if (math.abs(m.Header.Normal.x) > 0.9f)
                 {
-                    bilateralX += m.Points.Count;
+                    contactsX++;
                 }
                 else if (math.abs(m.Header.Normal.z) > 0.9f)
                 {
-                    bilateralZ += m.Points.Count;
+                    contactsZ++;
                 }
                 else
                 {
@@ -597,10 +596,44 @@ namespace VoxelisX.Tests
                 }
             }
 
-            // One equality point per peg voxel per locked axis: rigid against translation and
-            // tilt, while the y axis stays free to slide.
-            Assert.That(bilateralX, Is.EqualTo(2));
-            Assert.That(bilateralZ, Is.EqualTo(2));
+            Assert.That(contactsX, Is.EqualTo(4));
+            Assert.That(contactsZ, Is.EqualTo(4));
+        }
+
+        [Test]
+        public void InsideCornerStep_NoPhantomDeepContact()
+        {
+            using var a = new VoxelBodyFixture();
+            using var b = new VoxelBodyFixture();
+            a.Set(0, 0, 0);
+
+            // An inside corner: a step cell (0,0,1) and a wall cell (0,1,0) meeting at the corner
+            // cell (0,0,0), whose +y and +z faces are both unexposed while +-x stay exposed.
+            b.Set(0, 0, 0);
+            b.Set(0, 1, 0);
+            b.Set(0, 0, 1);
+            a.Build();
+            b.Build();
+
+            // A rests in the corner, diagonally offset (~0, +1, +1) from the corner cell, with a
+            // tiny x misalignment. The old unbounded masking collapsed the corner cell's delta to
+            // (~0.0002, 0, 0) and fabricated a full-depth (~-1) contact along x, launching the
+            // body sideways (the "pop off the pole" bug). The footprint gate must keep the corner
+            // cell silent; only the two real face contacts remain.
+            List<ParsedManifold> manifolds = Collide(
+                a, b,
+                new RigidTransform(quaternion.identity, new float3(0.0002f, 1f, 1f)),
+                RigidTransform.identity,
+                out _);
+
+            Assert.That(manifolds.Count, Is.EqualTo(2), "Only the step and wall face contacts");
+            foreach (ParsedManifold m in manifolds)
+            {
+                Assert.That(m.Points[0].Distance, Is.GreaterThan(-0.01f),
+                    "No fabricated deep contact from the inside corner");
+                Assert.That(math.abs(m.Header.Normal.x), Is.LessThan(0.5f),
+                    "No contact along the corner cell's exposed axis");
+            }
         }
     }
 }
