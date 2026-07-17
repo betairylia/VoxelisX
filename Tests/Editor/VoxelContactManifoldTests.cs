@@ -79,8 +79,6 @@ namespace VoxelisX.Tests
         {
             public ContactHeader Header;
             public List<ContactPoint> Points;
-
-            public bool IsBilateral => (Header.JacobianFlags & JacobianFlags.IsBilateral) != 0;
         }
 
         struct ParsedEvent
@@ -219,7 +217,6 @@ namespace VoxelisX.Tests
             Assert.That(manifolds.Count, Is.EqualTo(1));
 
             ParsedManifold m = manifolds[0];
-            Assert.That(m.IsBilateral, Is.False);
             Assert.That(math.distance(m.Header.Normal, new float3(0f, 1f, 0f)), Is.LessThan(Tolerance));
 
             // One sphere contact, snapped under the voxel center on the face plane.
@@ -289,7 +286,6 @@ namespace VoxelisX.Tests
             float normalSumX = 0f;
             foreach (ParsedManifold m in manifolds)
             {
-                Assert.That(m.IsBilateral, Is.False);
                 Assert.That(math.abs(math.abs(m.Header.Normal.x) - 1f), Is.LessThan(Tolerance));
                 Assert.That(m.Points.Count, Is.EqualTo(1));
                 Assert.That(m.Points[0].Distance, Is.EqualTo(0f).Within(Tolerance));
@@ -349,7 +345,6 @@ namespace VoxelisX.Tests
                 out _);
 
             Assert.That(manifolds.Count, Is.EqualTo(1));
-            Assert.That(manifolds[0].IsBilateral, Is.False);
             Assert.That(math.distance(manifolds[0].Header.Normal, new float3(1f, 0f, 0f)), Is.LessThan(Tolerance));
         }
 
@@ -528,7 +523,6 @@ namespace VoxelisX.Tests
 
             Assert.That(manifolds.Count, Is.EqualTo(1));
             ParsedManifold m = manifolds[0];
-            Assert.That(m.IsBilateral, Is.False);
             Assert.That(m.Points.Count, Is.EqualTo(1));
             Assert.That(m.Points[0].Distance, Is.EqualTo(0f).Within(1e-3f));
             Assert.That(math.distance(m.Header.Normal, new float3(0.8f, 0.6f, 0f)), Is.LessThan(1e-3f),

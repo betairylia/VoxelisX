@@ -101,7 +101,7 @@ namespace Voxelis.Simulation
             }
 
             // Aggregate this frame's physics contacts, detailing the suspicious ones.
-            int total = 0, axisCount = 0, diagonalCount = 0, bilateralCount = 0;
+            int total = 0, axisCount = 0, diagonalCount = 0;
             float minDist = float.MaxValue;
             float maxHorizNormal = 0f;
             var details = new StringBuilder();
@@ -114,7 +114,6 @@ namespace Voxelis.Simulation
                 }
 
                 total++;
-                if (e.IsBilateral) bilateralCount++;
                 if (e.IsDiagonal) diagonalCount++; else axisCount++;
 
                 minDist = math.min(minDist, e.Distance);
@@ -125,7 +124,7 @@ namespace Voxelis.Simulation
                 if ((e.IsDiagonal || e.Distance < 0f) && details.Length < k_ContactDebugDetailCharCap)
                 {
                     details.Append(
-                        $"\n  ! {(e.IsBilateral ? "BI " : "")}{(e.IsDiagonal ? "DIAG" : "axis")} " +
+                        $"\n  ! {(e.IsDiagonal ? "DIAG" : "axis")} " +
                         $"A{e.BodyIndexA}{e.VoxelCoordsInA} B{e.BodyIndexB}{e.VoxelCoordsInB} " +
                         $"n=({n.x:F2},{n.y:F2},{n.z:F2}) d={e.Distance:F5}");
                 }
@@ -152,7 +151,7 @@ namespace Voxelis.Simulation
             Debug.Log(
                 $"[VoxelContactDebug] frame {debugFrameCount} {header}\n" +
                 $"  contacts total={total} axis={axisCount} diagonal={diagonalCount} " +
-                $"bilateral={bilateralCount} minDist={minDist:F5} maxHorizN={maxHorizNormal:F3}" +
+                $"minDist={minDist:F5} maxHorizN={maxHorizNormal:F3}" +
                 velSummary + details);
         }
     }
