@@ -101,7 +101,7 @@ namespace Voxelis.Simulation
             }
 
             // Aggregate this frame's physics contacts, detailing the suspicious ones.
-            int total = 0, axisCount = 0, diagonalCount = 0;
+            int total = 0, freeCount = 0, binnedCount = 0;
             float minDist = float.MaxValue;
             float maxHorizNormal = 0f;
             var details = new StringBuilder();
@@ -114,17 +114,17 @@ namespace Voxelis.Simulation
                 }
 
                 total++;
-                if (e.IsDiagonal) diagonalCount++; else axisCount++;
+                if (e.NormalBin == 0) freeCount++; else binnedCount++;
 
                 minDist = math.min(minDist, e.Distance);
                 float3 n = e.Normal;
                 maxHorizNormal = math.max(maxHorizNormal, math.length(new float2(n.x, n.z)));
 
-                // The smoking guns for the launch: tilted (diagonal) or penetrating contacts.
-                if ((e.IsDiagonal || e.Distance < 0f) && details.Length < k_ContactDebugDetailCharCap)
+                // Detail the newsworthy contacts: penetrating ones and binned (constrained) ones.
+                if ((e.NormalBin != 0 || e.Distance < 0f) && details.Length < k_ContactDebugDetailCharCap)
                 {
                     details.Append(
-                        $"\n  ! {(e.IsDiagonal ? "DIAG" : "axis")} " +
+                        $"\n  ! {(e.NormalBin == 0 ? "free  " : $"bin{e.NormalBin,3} ")}" +
                         $"A{e.BodyIndexA}{e.VoxelCoordsInA} B{e.BodyIndexB}{e.VoxelCoordsInB} " +
                         $"n=({n.x:F2},{n.y:F2},{n.z:F2}) d={e.Distance:F5}");
                 }
@@ -150,7 +150,7 @@ namespace Voxelis.Simulation
 
             Debug.Log(
                 $"[VoxelContactDebug] frame {debugFrameCount} {header}\n" +
-                $"  contacts total={total} axis={axisCount} diagonal={diagonalCount} " +
+                $"  contacts total={total} free={freeCount} binned={binnedCount} " +
                 $"minDist={minDist:F5} maxHorizN={maxHorizNormal:F3}" +
                 velSummary + details);
         }
