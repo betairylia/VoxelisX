@@ -114,17 +114,20 @@ namespace Voxelis.Simulation
                 }
 
                 total++;
-                if (e.NormalBin == 0) freeCount++; else binnedCount++;
+                // if (e.NormalBin == 0) freeCount++; else binnedCount++;
+                freeCount++;
 
                 minDist = math.min(minDist, e.Distance);
                 float3 n = e.Normal;
                 maxHorizNormal = math.max(maxHorizNormal, math.length(new float2(n.x, n.z)));
 
                 // Detail the newsworthy contacts: penetrating ones and binned (constrained) ones.
-                if ((e.NormalBin != 0 || e.Distance < 0f) && details.Length < k_ContactDebugDetailCharCap)
+                // if ((e.NormalBin != 0 || e.Distance < 0f) && details.Length < k_ContactDebugDetailCharCap)
+                if ((e.Distance < 0f) && details.Length < k_ContactDebugDetailCharCap)
                 {
                     details.Append(
-                        $"\n  ! {(e.NormalBin == 0 ? "free  " : $"bin{e.NormalBin,3} ")}" +
+                        // $"\n  ! {(e.NormalBin == 0 ? "free  " : $"bin{e.NormalBin,3} ")}" +
+                        $"\n  ! {e._debug_constraintRecord}  " +
                         $"A{e.BodyIndexA}{e.VoxelCoordsInA} B{e.BodyIndexB}{e.VoxelCoordsInB} " +
                         $"n=({n.x:F2},{n.y:F2},{n.z:F2}) d={e.Distance:F5}");
                 }

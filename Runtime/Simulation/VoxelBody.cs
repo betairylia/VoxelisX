@@ -68,7 +68,7 @@ namespace Voxelis
         {
             var material = new Unity.Physics.Material
             {
-                Friction = 0.5f,
+                Friction = 0.1f,
                 Restitution = 0.0f,
                 FrictionCombinePolicy = Unity.Physics.Material.CombinePolicy.GeometricMean,
                 RestitutionCombinePolicy = Unity.Physics.Material.CombinePolicy.GeometricMean,
