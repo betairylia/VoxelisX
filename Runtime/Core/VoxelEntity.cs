@@ -512,7 +512,7 @@ namespace Voxelis
             // with a new random guid, which would silently break save/load round-tripping of GUIDs.
             Guid128 preAssignedGuid = data.Guid;
             data = new VoxelEntityData(Allocator.Persistent, transform, ref globalEntityRandomState);
-            if (preAssignedGuid.HasValue)
+            if (!preAssignedGuid.IsZero)
             {
                 data.Guid = preAssignedGuid;
             }
