@@ -22,23 +22,27 @@ namespace Voxelis.IO
             writer.Commit();
         }
 
-        public static void Save(string path, IReadOnlyList<(Guid128 Guid, VoxelEntity Entity, VoxelBodyState Body)> entities)
+        public static void Save(
+            string path,
+            IReadOnlyList<(Guid128 Guid, VoxelEntity Entity, VoxelBodyState Body, float3 LinearVelocity, float3 AngularVelocity)> entities)
         {
             using var writer = SingleFileSaveStorage.OpenWrite(path);
             for (int i = 0; i < entities.Count; i++)
             {
-                var (guid, entity, body) = entities[i];
-                SaveEntity(writer, guid, entity, body);
+                var (guid, entity, body, linearVelocity, angularVelocity) = entities[i];
+                SaveEntity(writer, guid, entity, body, linearVelocity, angularVelocity);
             }
             writer.Commit();
         }
 
         public static unsafe void SaveEntity(
-            IWorldSaveWriter writer, Guid128 guid, VoxelEntity entity, VoxelBodyState body = VoxelBodyState.Off)
+            IWorldSaveWriter writer, Guid128 guid, VoxelEntity entity, VoxelBodyState body = VoxelBodyState.Off,
+            float3 linearVelocity = default, float3 angularVelocity = default)
         {
             var data = entity.GetDataCopy();
             var transformRec = new EntityTransformRecord(data.transform.pos, data.transform.rot);
-            var entityRecord = new EntityRecord(guid, transformRec, data.entityRequireUpdateFlags, body);
+            var entityRecord = new EntityRecord(
+                guid, transformRec, data.entityRequireUpdateFlags, body, linearVelocity, angularVelocity);
             writer.WriteEntity(in entityRecord, EnumerateSectors(data));
         }
 

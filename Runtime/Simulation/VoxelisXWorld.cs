@@ -430,12 +430,13 @@ Profiler.EndSample();
         /// </summary>
         public void Save(string path)
         {
-            var list = new List<(Guid128, VoxelEntity, VoxelBodyState)>(entities.Count);
+            var list = new List<(Guid128, VoxelEntity, VoxelBodyState, float3, float3)>(entities.Count);
             foreach(var e in entities.Values)
             {
                 // TODO: FIXME: Subtle bug -- will this break tick continuity? (this overwrites prevTransform)
                 e.SyncTransformToData();
-                list.Add((e.PersistentGuid, e, CaptureBodyState(e)));
+                var (bodyState, linearVelocity, angularVelocity) = CaptureBodyState(e);
+                list.Add((e.PersistentGuid, e, bodyState, linearVelocity, angularVelocity));
             }
             WorldSaver.Save(path, list);
         }
@@ -450,15 +451,24 @@ Profiler.EndSample();
         /// Uses GetComponent rather than the <see cref="bodies"/> dictionary so bodies on
         /// entities that are not currently registered are still captured.
         /// </summary>
-        private static VoxelBodyState CaptureBodyState(VoxelEntity e)
+        private static (VoxelBodyState State, float3 LinearVelocity, float3 AngularVelocity) CaptureBodyState(VoxelEntity e)
         {
             if (!e.TryGetComponent<VoxelBody>(out var body) || !body.enabled)
             {
                 Debug.LogWarning($"Captured VoxelBodyState.Off for {e.name}");
-                return VoxelBodyState.Off;
+                return (VoxelBodyState.Off, float3.zero, float3.zero);
             }
 
-            return body.isStatic ? VoxelBodyState.Static : VoxelBodyState.Dynamic;
+            if (body.isStatic)
+            {
+                // Static bodies never move; velocity is meaningless, so persist zero.
+                return (VoxelBodyState.Static, float3.zero, float3.zero);
+            }
+
+            // Persist the current physics velocity so the body resumes its motion on load rather
+            // than restarting from rest. GetDataCopy reflects the latest tick's exported velocity.
+            var motionVelocity = body.GetDataCopy().motionVelocity;
+            return (VoxelBodyState.Dynamic, motionVelocity.LinearVelocity, motionVelocity.AngularVelocity);
         }
 
         /// <summary>
@@ -508,6 +518,14 @@ Profiler.EndSample();
                 }
 
                 go.SetActive(true);
+
+                // Restore physics velocity AFTER activation — VoxelBody.Awake reinitializes its data
+                // (motionVelocity back to zero), so this must run once the component is live. Only
+                // dynamic bodies carry meaningful velocity; the solver ignores a static body's.
+                if (rec.Body == VoxelBodyState.Dynamic && go.TryGetComponent<VoxelBody>(out var loadedBody))
+                {
+                    loadedBody.SetVelocity(rec.LinearVelocity, rec.AngularVelocity);
+                }
 
                 return e;
             });

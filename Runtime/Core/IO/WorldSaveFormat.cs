@@ -31,6 +31,8 @@ namespace Voxelis.IO
     ///     7  × f32 transform (pos.xyz + rot.xyzw)
     ///     u16 entityRequireUpdateFlags
     ///     u8  bodyState              (v3+; 0 = off/none, 1 = static, 2 = dynamic)
+    ///     6  × f32 velocity          (v4+; linear.xyz + angular.xyz — the dynamic body's physics
+    ///                                 velocity so motion resumes on load; zero for pre-v4 saves)
     ///     u64 sectorIndexOffset
     ///     u32 sectorCount
     /// </code>
@@ -40,7 +42,7 @@ namespace Voxelis.IO
         /// <summary>Magic value for the file header: "VXLS" interpreted as little-endian u32.</summary>
         public const uint FileMagic = 0x534C5856u;
 
-        public const ushort CurrentVersion = 3;
+        public const ushort CurrentVersion = 4;
         public const int HeaderBytes = 64;
 
         /// <summary>Size in bytes of the uncompressed per-sector preview blob (u32 per brick).</summary>
@@ -49,8 +51,8 @@ namespace Voxelis.IO
         /// <summary>Byte size of one entry in a per-entity sector index: int3 coord (12) + u64 offset (8) + u32 size (4).</summary>
         public const int SectorIndexEntryBytes = 12 + 8 + 4;
 
-        /// <summary>Byte size of one entity record in the entity table (v3: +1 body-flags byte).</summary>
-        public const int EntityRecordBytes = 16 + 28 + 2 + 1 + 8 + 4;
+        /// <summary>Byte size of one entity record in the entity table (v3: +1 body-flags byte; v4: +24 velocity bytes).</summary>
+        public const int EntityRecordBytes = 16 + 28 + 2 + 1 + 24 + 8 + 4;
     }
 
     [Flags]
@@ -104,6 +106,13 @@ namespace Voxelis.IO
         public readonly ushort EntityRequireUpdateFlags;
         public readonly VoxelBodyState Body;
 
+        /// <summary>
+        /// The body's physics velocity at save time (v4+). Persisted so a dynamic body resumes its
+        /// motion on load instead of restarting from rest. Zero for static/off bodies and pre-v4 saves.
+        /// </summary>
+        public readonly float3 LinearVelocity;
+        public readonly float3 AngularVelocity;
+
         public EntityRecord(Guid128 guid, EntityTransformRecord transform, ushort entityRequireUpdateFlags)
             : this(guid, transform, entityRequireUpdateFlags, VoxelBodyState.Off)
         {
@@ -114,11 +123,24 @@ namespace Voxelis.IO
             EntityTransformRecord transform,
             ushort entityRequireUpdateFlags,
             VoxelBodyState body)
+            : this(guid, transform, entityRequireUpdateFlags, body, float3.zero, float3.zero)
+        {
+        }
+
+        public EntityRecord(
+            Guid128 guid,
+            EntityTransformRecord transform,
+            ushort entityRequireUpdateFlags,
+            VoxelBodyState body,
+            float3 linearVelocity,
+            float3 angularVelocity)
         {
             Guid = guid;
             Transform = transform;
             EntityRequireUpdateFlags = entityRequireUpdateFlags;
             Body = body;
+            LinearVelocity = linearVelocity;
+            AngularVelocity = angularVelocity;
         }
     }
 

@@ -502,6 +502,39 @@ namespace VoxelisX.Tests
         }
 
         [Test]
+        public void WriteRead_RoundTripsBodyVelocity()
+        {
+            uint[] preview = new uint[Sector.BRICKS_IN_SECTOR];
+            byte[] payload = new byte[] { 1, 2, 3 };
+
+            Guid128 guid = NewGuid128();
+            float3 linearVelocity = new float3(1.5f, -2.25f, 3.75f);
+            float3 angularVelocity = new float3(-0.5f, 0.25f, -1.0f);
+
+            using (var writer = SingleFileSaveStorage.OpenWrite(_tempPath))
+            {
+                var rec = new EntityRecord(guid, default, 0, VoxelBodyState.Dynamic, linearVelocity, angularVelocity);
+                writer.WriteEntity(in rec, new[]
+                {
+                    new SectorWriteRecord(new int3(0, 0, 0), preview, payload),
+                });
+                writer.Commit();
+            }
+
+            using var reader = SingleFileSaveStorage.OpenRead(_tempPath);
+            Assert.That(reader.Header.Version, Is.EqualTo(WorldSaveFormat.CurrentVersion));
+
+            var read = reader.ReadEntityRecord(0);
+            Assert.That(read.Body, Is.EqualTo(VoxelBodyState.Dynamic));
+            Assert.That(read.LinearVelocity.x, Is.EqualTo(linearVelocity.x).Within(1e-6f));
+            Assert.That(read.LinearVelocity.y, Is.EqualTo(linearVelocity.y).Within(1e-6f));
+            Assert.That(read.LinearVelocity.z, Is.EqualTo(linearVelocity.z).Within(1e-6f));
+            Assert.That(read.AngularVelocity.x, Is.EqualTo(angularVelocity.x).Within(1e-6f));
+            Assert.That(read.AngularVelocity.y, Is.EqualTo(angularVelocity.y).Within(1e-6f));
+            Assert.That(read.AngularVelocity.z, Is.EqualTo(angularVelocity.z).Within(1e-6f));
+        }
+
+        [Test]
         public void OpenRead_Version2Save_ReadsBodyStateAsOff()
         {
             // Hand-write a v2 file: its entity records have no body-state byte.

@@ -42,6 +42,17 @@ namespace Voxelis
             data.isStatic = _isStatic;
         }
 
+        /// <summary>
+        /// Overwrites the body's physics velocity. Used by world load to resume a dynamic body's
+        /// motion (the solver reads motionVelocity when building the physics world each tick).
+        /// Harmless on static bodies, whose velocity the solver ignores.
+        /// </summary>
+        public void SetVelocity(float3 linearVelocity, float3 angularVelocity)
+        {
+            data.motionVelocity.LinearVelocity = linearVelocity;
+            data.motionVelocity.AngularVelocity = angularVelocity;
+        }
+
         public VoxelEntity entity
         {
             get

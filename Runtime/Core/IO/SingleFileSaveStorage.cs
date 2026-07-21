@@ -148,6 +148,12 @@ namespace Voxelis.IO
                 _writer.Write(rec.Transform.Rotation.value.w);
                 _writer.Write(rec.EntityRequireUpdateFlags);
                 _writer.Write((byte)rec.Body);
+                _writer.Write(rec.LinearVelocity.x);
+                _writer.Write(rec.LinearVelocity.y);
+                _writer.Write(rec.LinearVelocity.z);
+                _writer.Write(rec.AngularVelocity.x);
+                _writer.Write(rec.AngularVelocity.y);
+                _writer.Write(rec.AngularVelocity.z);
                 _writer.Write((ulong)_entityIndexLocations[i].IndexOffset);
                 _writer.Write((uint)_entityIndexLocations[i].SectorCount);
             }
@@ -215,10 +221,19 @@ namespace Voxelis.IO
                 // Body-state byte exists from format v3 onward; older saves have no body info.
                 var body = version >= 3 ? (VoxelBodyState)_reader.ReadByte() : VoxelBodyState.Off;
                 if (body > VoxelBodyState.Dynamic) body = VoxelBodyState.Off;
+                // Body physics velocity exists from format v4 onward; older saves read as zero (rest).
+                float3 linearVelocity = float3.zero;
+                float3 angularVelocity = float3.zero;
+                if (version >= 4)
+                {
+                    linearVelocity = new float3(_reader.ReadSingle(), _reader.ReadSingle(), _reader.ReadSingle());
+                    angularVelocity = new float3(_reader.ReadSingle(), _reader.ReadSingle(), _reader.ReadSingle());
+                }
                 ulong idxOff = _reader.ReadUInt64();
                 uint sectCount = _reader.ReadUInt32();
 
-                _readEntities.Add(new EntityRecord(guid, new EntityTransformRecord(pos, rot), entFlags, body));
+                _readEntities.Add(new EntityRecord(
+                    guid, new EntityTransformRecord(pos, rot), entFlags, body, linearVelocity, angularVelocity));
                 indexLocations[i] = ((long)idxOff, (int)sectCount);
             }
 
