@@ -372,6 +372,20 @@ namespace Voxelis.Rendering
 
             if (isDirty)
             {
+                // Guard against an empty brick buffer: RayTracingAABBsInstanceConfig / AddInstance
+                // throw on aabbCount==0. A sector can legitimately have no renderable bricks for a
+                // frame — e.g. a freshly loaded sector whose render-data job hasn't populated the
+                // brick buffer yet, or a sector all of whose faces are currently culled. Because
+                // isDirty is only cleared at the end of this method, letting AddInstance throw here
+                // left isDirty stuck true, so it re-threw every frame and stalled the entire RTAS
+                // update (no other sector could update either). Skip the instance instead and clear
+                // isDirty; the sector re-dirties and retries once real geometry appears.
+                if (BrickBufferSize == 0)
+                {
+                    isDirty = false;
+                    return;
+                }
+
                 // Create AABB config here now that we have sector info
                 if (AABBconfig.aabbCount == 0 && matProps != null)
                 {
