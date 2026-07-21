@@ -506,7 +506,16 @@ namespace Voxelis
 
         private void Awake()
         {
+            // A loader (e.g. WorldLoader) may assign PersistentGuid while the GameObject is still
+            // inactive — that write lands on the default `data` struct BEFORE this Awake runs.
+            // Capture it first so the fresh allocation below doesn't clobber the restored identity
+            // with a new random guid, which would silently break save/load round-tripping of GUIDs.
+            Guid128 preAssignedGuid = data.Guid;
             data = new VoxelEntityData(Allocator.Persistent, transform, ref globalEntityRandomState);
+            if (preAssignedGuid.HasValue)
+            {
+                data.Guid = preAssignedGuid;
+            }
         }
 
         public void CopyDataFrom(VoxelEntityData srcData)

@@ -495,10 +495,15 @@ Profiler.EndSample();
                 {
                     // Fields must be assigned while the GameObject is still inactive:
                     // VoxelBody.Awake consumes physicsEnabled (Rigidbody creation) and isStatic.
-                    // physicsEnabled itself is not persisted — derive it from the state to
-                    // match typical authoring (Rigidbody on dynamic bodies only).
+                    // physicsEnabled must stay OFF: it only makes VoxelBody.Awake spawn a Unity
+                    // Rigidbody, which the voxel physics never reads (participation is registration
+                    // + isStatic). Authoring (e.g. CreateAlignedDetachedEntity) leaves it false and
+                    // lets the voxel sim drive the body. Deriving it as `Dynamic -> true` here spawned
+                    // a rogue PhysX Rigidbody that free-fell under gravity and fought the sim's
+                    // per-frame transform writes, so loaded dynamic bodies drifted off and looked
+                    // like they "failed to load" while static bodies (no Rigidbody) stayed put.
                     var body = go.AddComponent<VoxelBody>();
-                    body.physicsEnabled = rec.Body == VoxelBodyState.Dynamic;
+                    body.physicsEnabled = false;
                     body.isStatic = rec.Body == VoxelBodyState.Static;
                 }
 
