@@ -120,6 +120,12 @@ public class VoxelisXDebugGUI : MonoBehaviour
     {
         UpdatePerformanceStats();
 
+        // Don't react to hotkeys while a console/UI is capturing keyboard input.
+        if (InputFocus.KeyboardCaptured)
+        {
+            return;
+        }
+
         // Toggle visibility with P key
         if (Input.GetKeyDown(toggleKey))
         {

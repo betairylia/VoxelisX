@@ -488,8 +488,16 @@ Profiler.EndSample();
         [InspectorButton("Load World", PlayModeOnly = true)]
         public void Load()
         {
-            string path = ResolveSaveLoadPath();
+            Load(ResolveSaveLoadPath());
+        }
 
+        /// <summary>
+        /// Loads every <see cref="VoxelEntity"/> stored in the <c>.vxw</c> file at <paramref name="path"/>.
+        /// Mirrors <see cref="Save(string)"/> so callers (e.g. tooling / a dev console) can target an
+        /// arbitrary path instead of the inspector-configured one.
+        /// </summary>
+        public void Load(string path)
+        {
             WorldLoader.Load(path, rec =>
             {
                 var go = new GameObject($"VoxelEntity_{rec.Guid}");
