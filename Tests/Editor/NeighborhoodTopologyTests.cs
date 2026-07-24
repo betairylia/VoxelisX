@@ -24,6 +24,29 @@ namespace VoxelisX.Tests
         }
 
         [Test]
+        public void NeighborhoodReaderGetSlotReadsNonBlockSlotAcrossBoundary()
+        {
+            using var scope = new EntityDataTestScope();
+            var center = scope.AddSector(new int3(0, 0, 0));
+            var right = scope.AddSector(new int3(1, 0, 0));
+
+            // Reserved1 (index 2) is the slot Titania maps its per-voxel Meta onto. Exercise the
+            // generic GetSlot<T> path a metadata automaton relies on for cross-brick neighbor reads.
+            const SectorSlotId metaSlot = (SectorSlotId)2;
+            right.SetSlot(metaSlot, 0, 0, 0, (short)0x1234);
+            center.SetSlot(metaSlot, 3, 4, 5, (short)0x0ABC);
+
+            var reader = new SectorNeighborhoodReaderHelper(center, scope.NeighborsAt(new int3(0, 0, 0)));
+
+            // x == 128 wraps into the +X neighbor's local origin.
+            Assert.That(reader.GetSlot<short>(metaSlot, Sector.SECTOR_SIZE_IN_BLOCKS, 0, 0), Is.EqualTo((short)0x1234));
+            // In-bounds fast path stays on the center sector.
+            Assert.That(reader.GetSlot<short>(metaSlot, new int3(3, 4, 5)), Is.EqualTo((short)0x0ABC));
+            // Missing neighbor yields default, never throws.
+            Assert.That(reader.GetSlot<short>(metaSlot, 0, 0, -1), Is.EqualTo((short)0));
+        }
+
+        [Test]
         public void AddSectorLinksCornerNeighborBidirectionally()
         {
             using var scope = new EntityDataTestScope();

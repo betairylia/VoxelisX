@@ -84,6 +84,57 @@ namespace Voxelis
         public Block GetBlock(int3 pos) => GetBlock(pos.x, pos.y, pos.z);
 
         /// <summary>
+        /// Gets an arbitrary slot value at the specified sector-local coordinates, automatically
+        /// accessing neighboring sectors if coordinates fall outside [0, 127]. Generic sibling of
+        /// <see cref="GetBlock(int,int,int)"/> for reading non-Block slots (per-voxel metadata,
+        /// physics info, …) across brick/sector boundaries — the same lookup any metadata-driven
+        /// automaton needs for its neighborhood reads.
+        /// </summary>
+        /// <typeparam name="T">The slot's element type (must match the stride the slot was written with).</typeparam>
+        /// <param name="slotId">Which slot to read.</param>
+        /// <param name="x">X coordinate (can be negative or >= 128)</param>
+        /// <param name="y">Y coordinate (can be negative or >= 128)</param>
+        /// <param name="z">Z coordinate (can be negative or >= 128)</param>
+        /// <returns>The slot value, or default(T) if the brick or neighbor doesn't exist.</returns>
+        public T GetSlot<T>(SectorSlotId slotId, int x, int y, int z) where T : unmanaged
+        {
+            // Fast path: coordinates within center sector bounds
+            if (x >= 0 && x < Sector.SECTOR_SIZE_IN_BLOCKS &&
+                y >= 0 && y < Sector.SECTOR_SIZE_IN_BLOCKS &&
+                z >= 0 && z < Sector.SECTOR_SIZE_IN_BLOCKS)
+            {
+                return centerSector.GetSlot<T>(slotId, x, y, z);
+            }
+
+            // Calculate which neighbor sector to access
+            int3 sectorOffset = new int3(
+                x < 0 ? -1 : (x >= Sector.SECTOR_SIZE_IN_BLOCKS ? 1 : 0),
+                y < 0 ? -1 : (y >= Sector.SECTOR_SIZE_IN_BLOCKS ? 1 : 0),
+                z < 0 ? -1 : (z >= Sector.SECTOR_SIZE_IN_BLOCKS ? 1 : 0)
+            );
+
+            // Find the neighbor index for this offset
+            int neighborIdx = FindNeighborIndex(sectorOffset);
+            if (neighborIdx < 0 || !neighbors.Neighbors[neighborIdx].IsValid)
+            {
+                return default;
+            }
+
+            // Transform coordinates to neighbor's local space
+            int localX = ModuloWrap(x, Sector.SECTOR_SIZE_IN_BLOCKS);
+            int localY = ModuloWrap(y, Sector.SECTOR_SIZE_IN_BLOCKS);
+            int localZ = ModuloWrap(z, Sector.SECTOR_SIZE_IN_BLOCKS);
+
+            return neighbors.Neighbors[neighborIdx].GetSlot<T>(slotId, localX, localY, localZ);
+        }
+
+        /// <summary>
+        /// Gets an arbitrary slot value at the specified sector-local coordinates.
+        /// </summary>
+        public T GetSlot<T>(SectorSlotId slotId, int3 pos) where T : unmanaged
+            => GetSlot<T>(slotId, pos.x, pos.y, pos.z);
+
+        /// <summary>
         /// Tests if a block exists (is non-empty) at the specified coordinates.
         /// Automatically handles neighbor access for out-of-bounds coordinates.
         /// </summary>
