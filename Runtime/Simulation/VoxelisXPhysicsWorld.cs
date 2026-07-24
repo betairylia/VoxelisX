@@ -20,6 +20,16 @@ namespace Voxelis.Simulation
         [Header("Gravity")]
         public Vector3 gravity = new Vector3(0, -9.81f, 0);
 
+        [Header("Air Friction")]
+        [Tooltip("Global linear velocity damping applied to every dynamic body each step (per-second, " +
+                 "exponential). Higher = lower terminal falling/sliding speed. 0 = no linear air friction.")]
+        [Min(0f)] public float linearAirFriction = 0.05f;
+
+        [Tooltip("Global angular velocity damping applied to every dynamic body each step (per-second, " +
+                 "exponential). This is how rotation is damped: spinning structures reach a terminal " +
+                 "angular speed just like linear drag gives a terminal linear speed. 0 = no angular air friction.")]
+        [Min(0f)] public float angularAirFriction = 0.05f;
+
         [Header("Simulation Parameters")]
         [Tooltip("Number of substeps per simulation step")]
         public int substepCount = 1;
@@ -74,7 +84,8 @@ namespace Voxelis.Simulation
         {
             Profiler.BeginSample("Physics Build World");
             var buildHandle = VoxelisXPhysicsInterface.SchedulePhysicsWorldBuild(
-                ref tickBuf, ref physicsWorld, out bodyIndexToGuid, out nDynamic, default);
+                ref tickBuf, ref physicsWorld, out bodyIndexToGuid, out nDynamic,
+                linearAirFriction, angularAirFriction, default);
             buildHandle.Complete();
             haveStaticBodiesChanged.Value = 1;
             Profiler.EndSample();

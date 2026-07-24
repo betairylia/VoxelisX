@@ -203,18 +203,24 @@ namespace VoxelisX.Tests
                 tickBuf.VoxelEntities.Add(guid, scope.Data);
                 tickBuf.VoxelBodies.Add(guid, bodyData);
 
+                // Global air friction (0.05 / 0.08 here) overrides each body's persisted MotionData
+                // damping (0.25 / 0.5 above) so friction is a single live-tunable engine knob.
                 JobHandle buildHandle = VoxelisXPhysicsInterface.SchedulePhysicsWorldBuild(
                     ref tickBuf,
                     ref world,
                     out bodyIndexToGuid,
                     out int nDynamic,
+                    0.05f,
+                    0.08f,
                     default);
                 buildHandle.Complete();
 
                 Assert.That(nDynamic, Is.EqualTo(1));
                 Assert.That(bodyIndexToGuid[0], Is.EqualTo(guid));
-                Assert.That(world.MotionDatas[0].LinearDamping, Is.EqualTo(0.25f));
-                Assert.That(world.MotionDatas[0].AngularDamping, Is.EqualTo(0.5f));
+                Assert.That(world.MotionDatas[0].LinearDamping, Is.EqualTo(0.05f),
+                    "Global linear air friction must override the body's persisted LinearDamping");
+                Assert.That(world.MotionDatas[0].AngularDamping, Is.EqualTo(0.08f),
+                    "Global angular air friction must override the body's persisted AngularDamping");
                 Assert.That(world.MotionVelocities[0].LinearVelocity, Is.EqualTo(new float3(1f, 2f, 3f)));
                 Assert.That(world.MotionVelocities[0].AngularVelocity, Is.EqualTo(new float3(4f, 5f, 6f)));
                 Assert.That(world.MotionVelocities[0].GravityFactor, Is.EqualTo(0.25f));
@@ -262,6 +268,8 @@ namespace VoxelisX.Tests
                     ref world,
                     out bodyIndexToGuid,
                     out int nDynamic,
+                    0f,
+                    0f,
                     default);
                 buildHandle.Complete();
 

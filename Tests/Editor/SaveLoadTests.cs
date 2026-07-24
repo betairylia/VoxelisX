@@ -535,6 +535,84 @@ namespace VoxelisX.Tests
         }
 
         [Test]
+        public void WriteRead_RoundTripsProtectedFlag()
+        {
+            uint[] preview = new uint[Sector.BRICKS_IN_SECTOR];
+            byte[] payload = new byte[] { 1, 2, 3 };
+
+            Guid128 guidProtected = NewGuid128();
+            Guid128 guidNormal = NewGuid128();
+
+            using (var writer = SingleFileSaveStorage.OpenWrite(_tempPath))
+            {
+                var recProtected = new EntityRecord(
+                    guidProtected, default, 0, VoxelBodyState.Static, float3.zero, float3.zero, true);
+                var recNormal = new EntityRecord(
+                    guidNormal, default, 0, VoxelBodyState.Static, float3.zero, float3.zero, false);
+
+                writer.WriteEntity(in recProtected, new[]
+                {
+                    new SectorWriteRecord(new int3(0, 0, 0), preview, payload),
+                });
+                writer.WriteEntity(in recNormal, new[]
+                {
+                    new SectorWriteRecord(new int3(0, 0, 0), preview, payload),
+                });
+                writer.Commit();
+            }
+
+            using var reader = SingleFileSaveStorage.OpenRead(_tempPath);
+            Assert.That(reader.Header.Version, Is.EqualTo(WorldSaveFormat.CurrentVersion));
+            Assert.That(reader.EntityCount, Is.EqualTo(2));
+            Assert.That(reader.ReadEntityRecord(0).Protected, Is.True);
+            Assert.That(reader.ReadEntityRecord(0).Guid, Is.EqualTo(guidProtected));
+            Assert.That(reader.ReadEntityRecord(1).Protected, Is.False);
+            // Existing fields must still round-trip alongside the new v5 byte.
+            Assert.That(reader.ReadEntityRecord(0).Body, Is.EqualTo(VoxelBodyState.Static));
+        }
+
+        [Test]
+        public void OpenRead_Version4Save_ReadsProtectedAsFalse()
+        {
+            // Hand-write a v4 file: its entity records have no protected byte.
+            Guid128 guid = NewGuid128();
+            using (var fs = new FileStream(_tempPath, FileMode.Create, FileAccess.Write))
+            using (var bw = new BinaryWriter(fs))
+            {
+                bw.Write(new byte[WorldSaveFormat.HeaderBytes]);
+                long tableOffset = fs.Position;
+
+                bw.Write(1u); // entityCount
+                uint4 g = guid.Value;
+                bw.Write(g.x);
+                bw.Write(g.y);
+                bw.Write(g.z);
+                bw.Write(g.w);
+                for (int i = 0; i < 7; i++) bw.Write(0f); // pos.xyz + rot.xyzw
+                bw.Write((ushort)0x0042); // entityRequireUpdateFlags
+                bw.Write((byte)VoxelBodyState.Dynamic); // v3 body state
+                for (int i = 0; i < 6; i++) bw.Write(0f); // v4 velocity (linear.xyz + angular.xyz) — no v5 protected byte
+                bw.Write((ulong)tableOffset); // sectorIndexOffset (no sectors, never dereferenced)
+                bw.Write(0u); // sectorCount
+
+                fs.Position = 0;
+                bw.Write(WorldSaveFormat.FileMagic);
+                bw.Write((ushort)4); // version 4
+                bw.Write((ushort)SaveFlags.Deflate);
+                bw.Write((ulong)tableOffset);
+            }
+
+            using var reader = SingleFileSaveStorage.OpenRead(_tempPath);
+            Assert.That(reader.Header.Version, Is.EqualTo(4));
+            Assert.That(reader.EntityCount, Is.EqualTo(1));
+
+            var rec = reader.ReadEntityRecord(0);
+            Assert.That(rec.Guid, Is.EqualTo(guid));
+            Assert.That(rec.Body, Is.EqualTo(VoxelBodyState.Dynamic));
+            Assert.That(rec.Protected, Is.False, "Pre-v5 saves must read as not-protected");
+        }
+
+        [Test]
         public void OpenRead_Version2Save_ReadsBodyStateAsOff()
         {
             // Hand-write a v2 file: its entity records have no body-state byte.

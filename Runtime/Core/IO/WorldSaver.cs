@@ -41,8 +41,9 @@ namespace Voxelis.IO
         {
             var data = entity.GetDataCopy();
             var transformRec = new EntityTransformRecord(data.transform.pos, data.transform.rot);
+            bool isProtected = entity != null && entity.IsProtected;
             var entityRecord = new EntityRecord(
-                guid, transformRec, data.entityRequireUpdateFlags, body, linearVelocity, angularVelocity);
+                guid, transformRec, data.entityRequireUpdateFlags, body, linearVelocity, angularVelocity, isProtected);
             writer.WriteEntity(in entityRecord, EnumerateSectors(data));
         }
 

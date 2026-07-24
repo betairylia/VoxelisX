@@ -505,7 +505,13 @@ Profiler.EndSample();
                 go.SetActive(false);
 
                 var e = go.AddComponent<VoxelEntity>();
-                if (e != null) e.PersistentGuid = rec.Guid;
+                if (e != null)
+                {
+                    e.PersistentGuid = rec.Guid;
+                    // Restore the protected designation so interaction tools keep refusing to
+                    // unfreeze/drag this entity after load (keyed by GUID, not a stale scene ref).
+                    e.IsProtected = rec.Protected;
+                }
 
                 Debug.Log($"{rec.Guid}: {rec.Body}");
 

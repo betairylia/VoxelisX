@@ -154,6 +154,7 @@ namespace Voxelis.IO
                 _writer.Write(rec.AngularVelocity.x);
                 _writer.Write(rec.AngularVelocity.y);
                 _writer.Write(rec.AngularVelocity.z);
+                _writer.Write((byte)(rec.Protected ? 1 : 0));
                 _writer.Write((ulong)_entityIndexLocations[i].IndexOffset);
                 _writer.Write((uint)_entityIndexLocations[i].SectorCount);
             }
@@ -229,11 +230,13 @@ namespace Voxelis.IO
                     linearVelocity = new float3(_reader.ReadSingle(), _reader.ReadSingle(), _reader.ReadSingle());
                     angularVelocity = new float3(_reader.ReadSingle(), _reader.ReadSingle(), _reader.ReadSingle());
                 }
+                // Protected flag exists from format v5 onward; older saves read as not-protected.
+                bool isProtected = version >= 5 && _reader.ReadByte() != 0;
                 ulong idxOff = _reader.ReadUInt64();
                 uint sectCount = _reader.ReadUInt32();
 
                 _readEntities.Add(new EntityRecord(
-                    guid, new EntityTransformRecord(pos, rot), entFlags, body, linearVelocity, angularVelocity));
+                    guid, new EntityTransformRecord(pos, rot), entFlags, body, linearVelocity, angularVelocity, isProtected));
                 indexLocations[i] = ((long)idxOff, (int)sectCount);
             }
 

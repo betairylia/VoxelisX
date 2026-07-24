@@ -32,6 +32,11 @@ namespace Voxelis.Simulation
 
             public int nDynamic;
 
+            // Global air friction (velocity damping) applied uniformly to every dynamic body this step.
+            // Overrides each body's persisted MotionData damping so the value is a single live-tunable knob.
+            public float linearDamping;
+            public float angularDamping;
+
             public void Execute()
             {
                 int dynamicIdx = 0;
@@ -68,13 +73,15 @@ namespace Voxelis.Simulation
                         );
                         RigidTransform worldFromMotion = math.mul(entity.transform, bodyFromMotion);
 
-                        Unity.Physics.MotionData persistedMotionData = body.motionData;
                         motionDatas[bodyIndex] = new Unity.Physics.MotionData
                         {
                             WorldFromMotion = worldFromMotion,
                             BodyFromMotion = bodyFromMotion,
-                            LinearDamping = persistedMotionData.LinearDamping,
-                            AngularDamping = persistedMotionData.AngularDamping
+                            // Global air friction overrides the per-body persisted damping so friction
+                            // is one live-tunable knob. Angular damping is what gives spinning bodies a
+                            // terminal angular speed (the rotation analogue of linear drag).
+                            LinearDamping = linearDamping,
+                            AngularDamping = angularDamping
                         };
 
                         float inverseMass = massProps.mass > 0 ? 1.0f / massProps.mass : 0.0f;
@@ -162,6 +169,8 @@ namespace Voxelis.Simulation
             ref PhysicsWorld world,
             out NativeArray<Guid128> bodyIndexToGuid,
             out int nDynamic,
+            float linearDamping,
+            float angularDamping,
             JobHandle inputDeps)
         {
             // Count number of static and dynamic bodies
@@ -188,7 +197,9 @@ namespace Voxelis.Simulation
                 motionDatas = world.MotionDatas,
                 motionVelocities = world.MotionVelocities,
                 bodyIndexToGuid = bodyIndexToGuid,
-                nDynamic = nDynamic
+                nDynamic = nDynamic,
+                linearDamping = linearDamping,
+                angularDamping = angularDamping
             };
 
             return fillWorldJob.Schedule(inputDeps);

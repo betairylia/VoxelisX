@@ -504,6 +504,21 @@ namespace Voxelis
             }
         }
 
+        [Tooltip("Marks this entity as protected from gameplay interaction tools (freeze/drag/break). " +
+                 "Persisted in .vxw so the designation survives save/load and travels with the entity by GUID.")]
+        [SerializeField] private bool isProtected;
+
+        /// <summary>
+        /// Whether this entity is protected from gameplay interaction (e.g. the main world that must
+        /// never be unfrozen or dragged). This is a plain serialized flag — it is not part of the
+        /// native tick data — and is round-tripped through the save format keyed by <see cref="PersistentGuid"/>.
+        /// </summary>
+        public bool IsProtected
+        {
+            get => isProtected;
+            set => isProtected = value;
+        }
+
         private void Awake()
         {
             // A loader (e.g. WorldLoader) may assign PersistentGuid while the GameObject is still
