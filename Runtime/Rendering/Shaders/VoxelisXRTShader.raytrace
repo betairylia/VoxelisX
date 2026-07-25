@@ -62,7 +62,7 @@ struct VoxelisXPathState
 
 struct VoxelisXShadeResult
 {
-    half k;
+    float k;
     half3 albedo;
     half3 emission;
     float3 bounceRayOrigin;
@@ -79,7 +79,7 @@ inline void VoxelisXInitPathState(out VoxelisXPathState path, uint rngState)
 
 inline float3 VoxelisXSampleSkyRadiance(float3 direction)
 {
-    return g_Sky.SampleLevel(sampler_g_Sky, direction, 0).xyz * 4.0f;
+    return g_Sky.SampleLevel(sampler_g_Sky, direction, 0).xyz;// * 4.0f;
 }
 
 inline void VoxelisXShadeVoxelHit(
@@ -119,7 +119,8 @@ inline void VoxelisXShadeVoxelHit(
         specularRayDir = SafeNormalize(lerp(diffuseRayDir, specularRayDir, material.smoothness));
         float3 reflectedRayDir = lerp(diffuseRayDir, specularRayDir, doSpecular);
 
-        shade.k = (doSpecular == 1.0f) ? specularChance : 1.0f - specularChance;
+        // shade.k = (doSpecular == 1.0f) ? specularChance : 1.0f - specularChance;
+        shade.k = 1;
         shade.bounceRayOrigin = worldHitPosition + K_RAY_ORIGIN_PUSH_OFF * worldNormal;
         shade.bounceRayDirection = reflectedRayDir;
         shade.worldNormal = worldNormal;
@@ -147,12 +148,16 @@ inline void VoxelisXShadeVoxelHit(
         float fresnelFactor = canRefract
             ? FresnelReflectAmountTransparent(sourceIOR, destinationIOR, worldRayDirection, interfaceNormal)
             : 1.0f;
+        
+        // fresnelFactor = clamp(fresnelFactor, 0.05f, 0.95f);
 
         float doRefraction = (canRefract && RandomFloat01(path.rngState) >= fresnelFactor) ? 1.0f : 0.0f;
+        // doRefraction = 0.0f;
         float3 bounceRayDir = SafeNormalize(lerp(reflectionRayDir, refractionRayDir, doRefraction));
         float pushOff = doRefraction == 1.0f ? -K_RAY_ORIGIN_PUSH_OFF : K_RAY_ORIGIN_PUSH_OFF;
 
-        shade.k = doRefraction == 1.0f ? 1.0f - fresnelFactor : fresnelFactor;
+        // shade.k = doRefraction == 1.0f ? 1.0f - fresnelFactor : fresnelFactor;
+        shade.k = 1;
         shade.albedo = ext;
         shade.emission = material.emission.rgb;
         shade.bounceRayOrigin = worldHitPosition + pushOff * interfaceNormal;
@@ -175,7 +180,8 @@ void MainRayGenShader()
 
     // Initial random number generator seed for this pixel. The rngState will change every time we draw a random number.
     // uint rngState = uint(uint(launchIndex.x) * uint(1973) + uint(launchIndex.y) * uint(9277) + uint(g_ConvergenceStep + g_FrameIndex) * uint(26699)) | uint(1);
-    uint rngState = 0;
+    // uint rngState = 0;
+    uint rngState = g_FrameIndex * 7919u;
 
     float2 jitter = float2(RandomFloat01(rngState), RandomFloat01(rngState)) - float2(0.5, 0.5);
     // float2 jitter = float2(0, 0);
@@ -253,7 +259,7 @@ void MainRayGenShader()
         // Keep the primary albedo out of the temporal history. It is applied once
         // during final composition so replaced voxels can reuse lighting history.
         half3 indirectIncidentRadiance = half3(0, 0, 0);
-        half3 throughput = 1.0f / max(0.001, primaryK);
+        float3 throughput = 1.0f / max(0.001, primaryK);
         RayDesc bounceRay;
         bounceRay.Origin = primaryBounceRayOrigin;
         bounceRay.Direction = primaryBounceRayDirection;
@@ -276,20 +282,21 @@ void MainRayGenShader()
                 VoxelisXShadeResult bounceShade;
                 float3 bounceHitPosition;
                 VoxelisXShadeVoxelHit(bouncePayload, bounceRay.Origin, bounceRay.Direction, path, bounceHitPosition, bounceShade);
-                half bounceK = bounceShade.k;
+                float bounceK = bounceShade.k;
                 half3 bounceAlbedo = bounceShade.albedo;
                 half3 bounceEmission = bounceShade.emission;
                 float3 nextBounceRayOrigin = bounceShade.bounceRayOrigin;
                 float3 nextBounceRayDirection = bounceShade.bounceRayDirection;
 
                 indirectIncidentRadiance += bounceEmission * throughput;
-                // indirectIncidentRadiance = nextBounceRayDirection * 0.1f;
+                // indirectIncidentRadiance = primaryBounceRayDirection * 0.1f;
+                // indirectIncidentRadiance = throughput;
 
-                throughput *= bounceAlbedo / max(0.001h, bounceK);
+                throughput *= bounceAlbedo / max(0.001, bounceK);
 
                 half pathStopProbability = 1;
 
-        #define ENABLE_RUSSIAN_ROULETTE 0
+        #define ENABLE_RUSSIAN_ROULETTE 1
 
         #if ENABLE_RUSSIAN_ROULETTE
                 half3 throughputAlbedo = throughput;
@@ -313,6 +320,10 @@ void MainRayGenShader()
 #else
         IndirectRadianceTarget[outputLaunchIndex] = float4(1.0f, 1.0f, 1.0f, 1.0f);
 #endif
+
+        // DEBUG
+        // DirectRadianceTarget[outputLaunchIndex] = float4(primaryK, 0.0f, 0.0f, 1.0f);
+
         return;
     }
 

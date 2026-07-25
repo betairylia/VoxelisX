@@ -22,6 +22,7 @@ float2 SampleBlueNoise(inout uint state)
     // return float2(0, 1);
     // return float2(0.001f, 0.999f);
     return stbnTexture[pos] * 0.99609375f + 0.001953125f;
+    // return frac(stbnTexture[pos] + MartinR2(g_FrameIndex));
     // return stbnTexture[pos];
     // return stbnTexture[pos] + EPSILON;
     // return ((stbnTexture[pos]) + 0.5) / 256.0;

@@ -8,12 +8,19 @@
 #define half3x3 min16float3x3
 #define half3x4 min16float3x4
 
+// #define half float
+// #define half2 float2
+// #define half3 float3
+// #define half4 float4
+// #define half3x3 float3x3
+// #define half3x4 float3x4
+
 // 0x0000 ~ 0x0FFF -> Non-solid
 // 0x1000 ~ 0xEFFF -> Solid
 inline bool IsOpaque(int blk)
 {
-    return blk > 0;
-    // return (blk & 0x8000);
+    // return blk > 0;
+    return (blk & 0x8000);
 }
 
 inline int GetFaceBits(int blk)
