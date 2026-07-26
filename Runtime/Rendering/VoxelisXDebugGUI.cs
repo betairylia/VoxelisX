@@ -23,9 +23,17 @@ public class VoxelisXDebugGUI : MonoBehaviour
     [Header("Debug Visualization")]
     [SerializeField] private bool showSectorBorders = false;
     [SerializeField] private bool showBrickBorders = false;
+    [SerializeField, Min(0), Tooltip(
+        "How many sectors out from the camera's own sector to draw brick borders for. " +
+        "0 draws only the sector the camera is inside, 1 draws the surrounding 3x3x3, and so on. " +
+        "Each sector holds 4096 bricks, so this grows cubically - keep it low.")]
+    private int brickBorderSectorRadius = 0;
     [SerializeField] private Color sectorBorderColor = new Color(1f, 0f, 0f, 1.0f);
     [SerializeField] private Color brickBorderColor = new Color(0f, 1f, 0f, 1.0f);
     [SerializeField] private Color brickBorderColorDirty = new Color(0f, 1f, 1f, 1.0f);
+
+    /// <summary>Block position to sector position, matching VoxelEntity's arithmetic-shift convention.</summary>
+    private const int BlockToSectorShift = Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS;
 
     private const float FpsWindowSeconds = 30f;
     private const float PerformanceUpdateIntervalSeconds = 0.1f;
@@ -356,7 +364,8 @@ public class VoxelisXDebugGUI : MonoBehaviour
         // Brick borders toggle
         if (GUILayout.Button(new GUIContent(
                 showBrickBorders ? "Hide Brick Borders" : "Show Brick Borders",
-                "Toggle brick outlines. Dirty bricks use the cyan debug color."), buttonStyle))
+                "Toggle brick outlines for the sector the camera is inside. Dirty bricks use the " +
+                "cyan debug color. Raise Brick Border Sector Radius to include neighbouring sectors."), buttonStyle))
         {
             showBrickBorders = !showBrickBorders;
         }
@@ -544,6 +553,11 @@ public class VoxelisXDebugGUI : MonoBehaviour
         var world = VoxelisXCoreWorld.instance;
         if (world == null) return;
 
+        // Camera.current is the camera currently rendering, so the scene view and game view each
+        // get borders around their own viewpoint rather than sharing one.
+        Camera viewCamera = Camera.current != null ? Camera.current : Camera.main;
+        bool canDrawBrickBorders = showBrickBorders && viewCamera != null;
+
         CreateLineMaterial();
         lineMaterial.SetPass(0);
 
@@ -557,6 +571,12 @@ public class VoxelisXDebugGUI : MonoBehaviour
 
             // Get entity's transform matrix (includes position, rotation, and scale)
             Matrix4x4 entityMatrix = entity.transform.localToWorldMatrix;
+
+            // Which sector the camera occupies, in this entity's own local voxel space. Resolved once
+            // per entity rather than per sector, since each entity has its own transform.
+            int3 cameraSectorPos = canDrawBrickBorders
+                ? WorldToSectorPos(entity.transform, viewCamera.transform.position)
+                : default;
 
             foreach (var kvp in entity.Sectors)
             {
@@ -572,8 +592,9 @@ public class VoxelisXDebugGUI : MonoBehaviour
                     DrawWireBox(sectorLocalPos, new float3(Sector.SECTOR_SIZE_IN_BLOCKS), sectorBorderColor, entityMatrix);
                 }
 
-                // Draw brick borders
-                if (showBrickBorders)
+                // Draw brick borders, but only near the camera: a sector holds 4096 bricks, so a
+                // large world emits far more lines than the immediate-mode GL path can carry.
+                if (canDrawBrickBorders && IsSectorNearCamera(sectorPos, cameraSectorPos))
                 {
                     for (short brickIdxAbs = 0; brickIdxAbs < Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS; brickIdxAbs++)
                     {
@@ -598,6 +619,28 @@ public class VoxelisXDebugGUI : MonoBehaviour
 
         GL.End();
         GL.PopMatrix();
+    }
+
+    /// <summary>
+    /// Converts a world position into the sector coordinate that contains it, in the local voxel
+    /// space of <paramref name="entityTransform"/>.
+    /// </summary>
+    private static int3 WorldToSectorPos(Transform entityTransform, Vector3 worldPosition)
+    {
+        Vector3 localPosition = entityTransform.InverseTransformPoint(worldPosition);
+
+        // Floor to a block position first, then arithmetic-shift down, exactly as VoxelEntity does.
+        // Both steps floor toward negative infinity, which keeps negative coordinates correct.
+        return new int3(
+            Mathf.FloorToInt(localPosition.x) >> BlockToSectorShift,
+            Mathf.FloorToInt(localPosition.y) >> BlockToSectorShift,
+            Mathf.FloorToInt(localPosition.z) >> BlockToSectorShift);
+    }
+
+    private bool IsSectorNearCamera(int3 sectorPos, int3 cameraSectorPos)
+    {
+        int radius = Mathf.Max(0, brickBorderSectorRadius);
+        return math.all(math.abs(sectorPos - cameraSectorPos) <= radius);
     }
 
     private void DrawWireBox(float3 origin, float3 size, Color color, Matrix4x4 transform)
