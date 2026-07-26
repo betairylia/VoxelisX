@@ -263,8 +263,9 @@ void MainRayGenShader()
 
         DeterministicRadianceTarget[outputLaunchIndex] = float4(primaryShade.emission, 1.0f);
 
-        float depth = LinearEyeDepth(distanceFromCamera, _ZBufferParams);
-        DepthTarget[outputLaunchIndex] = depth;
+        // Linear view depth throughout the G-buffer; the present stage converts to raw depth for
+        // SV_Depth. Denoisers want linear depth, so nothing upstream should see the projected form.
+        DepthTarget[outputLaunchIndex] = distanceFromCamera;
         g_CurrentDepthHistory[outputLaunchIndex] = distanceFromCamera;
         float2 packedNormal = saturate(PackNormalOctQuadEncode(primaryShade.worldNormal) * 0.5f + 0.5f);
         // .b = voxel face hash (spatial filters' edge guide), .a = linear roughness (denoiser guide).
@@ -377,8 +378,7 @@ void MainRayGenShader()
     SpecularRadianceTarget[outputLaunchIndex] = float4(0.0f, 0.0f, 0.0f, 0.0f);
 
     float distanceFromCamera = K_T_MAX;
-    float depth = LinearEyeDepth(distanceFromCamera, _ZBufferParams);
-    DepthTarget[outputLaunchIndex] = depth;
+    DepthTarget[outputLaunchIndex] = distanceFromCamera;
     g_CurrentDepthHistory[outputLaunchIndex] = distanceFromCamera;
     float2 packedNormal = saturate(PackNormalOctQuadEncode(float3(0, 0, 1)) * 0.5f + 0.5f);
     NormalTarget[outputLaunchIndex] = float4(packedNormal, 0.0f, 0);

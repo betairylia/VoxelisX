@@ -29,7 +29,7 @@ public class VoxelisXFrameResources : ContextItem
     public TextureHandle Albedo;
     /// <summary>Octahedral-encoded surface normal in .xy ([0,1] range), voxel face hash in .z, linear roughness in .w.</summary>
     public TextureHandle Normal;
-    /// <summary>Clip-space depth, written to the camera depth buffer by the present stage.</summary>
+    /// <summary>Linear view depth in world units. The present stage converts it to raw depth for SV_Depth.</summary>
     public TextureHandle Depth;
     /// <summary>2.5D motion vectors, NRD convention: .xy = previousUV - currentUV, .z = viewZprev - viewZ, .a reserved. ARGBFloat.</summary>
     public TextureHandle MotionVector;

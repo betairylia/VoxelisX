@@ -29,6 +29,17 @@ Shader "VoxelisX/PostFlip"
 
         int _DebugView;
 
+        // The VoxelisX G-buffer carries linear view depth, but SV_Depth wants a raw
+        // (post-projection, platform-convention) depth. This is the inverse of LinearEyeDepth,
+        // which is 1/(z*raw + w) -- this conversion belongs here, at the only point the depth is
+        // consumed as a depth-buffer value.
+        float VoxelisXEyeDepthToRawDepth(float eyeZ)
+        {
+            // saturate() pins beyond-far hits onto the far plane under either depth convention:
+            // reversed-Z produces a small negative value there, non-reversed slightly over 1.
+            return saturate((1.0f / max(eyeZ, 1e-6f) - _ZBufferParams.w) / _ZBufferParams.z);
+        }
+
         float4 Flip (Varyings input, out float outDepth : SV_Depth) : SV_Target
         {
             UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
@@ -36,7 +47,11 @@ Shader "VoxelisX/PostFlip"
             float2 uv = input.texcoord;
 
             float4 source = SAMPLE_TEXTURE2D(_BlitTexture, sampler_LinearClamp, uv);
-            outDepth = SAMPLE_TEXTURE2D(_DepthTex, sampler_LinearClamp, uv).r;
+            // Point-sampled: depth is discontinuous at silhouettes, so interpolating it would
+            // produce in-between values that exist on no surface.
+            float linearViewDepth = SAMPLE_TEXTURE2D(_DepthTex, sampler_PointClamp, uv).r;
+            float rawDepth = VoxelisXEyeDepthToRawDepth(linearViewDepth);
+            outDepth = rawDepth;
 
             if (_DebugView == VOXELISX_DEBUG_MOTION_VECTOR)
             {
@@ -59,8 +74,10 @@ Shader "VoxelisX/PostFlip"
 
             if (_DebugView == VOXELISX_DEBUG_DEPTH)
             {
-                // Raw clip-space depth; on reversed-Z near surfaces read bright.
-                return float4(source.rrr, 1.0f);
+                // The buffer holds linear view depth in world units, which would blow out to white,
+                // so show the converted raw depth instead -- it spans [0,1] and is what actually
+                // reaches the depth buffer. On reversed-Z, near surfaces read bright.
+                return float4(rawDepth.rrr, 1.0f);
             }
 
             if (_DebugView != VOXELISX_DEBUG_REGULAR)

@@ -14,7 +14,7 @@ public enum VoxelisXDebugView
     Albedo = 2,
     /// <summary>Surface normal, decoded from its octahedral encoding.</summary>
     Normal = 3,
-    /// <summary>Clip-space depth as greyscale.</summary>
+    /// <summary>Depth as greyscale, shown in its raw post-projection form (the buffer itself is linear).</summary>
     Depth = 4,
     /// <summary>Non-denoised radiance only: primary emission plus sky.</summary>
     DeterministicRadiance = 5,
