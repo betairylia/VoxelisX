@@ -16,14 +16,18 @@ public enum VoxelisXDebugView
     Normal = 3,
     /// <summary>Clip-space depth as greyscale.</summary>
     Depth = 4,
-    /// <summary>Direct lighting only.</summary>
-    DirectRadiance = 5,
-    /// <summary>Indirect radiance straight out of the tracer, before filtering.</summary>
+    /// <summary>Non-denoised radiance only: primary emission plus sky.</summary>
+    DeterministicRadiance = 5,
+    /// <summary>Combined stochastic radiance (diffuse + specular), before filtering.</summary>
     IndirectRadianceRaw = 6,
-    /// <summary>Indirect radiance after the spatial filter, before temporal accumulation.</summary>
+    /// <summary>Combined stochastic radiance after the spatial filter, before temporal accumulation.</summary>
     IndirectRadianceFiltered = 7,
-    /// <summary>Indirect radiance after temporal accumulation, as fed to the composite.</summary>
-    IndirectRadianceAccumulated = 8
+    /// <summary>Combined stochastic radiance after temporal accumulation, as fed to the composite.</summary>
+    IndirectRadianceAccumulated = 8,
+    /// <summary>Stochastic diffuse-path radiance straight out of the tracer (hit distance in alpha).</summary>
+    StochasticDiffuse = 9,
+    /// <summary>Stochastic specular-path radiance straight out of the tracer (hit distance in alpha).</summary>
+    StochasticSpecular = 10
 }
 
 /// <summary>

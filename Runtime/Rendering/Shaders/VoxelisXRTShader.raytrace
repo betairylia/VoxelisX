@@ -27,12 +27,16 @@ float4x4 g_CurrentWorldToCamera;
 float4x4 g_CurrentCameraToWorld;
 float4x4 g_PrevWorldToCamera;
 
-RWTexture2D<float4> DirectRadianceTarget;
-RWTexture2D<float4> IndirectRadianceTarget;
+// All radiance that is not denoised (primary emission, sky on miss).
+RWTexture2D<float4> DeterministicRadianceTarget;
+// Stochastic path radiance split by the lobe sampled at the primary hit, NRD-style:
+// .rgb = radiance (albedo-demodulated at composite time), .a = first-segment hit distance.
+RWTexture2D<float4> DiffuseRadianceTarget;
+RWTexture2D<float4> SpecularRadianceTarget;
 RWTexture2D<float4> AlbedoTarget;
 RWTexture2D<float4> NormalTarget;
 RWTexture2D<float> DepthTarget;
-RWTexture2D<float2> MotionVectorTarget;
+RWTexture2D<float4> MotionVectorTarget;
 RWTexture2D<float> g_CurrentDepthHistory;
 RWTexture2D<float4> g_CurrentNormalHistory;
 TextureCube<float4> g_Sky;
@@ -68,6 +72,13 @@ struct VoxelisXShadeResult
     float3 bounceRayOrigin;
     float3 bounceRayDirection;
     half3 worldNormal;
+    // Which lobe the bounce ray sampled: 1 = specular (incl. transparent reflection/refraction,
+    // both delta), 0 = diffuse. Consumed at the primary hit to route the stochastic signal into
+    // DiffuseRadianceTarget vs SpecularRadianceTarget; ignored on later bounces.
+    half specularLobe;
+    // Linear (perceptual) roughness of the shaded surface, i.e. 1 - smoothness. Written to
+    // NormalTarget.a at the primary hit as a denoiser guide.
+    half linearRoughness;
 };
 
 inline void VoxelisXInitPathState(out VoxelisXPathState path, uint rngState)
@@ -124,6 +135,8 @@ inline void VoxelisXShadeVoxelHit(
         shade.bounceRayOrigin = worldHitPosition + K_RAY_ORIGIN_PUSH_OFF * worldNormal;
         shade.bounceRayDirection = reflectedRayDir;
         shade.worldNormal = worldNormal;
+        shade.specularLobe = half(doSpecular);
+        shade.linearRoughness = half(1.0f - material.smoothness);
     }
     else
     {
@@ -163,6 +176,11 @@ inline void VoxelisXShadeVoxelHit(
         shade.bounceRayOrigin = worldHitPosition + pushOff * interfaceNormal;
         shade.bounceRayDirection = bounceRayDir;
         shade.worldNormal = interfaceNormal;
+        // Both transparent lobes are delta (pure reflect/refract): treat them as specular with
+        // roughness 0. Refraction does NOT fit the diffuse-denoiser lobe model; the proper
+        // long-term handling is primary surface replacement at NRD integration time.
+        shade.specularLobe = half(1.0f);
+        shade.linearRoughness = half(0.0f);
         path.previousTransparentMaterial = doRefraction == 1.0f ? destinationMaterialID : sourceMaterialID;
         path.bounceIndex++;
     }
@@ -241,25 +259,36 @@ void MainRayGenShader()
             motionVector = outputFrameCoord / float2(outputLaunchDim.x - 1, outputLaunchDim.y - 1) - (prevNdc * 0.5f + 0.5f);
         }
 
-        DirectRadianceTarget[outputLaunchIndex] = float4(primaryShade.emission, 1.0f);
+        DeterministicRadianceTarget[outputLaunchIndex] = float4(primaryShade.emission, 1.0f);
 
         float depth = LinearEyeDepth(distanceFromCamera, _ZBufferParams);
         DepthTarget[outputLaunchIndex] = depth;
         g_CurrentDepthHistory[outputLaunchIndex] = distanceFromCamera;
         float2 packedNormal = saturate(PackNormalOctQuadEncode(primaryShade.worldNormal) * 0.5f + 0.5f);
-        NormalTarget[outputLaunchIndex] = float4(packedNormal, float(payload.materialID_voxelFaceHash & 0xFFFFu), 0);
+        // .b = voxel face hash (spatial filters' edge guide), .a = linear roughness (denoiser guide).
+        NormalTarget[outputLaunchIndex] = float4(
+            packedNormal, float(payload.materialID_voxelFaceHash & 0xFFFFu), primaryShade.linearRoughness);
         // .b carries the view depth this surface had last frame so temporal reprojection
         // can validate history against an exact expectation even while the camera moves.
         g_CurrentNormalHistory[outputLaunchIndex] = float4(packedNormal, previousSurfaceViewDepth, 1.0f);
         AlbedoTarget[outputLaunchIndex] = float4(primaryShade.albedo, 1);
 
-        MotionVectorTarget[outputLaunchIndex] = motionVector;
+        // 2.5D screen-space motion. .xy = currentUV - previousUV (engine convention; NB: the NRD
+        // doc defines .xy with the opposite sign, so the future NRD packing pass must negate .xy
+        // or use a negative motion vector scale). .z = viewZprev - viewZ, exactly per the NRD doc.
+        // .a is reserved (1 = surface, 0 = sky); NRD takes confidence via separate inputs.
+        MotionVectorTarget[outputLaunchIndex] =
+            float4(motionVector, previousSurfaceViewDepth - distanceFromCamera, 1.0f);
 
 #if VOXELISXRT_BOUNCE
         // Keep the primary albedo out of the temporal history. It is applied once
         // during final composition so replaced voxels can reuse lighting history.
         half3 indirectIncidentRadiance = half3(0, 0, 0);
         float3 throughput = 1.0f / max(0.001, primaryK);
+        // Hit distance of the first stochastic segment (primary surface -> first bounce hit),
+        // in raw world units per NRD conventions; K_T_MAX when the first bounce hits the sky.
+        float firstSegmentHitT = K_T_MAX;
+        bool firstSegment = true;
         RayDesc bounceRay;
         bounceRay.Origin = primaryBounceRayOrigin;
         bounceRay.Direction = primaryBounceRayDirection;
@@ -279,6 +308,12 @@ void MainRayGenShader()
             }
 
             {
+                if (firstSegment)
+                {
+                    firstSegmentHitT = bouncePayload.T;
+                    firstSegment = false;
+                }
+
                 VoxelisXShadeResult bounceShade;
                 float3 bounceHitPosition;
                 VoxelisXShadeVoxelHit(bouncePayload, bounceRay.Origin, bounceRay.Direction, path, bounceHitPosition, bounceShade);
@@ -316,19 +351,28 @@ void MainRayGenShader()
 
         uint2 indirectDispatchIndex = DispatchRaysIndex().xy;
         uint2 indirectLaunchIndex = uint2(indirectDispatchIndex.x, DispatchRaysDimensions().y - indirectDispatchIndex.y - 1);
-        IndirectRadianceTarget[indirectLaunchIndex] = float4(indirectIncidentRadiance, 1.0f);
+        // The path is classified once, by the lobe sampled at the primary hit, and the whole
+        // gathered signal goes to that lobe's target — so diffuse + specular always sums to
+        // exactly what the old combined buffer held. The unsampled lobe gets 0 radiance and
+        // 0 hit distance (no data this frame).
+        bool primaryLobeIsSpecular = primaryShade.specularLobe > half(0.5f);
+        float4 stochasticOut = float4(indirectIncidentRadiance, firstSegmentHitT);
+        DiffuseRadianceTarget[indirectLaunchIndex] = primaryLobeIsSpecular ? float4(0, 0, 0, 0) : stochasticOut;
+        SpecularRadianceTarget[indirectLaunchIndex] = primaryLobeIsSpecular ? stochasticOut : float4(0, 0, 0, 0);
 #else
-        IndirectRadianceTarget[outputLaunchIndex] = float4(1.0f, 1.0f, 1.0f, 1.0f);
+        DiffuseRadianceTarget[outputLaunchIndex] = float4(1.0f, 1.0f, 1.0f, K_T_MAX);
+        SpecularRadianceTarget[outputLaunchIndex] = float4(0.0f, 0.0f, 0.0f, 0.0f);
 #endif
 
         // DEBUG
-        // DirectRadianceTarget[outputLaunchIndex] = float4(primaryK, 0.0f, 0.0f, 1.0f);
+        // DeterministicRadianceTarget[outputLaunchIndex] = float4(primaryK, 0.0f, 0.0f, 1.0f);
 
         return;
     }
 
-    DirectRadianceTarget[outputLaunchIndex] = float4(VoxelisXSampleSkyRadiance(ray.Direction), 0.0f);
-    IndirectRadianceTarget[outputLaunchIndex] = float4(0.0f, 0.0f, 0.0f, 0.0f);
+    DeterministicRadianceTarget[outputLaunchIndex] = float4(VoxelisXSampleSkyRadiance(ray.Direction), 0.0f);
+    DiffuseRadianceTarget[outputLaunchIndex] = float4(0.0f, 0.0f, 0.0f, 0.0f);
+    SpecularRadianceTarget[outputLaunchIndex] = float4(0.0f, 0.0f, 0.0f, 0.0f);
 
     float distanceFromCamera = K_T_MAX;
     float depth = LinearEyeDepth(distanceFromCamera, _ZBufferParams);
@@ -338,7 +382,7 @@ void MainRayGenShader()
     NormalTarget[outputLaunchIndex] = float4(packedNormal, 0.0f, 0);
     g_CurrentNormalHistory[outputLaunchIndex] = float4(packedNormal, 0, 0.0f);
     AlbedoTarget[outputLaunchIndex] = float4(0, 0, 0, 1);
-    MotionVectorTarget[outputLaunchIndex] = float2(0, 0);
+    MotionVectorTarget[outputLaunchIndex] = float4(0, 0, 0, 0);
 }
 
 static float3 skyHigh = float3(0.92, 0.95, 1.0);

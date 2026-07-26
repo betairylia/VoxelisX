@@ -7,11 +7,14 @@ using UnityEngine.Rendering.Universal;
 /// Stage 2 of 3: turns the noisy indirect radiance from the G-buffer stage into the final image.
 /// </summary>
 /// <remarks>
-/// Three sub-steps, recorded in order:
+/// Four sub-steps, recorded in order:
 /// <list type="number">
+/// <item>combine — sums the split diffuse/specular stochastic targets into the single working
+/// signal this legacy chain filters (a future NRD path will consume the split targets directly
+/// and skip the rest of this pass);</item>
 /// <item>spatial filter — separable 15-tap, or a multi-iteration a-trous, or nothing;</item>
 /// <item>temporal accumulation against last frame's reprojected history;</item>
-/// <item>composite — direct radiance plus albedo-modulated indirect, into the final colour target.</item>
+/// <item>composite — deterministic radiance plus albedo-modulated indirect, into the final colour target.</item>
 /// </list>
 /// Reads only <see cref="VoxelisXFrameResources"/>; it has no knowledge of the tracer.
 /// </remarks>
@@ -21,6 +24,7 @@ public class VoxelisXDenoisePass : ScriptableRenderPass
     private const int PassSpatialFilterY = 1;
     private const int PassTemporalAccumulation = 2;
     private const int PassComposite = 3;
+    private const int PassCombineStochastic = 4;
     private const int PassATrousFilter = 0;
 
     private Material indirectMaterial;
@@ -33,6 +37,14 @@ public class VoxelisXDenoisePass : ScriptableRenderPass
 
     private VoxelisXIndirectDenoisingSettings denoisingSettings = VoxelisXIndirectDenoisingSettings.Default;
     private VoxelisXTemporalRadianceSettings temporalSettings = new VoxelisXTemporalRadianceSettings().Validated();
+
+    internal class CombinePassData
+    {
+        internal int width;
+        internal int height;
+        internal TextureHandle Source;
+        internal Material material;
+    }
 
     internal class SpatialFilterPassData
     {
@@ -72,7 +84,7 @@ public class VoxelisXDenoisePass : ScriptableRenderPass
     {
         internal int width;
         internal int height;
-        internal TextureHandle DirectRadiance;
+        internal TextureHandle DeterministicRadiance;
         internal Material material;
     }
 
@@ -114,6 +126,9 @@ public class VoxelisXDenoisePass : ScriptableRenderPass
         TextureHandle filtered = UniversalRenderer.CreateRenderGraphTexture(
             renderGraph, indirectDesc, "VoxelisX_outIndirectRadianceFiltered", false);
 
+        resources.RawIndirectRadiance = RecordCombineStochastic(
+            renderGraph, resources, indirectDesc, width, height);
+
         resources.FilteredIndirectRadiance = RecordSpatialFilter(
             renderGraph, resources, width, height, scratch, filtered);
 
@@ -125,6 +140,50 @@ public class VoxelisXDenoisePass : ScriptableRenderPass
         history.EndFrame();
 
         resources.Color = RecordComposite(renderGraph, resources, cameraData, width, height);
+    }
+
+    // --- Combine ------------------------------------------------------------
+
+    /// <summary>
+    /// Sums the split diffuse/specular stochastic targets into the single combined signal the
+    /// rest of this chain filters. The split targets carry hit distance in alpha, so the chain's
+    /// validity alpha is re-derived from the deterministic target's hit/miss flag in the shader.
+    /// </summary>
+    private TextureHandle RecordCombineStochastic(
+        RenderGraph renderGraph,
+        VoxelisXFrameResources resources,
+        RenderTextureDescriptor descriptor,
+        int width,
+        int height)
+    {
+        TextureHandle combined = UniversalRenderer.CreateRenderGraphTexture(
+            renderGraph, descriptor, "VoxelisX_outIndirectRadianceRaw", false);
+
+        using (var builder = renderGraph.AddRasterRenderPass<CombinePassData>("VoxelisX Combine Stochastic", out var passData))
+        {
+            passData.width = width;
+            passData.height = height;
+            passData.Source = resources.StochasticDiffuse;
+            passData.material = indirectMaterial;
+
+            builder.UseTexture(resources.StochasticDiffuse, AccessFlags.Read);
+            builder.UseTexture(resources.StochasticSpecular, AccessFlags.Read);
+            builder.UseTexture(resources.DeterministicRadiance, AccessFlags.Read);
+            builder.UseGlobalTexture(VoxelisXShaderIDs.DiffuseRadianceTex);
+            builder.UseGlobalTexture(VoxelisXShaderIDs.SpecularRadianceTex);
+            builder.UseGlobalTexture(VoxelisXShaderIDs.DeterministicRadianceTex);
+            builder.SetRenderAttachment(combined, 0, AccessFlags.Write);
+            builder.SetGlobalTextureAfterPass(combined, VoxelisXShaderIDs.IndirectRadianceTex);
+            builder.AllowPassCulling(false);
+            builder.AllowGlobalStateModification(true);
+            builder.SetRenderFunc((CombinePassData data, RasterGraphContext ctx) =>
+            {
+                SetFrameSize(data.material, data.width, data.height);
+                Blitter.BlitTexture(ctx.cmd, data.Source, FullScreenScaleBias, data.material, PassCombineStochastic);
+            });
+        }
+
+        return combined;
     }
 
     // --- Spatial ------------------------------------------------------------
@@ -351,13 +410,13 @@ public class VoxelisXDenoisePass : ScriptableRenderPass
         {
             passData.width = width;
             passData.height = height;
-            passData.DirectRadiance = resources.DirectRadiance;
+            passData.DeterministicRadiance = resources.DeterministicRadiance;
             passData.material = indirectMaterial;
 
-            builder.UseTexture(resources.DirectRadiance, AccessFlags.Read);
+            builder.UseTexture(resources.DeterministicRadiance, AccessFlags.Read);
             builder.UseTexture(resources.AccumulatedIndirectRadiance, AccessFlags.Read);
             builder.UseTexture(resources.Albedo, AccessFlags.Read);
-            builder.UseGlobalTexture(VoxelisXShaderIDs.DirectRadianceTex);
+            builder.UseGlobalTexture(VoxelisXShaderIDs.DeterministicRadianceTex);
             builder.UseGlobalTexture(VoxelisXShaderIDs.AlbedoTex);
             builder.UseGlobalTexture(VoxelisXShaderIDs.AccumulatedIndirectRadianceTex);
             builder.SetRenderAttachment(color, 0, AccessFlags.Write);
@@ -365,7 +424,7 @@ public class VoxelisXDenoisePass : ScriptableRenderPass
             builder.SetRenderFunc((CompositePassData data, RasterGraphContext ctx) =>
             {
                 SetFrameSize(data.material, data.width, data.height);
-                Blitter.BlitTexture(ctx.cmd, data.DirectRadiance, FullScreenScaleBias, data.material, PassComposite);
+                Blitter.BlitTexture(ctx.cmd, data.DeterministicRadiance, FullScreenScaleBias, data.material, PassComposite);
             });
         }
 

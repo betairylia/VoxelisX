@@ -7,7 +7,9 @@ Shader "Hidden/VoxelisX/IndirectRadiancePipeline"
         #include "Packages/com.unity.render-pipelines.core/Runtime/Utilities/Blit.hlsl"
 
         TEXTURE2D(_IndirectRadianceTex);
-        TEXTURE2D(_DirectRadianceTex);
+        TEXTURE2D(_DeterministicRadianceTex);
+        TEXTURE2D(_DiffuseRadianceTex);
+        TEXTURE2D(_SpecularRadianceTex);
         TEXTURE2D(_AlbedoTex);
         TEXTURE2D(_NormalTex);
         TEXTURE2D(_MotionVectorTex);
@@ -260,13 +262,28 @@ Shader "Hidden/VoxelisX/IndirectRadiancePipeline"
             UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
 
             uint2 coord = VoxelisXPixelCoord(input.texcoord);
-            float4 directRadiance = LOAD_TEXTURE2D(_DirectRadianceTex, coord);
+            float4 deterministicRadiance = LOAD_TEXTURE2D(_DeterministicRadianceTex, coord);
             float4 albedo = LOAD_TEXTURE2D(_AlbedoTex, coord);
             float4 indirectRadiance = LOAD_TEXTURE2D(_AccumulatedIndirectRadianceTex, coord);
 
-            float3 result = directRadiance.rgb + albedo.rgb * indirectRadiance.rgb;
+            float3 result = deterministicRadiance.rgb + albedo.rgb * indirectRadiance.rgb;
             // float3 result = indirectRadiance.rgb;
-            return float4(result, directRadiance.a);
+            return float4(result, deterministicRadiance.a);
+        }
+
+        // Sums the split stochastic targets back into the single combined signal the legacy
+        // spatial/temporal chain consumes. The split targets carry hit distance in .a, so the
+        // chain's validity flag (alpha) is re-derived from the deterministic target's hit/miss
+        // alpha instead.
+        float4 CombineStochastic(Varyings input) : SV_Target
+        {
+            UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
+
+            uint2 coord = VoxelisXPixelCoord(input.texcoord);
+            float3 diffuse = LOAD_TEXTURE2D(_DiffuseRadianceTex, coord).rgb;
+            float3 specular = LOAD_TEXTURE2D(_SpecularRadianceTex, coord).rgb;
+            float validity = LOAD_TEXTURE2D(_DeterministicRadianceTex, coord).a > 0.001f ? 1.0f : 0.0f;
+            return float4(diffuse + specular, validity);
         }
 
     ENDHLSL
@@ -313,6 +330,16 @@ Shader "Hidden/VoxelisX/IndirectRadiancePipeline"
             HLSLPROGRAM
             #pragma vertex Vert
             #pragma fragment Composite
+            ENDHLSL
+        }
+
+        Pass
+        {
+            Name "CombineStochastic"
+
+            HLSLPROGRAM
+            #pragma vertex Vert
+            #pragma fragment CombineStochastic
             ENDHLSL
         }
     }

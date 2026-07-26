@@ -20,10 +20,12 @@ Shader "VoxelisX/PostFlip"
         #define VOXELISX_DEBUG_ALBEDO                        2
         #define VOXELISX_DEBUG_NORMAL                        3
         #define VOXELISX_DEBUG_DEPTH                         4
-        #define VOXELISX_DEBUG_DIRECT_RADIANCE               5
+        #define VOXELISX_DEBUG_DETERMINISTIC_RADIANCE        5
         #define VOXELISX_DEBUG_INDIRECT_RADIANCE_RAW         6
         #define VOXELISX_DEBUG_INDIRECT_RADIANCE_FILTERED    7
         #define VOXELISX_DEBUG_INDIRECT_RADIANCE_ACCUMULATED 8
+        #define VOXELISX_DEBUG_STOCHASTIC_DIFFUSE            9
+        #define VOXELISX_DEBUG_STOCHASTIC_SPECULAR           10
 
         int _DebugView;
 

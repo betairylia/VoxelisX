@@ -11,7 +11,10 @@ using UnityEngine;
 public static class VoxelisXShaderIDs
 {
     // --- G-buffer, published as globals after the trace ---
-    public static readonly int DirectRadianceTex = Shader.PropertyToID("_DirectRadianceTex");
+    public static readonly int DeterministicRadianceTex = Shader.PropertyToID("_DeterministicRadianceTex");
+    public static readonly int DiffuseRadianceTex = Shader.PropertyToID("_DiffuseRadianceTex");
+    public static readonly int SpecularRadianceTex = Shader.PropertyToID("_SpecularRadianceTex");
+    /// <summary>Combined diffuse+specular stochastic radiance — the legacy denoise chain's working signal.</summary>
     public static readonly int IndirectRadianceTex = Shader.PropertyToID("_IndirectRadianceTex");
     public static readonly int AlbedoTex = Shader.PropertyToID("_AlbedoTex");
     public static readonly int NormalTex = Shader.PropertyToID("_NormalTex");

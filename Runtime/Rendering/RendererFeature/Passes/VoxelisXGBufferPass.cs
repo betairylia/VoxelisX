@@ -8,7 +8,8 @@ using UnityEngine.Rendering.Universal;
 /// Stage 1 of 3: traces the voxel scene with DXR and produces the VoxelisX G-buffer.
 /// </summary>
 /// <remarks>
-/// Writes direct radiance, unfiltered indirect radiance, albedo, normal, depth and motion vectors,
+/// Writes deterministic (non-denoised) radiance, per-lobe stochastic radiance with hit distance
+/// (diffuse and specular, NRD-style), albedo, normal+roughness, depth and 2.5D motion vectors,
 /// plus this frame's depth/normal history for next frame's temporal rejection. Everything it
 /// produces is published to <see cref="VoxelisXFrameResources"/> and, for the shaders that sample
 /// them by name, as global textures. Downstream stages read that contract and never touch the tracer.
@@ -40,8 +41,9 @@ public class VoxelisXGBufferPass : ScriptableRenderPass
         internal VoxelisXTraceSettings settings;
         internal Vector4 mainLightColor;
 
-        internal TextureHandle DirectRadiance;
-        internal TextureHandle IndirectRadiance;
+        internal TextureHandle DeterministicRadiance;
+        internal TextureHandle DiffuseRadiance;
+        internal TextureHandle SpecularRadiance;
         internal TextureHandle Albedo;
         internal TextureHandle Normal;
         internal TextureHandle Depth;
@@ -91,11 +93,14 @@ public class VoxelisXGBufferPass : ScriptableRenderPass
             settings.maximumAverageFrames);
 
         resources.History = history;
-        resources.DirectRadiance = UniversalRenderer.CreateRenderGraphTexture(
-            renderGraph, VoxelisXFrameResources.BaseDescriptor(cameraData), "VoxelisX_outDirectRadiance", false);
-        resources.RawIndirectRadiance = UniversalRenderer.CreateRenderGraphTexture(
+        resources.DeterministicRadiance = UniversalRenderer.CreateRenderGraphTexture(
+            renderGraph, VoxelisXFrameResources.BaseDescriptor(cameraData), "VoxelisX_outDeterministicRadiance", false);
+        resources.StochasticDiffuse = UniversalRenderer.CreateRenderGraphTexture(
             renderGraph, VoxelisXFrameResources.DescriptorWithFormat(cameraData, RenderTextureFormat.ARGBHalf),
-            "VoxelisX_outIndirectRadianceRaw", false);
+            "VoxelisX_outStochasticDiffuse", false);
+        resources.StochasticSpecular = UniversalRenderer.CreateRenderGraphTexture(
+            renderGraph, VoxelisXFrameResources.DescriptorWithFormat(cameraData, RenderTextureFormat.ARGBHalf),
+            "VoxelisX_outStochasticSpecular", false);
         resources.Albedo = UniversalRenderer.CreateRenderGraphTexture(
             renderGraph, VoxelisXFrameResources.DescriptorWithFormat(cameraData, RenderTextureFormat.Default),
             "VoxelisX_outAlbedo", false);
@@ -105,9 +110,9 @@ public class VoxelisXGBufferPass : ScriptableRenderPass
         resources.Depth = UniversalRenderer.CreateRenderGraphTexture(
             renderGraph, VoxelisXFrameResources.DescriptorWithFormat(cameraData, RenderTextureFormat.RFloat),
             "VoxelisX_outDepth", false);
+        // ARGBFloat: .xy screen motion, .z = viewZprev - viewZ (NRD 2.5D), .a reserved for confidence.
         resources.MotionVector = UniversalRenderer.CreateRenderGraphTexture(
-            renderGraph, VoxelisXFrameResources.DescriptorWithFormat(cameraData, RenderTextureFormat.RGFloat),
-            "VoxelisX_outMotionVector", false);
+            renderGraph, VoxelisXFrameResources.BaseDescriptor(cameraData), "VoxelisX_outMotionVector", false);
 
         // The history halves are persistent RTHandles, so they are imported rather than created.
         // Only the "current" halves are imported here; the denoise stage imports the "previous" ones,
@@ -132,8 +137,9 @@ public class VoxelisXGBufferPass : ScriptableRenderPass
             passData.settings = settings;
             passData.mainLightColor = ResolveMainLightColor(frameData.Get<UniversalLightData>());
 
-            passData.DirectRadiance = resources.DirectRadiance;
-            passData.IndirectRadiance = resources.RawIndirectRadiance;
+            passData.DeterministicRadiance = resources.DeterministicRadiance;
+            passData.DiffuseRadiance = resources.StochasticDiffuse;
+            passData.SpecularRadiance = resources.StochasticSpecular;
             passData.Albedo = resources.Albedo;
             passData.Normal = resources.Normal;
             passData.Depth = resources.Depth;
@@ -146,8 +152,9 @@ public class VoxelisXGBufferPass : ScriptableRenderPass
             passData.blueNoiseTexture = blueNoiseTexture;
             passData.brickMaterial = voxelisX.brickMat;
 
-            builder.UseTexture(passData.DirectRadiance, AccessFlags.Write);
-            builder.UseTexture(passData.IndirectRadiance, AccessFlags.Write);
+            builder.UseTexture(passData.DeterministicRadiance, AccessFlags.Write);
+            builder.UseTexture(passData.DiffuseRadiance, AccessFlags.Write);
+            builder.UseTexture(passData.SpecularRadiance, AccessFlags.Write);
             builder.UseTexture(passData.Albedo, AccessFlags.Write);
             builder.UseTexture(passData.Normal, AccessFlags.Write);
             builder.UseTexture(passData.Depth, AccessFlags.Write);
@@ -155,8 +162,9 @@ public class VoxelisXGBufferPass : ScriptableRenderPass
             builder.UseTexture(passData.CurrentDepthHistory, AccessFlags.Write);
             builder.UseTexture(passData.CurrentNormalHistory, AccessFlags.Write);
 
-            builder.SetGlobalTextureAfterPass(passData.DirectRadiance, VoxelisXShaderIDs.DirectRadianceTex);
-            builder.SetGlobalTextureAfterPass(passData.IndirectRadiance, VoxelisXShaderIDs.IndirectRadianceTex);
+            builder.SetGlobalTextureAfterPass(passData.DeterministicRadiance, VoxelisXShaderIDs.DeterministicRadianceTex);
+            builder.SetGlobalTextureAfterPass(passData.DiffuseRadiance, VoxelisXShaderIDs.DiffuseRadianceTex);
+            builder.SetGlobalTextureAfterPass(passData.SpecularRadiance, VoxelisXShaderIDs.SpecularRadianceTex);
             builder.SetGlobalTextureAfterPass(passData.Albedo, VoxelisXShaderIDs.AlbedoTex);
             builder.SetGlobalTextureAfterPass(passData.Normal, VoxelisXShaderIDs.NormalTex);
             builder.SetGlobalTextureAfterPass(passData.Depth, VoxelisXShaderIDs.DepthTex);
@@ -215,8 +223,9 @@ public class VoxelisXGBufferPass : ScriptableRenderPass
         }
 
         context.cmd.SetRayTracingAccelerationStructure(data.voxShaderRT, "g_AccelStruct", data.voxAS);
-        context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "DirectRadianceTarget", data.DirectRadiance);
-        context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "IndirectRadianceTarget", data.IndirectRadiance);
+        context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "DeterministicRadianceTarget", data.DeterministicRadiance);
+        context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "DiffuseRadianceTarget", data.DiffuseRadiance);
+        context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "SpecularRadianceTarget", data.SpecularRadiance);
         context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "AlbedoTarget", data.Albedo);
         context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "NormalTarget", data.Normal);
         context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "DepthTarget", data.Depth);

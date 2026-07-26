@@ -19,17 +19,19 @@ public class VoxelisXFrameResources : ContextItem
 
     // --- Produced by VoxelisXGBufferPass ---
 
-    /// <summary>Direct lighting radiance, ARGBFloat.</summary>
-    public TextureHandle DirectRadiance;
-    /// <summary>Indirect radiance straight out of the tracer, before any filtering. ARGBHalf.</summary>
-    public TextureHandle RawIndirectRadiance;
-    /// <summary>Surface albedo, used to modulate indirect radiance at composite time.</summary>
+    /// <summary>All radiance that needs no denoising: primary emission, sky on miss. ARGBFloat.</summary>
+    public TextureHandle DeterministicRadiance;
+    /// <summary>Stochastic diffuse-path radiance (albedo-demodulated), hit distance in .a. ARGBHalf.</summary>
+    public TextureHandle StochasticDiffuse;
+    /// <summary>Stochastic specular-path radiance (incl. transparent reflection/refraction), hit distance in .a. ARGBHalf.</summary>
+    public TextureHandle StochasticSpecular;
+    /// <summary>Surface albedo, used to modulate stochastic radiance at composite time.</summary>
     public TextureHandle Albedo;
-    /// <summary>Octahedral-encoded surface normal in .xy, [0,1] range.</summary>
+    /// <summary>Octahedral-encoded surface normal in .xy ([0,1] range), voxel face hash in .z, linear roughness in .w.</summary>
     public TextureHandle Normal;
     /// <summary>Clip-space depth, written to the camera depth buffer by the present stage.</summary>
     public TextureHandle Depth;
-    /// <summary>Screen-space motion vectors used for temporal reprojection.</summary>
+    /// <summary>2.5D motion vectors: .xy screen-space (currentUV - previousUV), .z = viewZprev - viewZ, .a reserved. ARGBFloat.</summary>
     public TextureHandle MotionVector;
     /// <summary>This frame's linear depth, persisted for next frame's temporal rejection.</summary>
     public TextureHandle CurrentDepthHistory;
@@ -38,6 +40,8 @@ public class VoxelisXFrameResources : ContextItem
 
     // --- Produced by VoxelisXDenoisePass ---
 
+    /// <summary>Combined diffuse+specular stochastic radiance — the legacy denoise chain's input signal.</summary>
+    public TextureHandle RawIndirectRadiance;
     /// <summary>Indirect radiance after the spatial filter. Aliases <see cref="RawIndirectRadiance"/> when the filter is disabled.</summary>
     public TextureHandle FilteredIndirectRadiance;
     /// <summary>Indirect radiance after temporal accumulation.</summary>
@@ -55,8 +59,9 @@ public class VoxelisXFrameResources : ContextItem
     {
         IsValid = false;
 
-        DirectRadiance = TextureHandle.nullHandle;
-        RawIndirectRadiance = TextureHandle.nullHandle;
+        DeterministicRadiance = TextureHandle.nullHandle;
+        StochasticDiffuse = TextureHandle.nullHandle;
+        StochasticSpecular = TextureHandle.nullHandle;
         Albedo = TextureHandle.nullHandle;
         Normal = TextureHandle.nullHandle;
         Depth = TextureHandle.nullHandle;
@@ -64,6 +69,7 @@ public class VoxelisXFrameResources : ContextItem
         CurrentDepthHistory = TextureHandle.nullHandle;
         CurrentNormalHistory = TextureHandle.nullHandle;
 
+        RawIndirectRadiance = TextureHandle.nullHandle;
         FilteredIndirectRadiance = TextureHandle.nullHandle;
         AccumulatedIndirectRadiance = TextureHandle.nullHandle;
         Color = TextureHandle.nullHandle;
@@ -83,10 +89,12 @@ public class VoxelisXFrameResources : ContextItem
             case VoxelisXDebugView.Albedo: return Albedo;
             case VoxelisXDebugView.Normal: return Normal;
             case VoxelisXDebugView.Depth: return Depth;
-            case VoxelisXDebugView.DirectRadiance: return DirectRadiance;
+            case VoxelisXDebugView.DeterministicRadiance: return DeterministicRadiance;
             case VoxelisXDebugView.IndirectRadianceRaw: return RawIndirectRadiance;
             case VoxelisXDebugView.IndirectRadianceFiltered: return FilteredIndirectRadiance;
             case VoxelisXDebugView.IndirectRadianceAccumulated: return AccumulatedIndirectRadiance;
+            case VoxelisXDebugView.StochasticDiffuse: return StochasticDiffuse;
+            case VoxelisXDebugView.StochasticSpecular: return StochasticSpecular;
             case VoxelisXDebugView.Regular:
             default: return Color;
         }
