@@ -28,6 +28,8 @@ namespace Voxelis
         /// </summary>
         [SerializeField] private bool swapYAndZ = true;
 
+        [SerializeField] private bool loadAsStone = false;
+
         private VoxelEntity entity;
 
         /// <summary>
@@ -75,7 +77,7 @@ namespace Voxelis
                     ? new int3(x, z, y)
                     : new int3(x, y, z);
 
-                entity.SetBlock(position, new Block(red >> 3, green >> 3, blue >> 3, false));
+                entity.SetBlock(position, loadAsStone ? new Block(0x8000) : new Block(red >> 3, green >> 3, blue >> 3, false));
             }
 
             if (trailingBytes != 0)
