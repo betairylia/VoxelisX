@@ -1,42 +1,40 @@
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
-using UnityEngine.Rendering.Universal.Internal;
-using Voxelis.Utils;
 
 /// <summary>
-/// Unity URP (Universal Render Pipeline) renderer feature that integrates VoxelisX ray tracing into the rendering pipeline.
+/// URP renderer feature that injects ray-traced voxel rendering into the pipeline.
 /// </summary>
 /// <remarks>
-/// This feature creates and manages the VoxelisX render passes, injecting ray-traced voxel rendering
-/// into Unity's URP rendering pipeline. It finds the VoxelisXRenderer in the scene and configures
-/// render passes with the necessary shaders and materials.
+/// This type is only the settings surface and the wiring; the work is split across three stages that
+/// hand off through <see cref="VoxelisXFrameResources"/> in the frame's context container:
+/// <list type="number">
+/// <item><see cref="VoxelisXGBufferPass"/> — DXR trace producing the VoxelisX G-buffer;</item>
+/// <item><see cref="VoxelisXDenoisePass"/> — spatial filter, temporal accumulation, composite;</item>
+/// <item><see cref="VoxelisXPresentPass"/> — debug view selection and copy to the camera target.</item>
+/// </list>
+/// All three are enqueued at the same <see cref="RenderPassEvent"/>; URP sorts the queue stably, so
+/// enqueue order here is the execution order.
+/// <para>
+/// Serialized field names are load-bearing — they are what renderer assets store. Renaming one drops
+/// the authored value back to its default, so use <c>[FormerlySerializedAs]</c> if one must change.
+/// </para>
 /// </remarks>
 public class VoxelisXRendererFeature : ScriptableRendererFeature
 {
-    public enum DebugView
-    {
-        Regular = 0,
-        MotionVector = 1
-    }
-
-    /// <summary>
-    /// Ray tracing shader used for voxel rendering.
-    /// </summary>
+    /// <summary>Ray tracing shader used for voxel rendering.</summary>
     [SerializeField] private RayTracingShader tracer;
 
     [SerializeField] private Shader indirectPipelineShader, indirectATrousShader;
 
-    /// <summary>
-    /// Material used for post-processing, including depth buffer copying and flip operations.
-    /// </summary>
+    /// <summary>Material used to copy VoxelisX output onto the camera target and write depth.</summary>
     [SerializeField] private Material postProcessMaterialFlip;
 
     /// <summary>
-    /// Maximum number of frames to average for temporal anti-aliasing (TAA).
-    /// Higher values produce smoother results but increase ghosting on moving objects.
+    /// Length of the temporal accumulation window. Higher converges smoother but ghosts more on
+    /// moving objects.
     /// </summary>
-    [SerializeField] private int maximumAverageFrames;
+    [SerializeField, Min(1)] private int maximumAverageFrames = 120;
 
     [Header("Ray Tracing")]
     [SerializeField, Tooltip("Build the VoxelisX ray tracing acceleration structure inside the render pass each frame. Disable only if the structure is built elsewhere before tracing.")]
@@ -66,77 +64,162 @@ public class VoxelisXRendererFeature : ScriptableRendererFeature
     [SerializeField] private bool temporalRadianceBilinearHistory = true;
 
     [Header("Debug")]
-    [SerializeField] private DebugView debugView = DebugView.Regular;
+    [SerializeField, Tooltip("Which VoxelisX buffer to display. Debug views reuse buffers the frame already produced, so they cost nothing extra to render.")]
+    private VoxelisXDebugView debugView = VoxelisXDebugView.Regular;
 
-    private VoxelisXRenderPass _voxelisXRenderPass;
-    private VoxelisXPostProcessPass _voxelisXPostPass;
+    private VoxelisXGBufferPass gbufferPass;
+    private VoxelisXDenoisePass denoisePass;
+    private VoxelisXPresentPass presentPass;
 
-    /// <summary>
-    /// Called when the renderer feature is created. Finds the VoxelisXRenderer and initializes render passes.
-    /// </summary>
+    // Materials are owned here rather than by the passes: Create() re-runs on every inspector edit,
+    // so per-pass ownership leaked a material set each time a slider moved.
+    private Material indirectMaterial;
+    private Material[] aTrousMaterials;
+    private Material flipMaterial;
+
+    /// <summary>Cached scene renderer. Resolved lazily because the feature can be created before the scene loads.</summary>
+    private VoxelisXRenderer voxelisXRenderer;
+
     public override void Create()
     {
-        VoxelisXRenderer vox = GameObject.FindFirstObjectByType<VoxelisXRenderer>();
-        Debug.Log(vox);
-        if (vox == null)
-        {
-            return;
-        }
+        DestroyMaterials();
+        CreateMaterials();
 
-        _voxelisXRenderPass = new VoxelisXRenderPass(maximumAverageFrames)
+        gbufferPass = new VoxelisXGBufferPass
         {
             renderPassEvent = RenderPassEvent.AfterRenderingOpaques
-            // renderPassEvent = RenderPassEvent.BeforeRenderingPostProcessing
         };
-
-        _voxelisXPostPass = new VoxelisXPostProcessPass(maximumAverageFrames)
+        denoisePass = new VoxelisXDenoisePass
         {
-            renderPassEvent = RenderPassEvent.BeforeRenderingPostProcessing,
+            renderPassEvent = RenderPassEvent.AfterRenderingOpaques
         };
-        // new CopyDepthPass()
+        presentPass = new VoxelisXPresentPass
+        {
+            renderPassEvent = RenderPassEvent.AfterRenderingOpaques
+        };
 
-        _voxelisXRenderPass.InitVoxelisX(
-            tracer, vox, postProcessMaterialFlip, blueNoiseTexture, indirectPipelineShader, indirectATrousShader);
+        denoisePass.Setup(indirectMaterial, aTrousMaterials);
+        presentPass.Setup(flipMaterial);
     }
 
-    /// <summary>
-    /// Enqueues the VoxelisX render passes into the rendering pipeline.
-    /// </summary>
-    /// <param name="renderer">The scriptable renderer.</param>
-    /// <param name="renderingData">Current rendering data and configuration.</param>
     public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
     {
-        if (_voxelisXRenderPass == null)
+        if (gbufferPass == null || !TryResolveVoxelisXRenderer())
         {
             return;
         }
 
-        _voxelisXRenderPass.ConfigureRayTracingSettings(
-            buildAccelerationStructure,
-            bounceCountOpaque,
-            bounceCountTransparent,
-            samplesPerPixel);
-        _voxelisXRenderPass.ConfigureSkySunSettings(enableSkySun, sunDiskRadiusRadians, sunFlareRadiusRadians);
-        _voxelisXRenderPass.ConfigureBlueNoiseTexture(blueNoiseTexture);
-        _voxelisXRenderPass.ConfigureIndirectDenoisingSettings(indirectDenoising);
-        _voxelisXRenderPass.ConfigureTemporalRadianceSettings(
-            enableTemporalRadiance,
-            temporalRadianceCurrentFrameMinWeight,
-            temporalRadianceDepthRejection,
-            temporalRadianceDepthTolerance,
-            temporalRadianceRelativeDepthTolerance,
-            temporalRadianceNormalRejection,
-            temporalRadianceNormalThreshold,
-            temporalRadianceBilinearHistory);
-        _voxelisXRenderPass.ConfigureDebugView(debugView);
-        renderer.EnqueuePass(_voxelisXRenderPass);
+        gbufferPass.ConfigureSettings(voxelisXRenderer, tracer, blueNoiseTexture, BuildTraceSettings());
+        denoisePass.ConfigureSettings(indirectDenoising, BuildTemporalSettings());
+        presentPass.ConfigureSettings(debugView);
 
-        // _voxelisXPostPass.ConfigureInput(ScriptableRenderPassInput.Motion);
-        // renderer.EnqueuePass(_voxelisXPostPass);
+        if (!gbufferPass.IsReady)
+        {
+            return;
+        }
+
+        // Same RenderPassEvent for all three; URP's queue sort is stable, so this is the run order.
+        renderer.EnqueuePass(gbufferPass);
+        renderer.EnqueuePass(denoisePass);
+        renderer.EnqueuePass(presentPass);
     }
 
     protected override void Dispose(bool disposing)
     {
-        _voxelisXRenderPass?.Dispose();
+        VoxelisXCameraHistory.ReleaseAll();
+        DestroyMaterials();
+
+        gbufferPass = null;
+        denoisePass = null;
+        presentPass = null;
+    }
+
+    private VoxelisXTraceSettings BuildTraceSettings()
+    {
+        return new VoxelisXTraceSettings
+        {
+            buildAccelerationStructure = buildAccelerationStructure,
+            bounceCountOpaque = bounceCountOpaque,
+            bounceCountTransparent = bounceCountTransparent,
+            samplesPerPixel = samplesPerPixel,
+            enableSkySun = enableSkySun,
+            sunDiskRadiusRadians = sunDiskRadiusRadians,
+            sunFlareRadiusRadians = sunFlareRadiusRadians,
+            maximumAverageFrames = maximumAverageFrames
+        };
+    }
+
+    private VoxelisXTemporalRadianceSettings BuildTemporalSettings()
+    {
+        return new VoxelisXTemporalRadianceSettings
+        {
+            enabled = enableTemporalRadiance,
+            currentFrameMinWeight = temporalRadianceCurrentFrameMinWeight,
+            depthRejection = temporalRadianceDepthRejection,
+            depthTolerance = temporalRadianceDepthTolerance,
+            relativeDepthTolerance = temporalRadianceRelativeDepthTolerance,
+            normalRejection = temporalRadianceNormalRejection,
+            normalThreshold = temporalRadianceNormalThreshold,
+            bilinearHistory = temporalRadianceBilinearHistory,
+            maximumAverageFrames = maximumAverageFrames
+        };
+    }
+
+    private bool TryResolveVoxelisXRenderer()
+    {
+        // Deliberately not VoxelisXRenderer.instance: MonoSingleton spawns a temporary GameObject
+        // when none exists, which would litter the scene from a renderer feature.
+        if (voxelisXRenderer == null)
+        {
+            voxelisXRenderer = FindFirstObjectByType<VoxelisXRenderer>();
+        }
+
+        return voxelisXRenderer != null;
+    }
+
+    private void CreateMaterials()
+    {
+        if (indirectPipelineShader != null)
+        {
+            indirectMaterial = CoreUtils.CreateEngineMaterial(indirectPipelineShader);
+        }
+
+        if (indirectATrousShader != null)
+        {
+            aTrousMaterials = new Material[VoxelisXATrousFilterSettings.MaxIterations];
+            for (int i = 0; i < aTrousMaterials.Length; i++)
+            {
+                aTrousMaterials[i] = CoreUtils.CreateEngineMaterial(indirectATrousShader);
+            }
+        }
+
+        if (postProcessMaterialFlip != null)
+        {
+            // Instance rather than the asset: the present stage writes _DebugView every frame, which
+            // would otherwise dirty the material asset on disk in the editor.
+            flipMaterial = new Material(postProcessMaterialFlip)
+            {
+                hideFlags = HideFlags.HideAndDontSave
+            };
+        }
+    }
+
+    private void DestroyMaterials()
+    {
+        CoreUtils.Destroy(indirectMaterial);
+        indirectMaterial = null;
+
+        if (aTrousMaterials != null)
+        {
+            for (int i = 0; i < aTrousMaterials.Length; i++)
+            {
+                CoreUtils.Destroy(aTrousMaterials[i]);
+            }
+
+            aTrousMaterials = null;
+        }
+
+        CoreUtils.Destroy(flipMaterial);
+        flipMaterial = null;
     }
 }

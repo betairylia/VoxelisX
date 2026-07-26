@@ -1,0 +1,288 @@
+using UnityEngine;
+using UnityEngine.Experimental.Rendering;
+using UnityEngine.Rendering;
+using UnityEngine.Rendering.RenderGraphModule;
+using UnityEngine.Rendering.Universal;
+
+/// <summary>
+/// Stage 1 of 3: traces the voxel scene with DXR and produces the VoxelisX G-buffer.
+/// </summary>
+/// <remarks>
+/// Writes direct radiance, unfiltered indirect radiance, albedo, normal, depth and motion vectors,
+/// plus this frame's depth/normal history for next frame's temporal rejection. Everything it
+/// produces is published to <see cref="VoxelisXFrameResources"/> and, for the shaders that sample
+/// them by name, as global textures. Downstream stages read that contract and never touch the tracer.
+/// </remarks>
+public class VoxelisXGBufferPass : ScriptableRenderPass
+{
+    private VoxelisXRenderer voxelisX;
+    private RayTracingShader rayTracingShader;
+    private Texture2D blueNoiseTexture;
+    private VoxelisXTraceSettings settings = new VoxelisXTraceSettings().Validated();
+
+    /// <summary>Stand-in sky used when the sky provider has not published its cubemap yet.</summary>
+    private static Cubemap s_FallbackSky;
+    private static bool s_WarnedMissingSky;
+
+    internal class PassData
+    {
+        internal uint width;
+        internal uint height;
+        internal float fov;
+        internal int frameIndex;
+
+        internal Matrix4x4 worldToCamera;
+        internal Matrix4x4 cameraToWorld;
+        internal Matrix4x4 previousWorldToCamera;
+        internal Vector3 cameraWorldPosition;
+        internal int convergedFrames;
+
+        internal VoxelisXTraceSettings settings;
+        internal Vector4 mainLightColor;
+
+        internal TextureHandle DirectRadiance;
+        internal TextureHandle IndirectRadiance;
+        internal TextureHandle Albedo;
+        internal TextureHandle Normal;
+        internal TextureHandle Depth;
+        internal TextureHandle MotionVector;
+        internal TextureHandle CurrentDepthHistory;
+        internal TextureHandle CurrentNormalHistory;
+
+        internal RayTracingShader voxShaderRT;
+        internal RayTracingAccelerationStructure voxAS;
+        internal Texture2D blueNoiseTexture;
+        internal Material brickMaterial;
+    }
+
+    /// <summary>
+    /// Binds the scene renderer, tracing resources and this frame's settings.
+    /// Called once per camera before enqueueing.
+    /// </summary>
+    public void ConfigureSettings(
+        VoxelisXRenderer vox, RayTracingShader rtShader, Texture2D blueNoise, VoxelisXTraceSettings traceSettings)
+    {
+        voxelisX = vox;
+        rayTracingShader = rtShader;
+        blueNoiseTexture = blueNoise;
+        settings = traceSettings.Validated();
+    }
+
+    /// <summary>True when the stage has everything it needs to record.</summary>
+    public bool IsReady => voxelisX != null && rayTracingShader != null;
+
+    public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
+    {
+        VoxelisXFrameResources resources = frameData.GetOrCreate<VoxelisXFrameResources>();
+        if (!IsReady)
+        {
+            return;
+        }
+
+        UniversalCameraData cameraData = frameData.Get<UniversalCameraData>();
+        cameraData.camera.forceIntoRenderTexture = true;
+
+        Matrix4x4 worldToCamera = cameraData.GetViewMatrix();
+        VoxelisXCameraHistory history = VoxelisXCameraHistory.BeginFrame(
+            cameraData.camera,
+            worldToCamera,
+            cameraData.scaledWidth,
+            cameraData.scaledHeight,
+            settings.maximumAverageFrames);
+
+        resources.History = history;
+        resources.DirectRadiance = UniversalRenderer.CreateRenderGraphTexture(
+            renderGraph, VoxelisXFrameResources.BaseDescriptor(cameraData), "VoxelisX_outDirectRadiance", false);
+        resources.RawIndirectRadiance = UniversalRenderer.CreateRenderGraphTexture(
+            renderGraph, VoxelisXFrameResources.DescriptorWithFormat(cameraData, RenderTextureFormat.ARGBHalf),
+            "VoxelisX_outIndirectRadianceRaw", false);
+        resources.Albedo = UniversalRenderer.CreateRenderGraphTexture(
+            renderGraph, VoxelisXFrameResources.DescriptorWithFormat(cameraData, RenderTextureFormat.Default),
+            "VoxelisX_outAlbedo", false);
+        resources.Normal = UniversalRenderer.CreateRenderGraphTexture(
+            renderGraph, VoxelisXFrameResources.DescriptorWithFormat(cameraData, RenderTextureFormat.ARGBHalf),
+            "VoxelisX_outNormal", false);
+        resources.Depth = UniversalRenderer.CreateRenderGraphTexture(
+            renderGraph, VoxelisXFrameResources.DescriptorWithFormat(cameraData, RenderTextureFormat.RFloat),
+            "VoxelisX_outDepth", false);
+        resources.MotionVector = UniversalRenderer.CreateRenderGraphTexture(
+            renderGraph, VoxelisXFrameResources.DescriptorWithFormat(cameraData, RenderTextureFormat.RGFloat),
+            "VoxelisX_outMotionVector", false);
+
+        // The history halves are persistent RTHandles, so they are imported rather than created.
+        // Only the "current" halves are imported here; the denoise stage imports the "previous" ones,
+        // so no RTHandle enters the graph twice.
+        resources.CurrentDepthHistory = renderGraph.ImportTexture(history.CurrentDepth);
+        resources.CurrentNormalHistory = renderGraph.ImportTexture(history.CurrentNormal);
+
+        using (var builder = renderGraph.AddUnsafePass<PassData>("VoxelisX DXR Trace", out var passData))
+        {
+            passData.width = (uint)cameraData.scaledWidth;
+            passData.height = (uint)cameraData.scaledHeight;
+            // TODO: Replace this to use the camera projection matrix instead.
+            passData.fov = 60.0f;
+            passData.frameIndex = Time.frameCount;
+
+            passData.worldToCamera = worldToCamera;
+            passData.cameraToWorld = worldToCamera.inverse;
+            passData.previousWorldToCamera = history.PreviousViewMatrix;
+            passData.cameraWorldPosition = passData.cameraToWorld.MultiplyPoint3x4(Vector3.zero);
+            passData.convergedFrames = history.ConvergedFrames;
+
+            passData.settings = settings;
+            passData.mainLightColor = ResolveMainLightColor(frameData.Get<UniversalLightData>());
+
+            passData.DirectRadiance = resources.DirectRadiance;
+            passData.IndirectRadiance = resources.RawIndirectRadiance;
+            passData.Albedo = resources.Albedo;
+            passData.Normal = resources.Normal;
+            passData.Depth = resources.Depth;
+            passData.MotionVector = resources.MotionVector;
+            passData.CurrentDepthHistory = resources.CurrentDepthHistory;
+            passData.CurrentNormalHistory = resources.CurrentNormalHistory;
+
+            passData.voxShaderRT = rayTracingShader;
+            passData.voxAS = voxelisX.voxelScene;
+            passData.blueNoiseTexture = blueNoiseTexture;
+            passData.brickMaterial = voxelisX.brickMat;
+
+            builder.UseTexture(passData.DirectRadiance, AccessFlags.Write);
+            builder.UseTexture(passData.IndirectRadiance, AccessFlags.Write);
+            builder.UseTexture(passData.Albedo, AccessFlags.Write);
+            builder.UseTexture(passData.Normal, AccessFlags.Write);
+            builder.UseTexture(passData.Depth, AccessFlags.Write);
+            builder.UseTexture(passData.MotionVector, AccessFlags.Write);
+            builder.UseTexture(passData.CurrentDepthHistory, AccessFlags.Write);
+            builder.UseTexture(passData.CurrentNormalHistory, AccessFlags.Write);
+
+            builder.SetGlobalTextureAfterPass(passData.DirectRadiance, VoxelisXShaderIDs.DirectRadianceTex);
+            builder.SetGlobalTextureAfterPass(passData.IndirectRadiance, VoxelisXShaderIDs.IndirectRadianceTex);
+            builder.SetGlobalTextureAfterPass(passData.Albedo, VoxelisXShaderIDs.AlbedoTex);
+            builder.SetGlobalTextureAfterPass(passData.Normal, VoxelisXShaderIDs.NormalTex);
+            builder.SetGlobalTextureAfterPass(passData.Depth, VoxelisXShaderIDs.DepthTex);
+            builder.SetGlobalTextureAfterPass(passData.MotionVector, VoxelisXShaderIDs.MotionVectorTex);
+            builder.SetGlobalTextureAfterPass(passData.CurrentDepthHistory, VoxelisXShaderIDs.CurrentDepthHistoryTex);
+            builder.SetGlobalTextureAfterPass(passData.CurrentNormalHistory, VoxelisXShaderIDs.CurrentNormalHistoryTex);
+
+            builder.AllowPassCulling(false);
+            builder.AllowGlobalStateModification(true);
+
+            builder.SetRenderFunc((PassData data, UnsafeGraphContext ctx) => Execute(data, ctx));
+        }
+
+        resources.IsValid = true;
+    }
+
+    private static Vector4 ResolveMainLightColor(UniversalLightData lightData)
+    {
+        int index = lightData.mainLightIndex;
+        if (index < 0 || index >= lightData.visibleLights.Length)
+        {
+            return Vector4.zero;
+        }
+
+        Light light = lightData.visibleLights[index].light;
+        if (light == null)
+        {
+            return Vector4.zero;
+        }
+
+        Color temperature = light.useColorTemperature
+            ? Mathf.CorrelatedColorTemperatureToRGB(light.colorTemperature)
+            : Color.white;
+
+        return light.color.linear * light.intensity * temperature;
+    }
+
+    private static void Execute(PassData data, UnsafeGraphContext context)
+    {
+        CommandBuffer natcmd = CommandBufferHelpers.GetNativeCommandBuffer(context.cmd);
+        natcmd.SetRayTracingShaderPass(data.voxShaderRT, "VoxelisX");
+
+        if (data.brickMaterial != null)
+        {
+            if (data.blueNoiseTexture != null)
+            {
+                data.brickMaterial.SetTexture(VoxelisXShaderIDs.BlueNoiseTexture, data.blueNoiseTexture);
+            }
+
+            data.brickMaterial.SetInt("g_FrameIndex", data.frameIndex);
+        }
+
+        if (data.settings.buildAccelerationStructure)
+        {
+            context.cmd.BuildRayTracingAccelerationStructure(data.voxAS);
+        }
+
+        context.cmd.SetRayTracingAccelerationStructure(data.voxShaderRT, "g_AccelStruct", data.voxAS);
+        context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "DirectRadianceTarget", data.DirectRadiance);
+        context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "IndirectRadianceTarget", data.IndirectRadiance);
+        context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "AlbedoTarget", data.Albedo);
+        context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "NormalTarget", data.Normal);
+        context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "DepthTarget", data.Depth);
+        context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "MotionVectorTarget", data.MotionVector);
+        context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "g_CurrentDepthHistory", data.CurrentDepthHistory);
+        context.cmd.SetRayTracingTextureParam(data.voxShaderRT, "g_CurrentNormalHistory", data.CurrentNormalHistory);
+
+        // The sky provider publishes its cubemap as a plain global, which render graph cannot track
+        // (builder.UseGlobalTexture does not see it), so it is fetched directly here.
+        // TODO: FIXME: Maybe PR to PBSky repo so we can use the texture properly ... idk
+        natcmd.SetRayTracingTextureParam(data.voxShaderRT, "g_Sky", ResolveSkyTexture());
+
+        if (data.blueNoiseTexture != null)
+        {
+            natcmd.SetRayTracingTextureParam(data.voxShaderRT, VoxelisXShaderIDs.BlueNoiseTexture, data.blueNoiseTexture);
+        }
+
+        context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_FrameIndex", data.frameIndex);
+        context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_ConvergenceStep", data.convergedFrames);
+        context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_BounceCountOpaque", data.settings.bounceCountOpaque);
+        context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_BounceCountTransparent", data.settings.bounceCountTransparent);
+        context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_spp", data.settings.samplesPerPixel);
+        context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_EnableSkySun", data.settings.enableSkySun ? 1 : 0);
+        context.cmd.SetRayTracingFloatParam(data.voxShaderRT, "g_SkySunDiskRadius", data.settings.sunDiskRadiusRadians);
+        context.cmd.SetRayTracingFloatParam(data.voxShaderRT, "g_SkySunFlareRadius", data.settings.sunFlareRadiusRadians);
+        context.cmd.SetRayTracingFloatParam(data.voxShaderRT, "g_Zoom", Mathf.Tan(Mathf.Deg2Rad * data.fov * 0.5f));
+        context.cmd.SetRayTracingFloatParam(data.voxShaderRT, "g_AspectRatio", data.width / (float)data.height);
+        context.cmd.SetRayTracingVectorParam(data.voxShaderRT, "g_CameraWorldPosition", data.cameraWorldPosition);
+        context.cmd.SetRayTracingMatrixParam(data.voxShaderRT, "g_CurrentWorldToCamera", data.worldToCamera);
+        context.cmd.SetRayTracingMatrixParam(data.voxShaderRT, "g_CurrentCameraToWorld", data.cameraToWorld);
+        context.cmd.SetRayTracingMatrixParam(data.voxShaderRT, "g_PrevWorldToCamera", data.previousWorldToCamera);
+        context.cmd.SetRayTracingVectorParam(data.voxShaderRT, "g_mainLightColor", data.mainLightColor);
+
+        context.cmd.DispatchRays(data.voxShaderRT, "MainRayGenShader", data.width, data.height, 1, null);
+    }
+
+    private static Texture ResolveSkyTexture()
+    {
+        Texture sky = Shader.GetGlobalTexture(VoxelisXShaderIDs.GlossyEnvironmentCubeMap);
+        if (sky != null)
+        {
+            return sky;
+        }
+
+        if (!s_WarnedMissingSky)
+        {
+            // Warn once: this is normal for a frame or two after a sky change, and log spam here is
+            // expensive enough to skew frame timings.
+            Debug.LogWarning("VoxelisX: cannot obtain the current sky cubemap. Using a white fallback sky.");
+            s_WarnedMissingSky = true;
+        }
+
+        if (s_FallbackSky == null)
+        {
+            s_FallbackSky = new Cubemap(1, GraphicsFormat.B8G8R8A8_SRGB, TextureCreationFlags.None)
+            {
+                hideFlags = HideFlags.HideAndDontSave
+            };
+            for (int face = 0; face < 6; face++)
+            {
+                s_FallbackSky.SetPixel((CubemapFace)face, 0, 0, Color.white);
+            }
+
+            s_FallbackSky.Apply();
+        }
+
+        return s_FallbackSky;
+    }
+}
