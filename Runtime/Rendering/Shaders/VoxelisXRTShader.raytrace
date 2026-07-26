@@ -256,7 +256,9 @@ void MainRayGenShader()
         {
             float2 prevNdc = prevViewPosition.xy / previousSurfaceViewDepth;
             prevNdc /= float2(g_AspectRatio * g_Zoom, g_Zoom);
-            motionVector = outputFrameCoord / float2(outputLaunchDim.x - 1, outputLaunchDim.y - 1) - (prevNdc * 0.5f + 0.5f);
+            // previousUV - currentUV: adding this to a pixel's UV lands on where that surface
+            // was last frame. Same "previous minus current" direction as .z below.
+            motionVector = (prevNdc * 0.5f + 0.5f) - outputFrameCoord / float2(outputLaunchDim.x - 1, outputLaunchDim.y - 1);
         }
 
         DeterministicRadianceTarget[outputLaunchIndex] = float4(primaryShade.emission, 1.0f);
@@ -273,9 +275,9 @@ void MainRayGenShader()
         g_CurrentNormalHistory[outputLaunchIndex] = float4(packedNormal, previousSurfaceViewDepth, 1.0f);
         AlbedoTarget[outputLaunchIndex] = float4(primaryShade.albedo, 1);
 
-        // 2.5D screen-space motion. .xy = currentUV - previousUV (engine convention; NB: the NRD
-        // doc defines .xy with the opposite sign, so the future NRD packing pass must negate .xy
-        // or use a negative motion vector scale). .z = viewZprev - viewZ, exactly per the NRD doc.
+        // 2.5D screen-space motion, per the NRD doc: .xy = previousUV - currentUV,
+        // .z = viewZprev - viewZ. Both components point "previous minus current", so a
+        // consumer reprojects with previousUV = currentUV + mv.xy.
         // .a is reserved (1 = surface, 0 = sky); NRD takes confidence via separate inputs.
         MotionVectorTarget[outputLaunchIndex] =
             float4(motionVector, previousSurfaceViewDepth - distanceFromCamera, 1.0f);

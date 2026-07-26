@@ -31,7 +31,7 @@ public class VoxelisXFrameResources : ContextItem
     public TextureHandle Normal;
     /// <summary>Clip-space depth, written to the camera depth buffer by the present stage.</summary>
     public TextureHandle Depth;
-    /// <summary>2.5D motion vectors: .xy screen-space (currentUV - previousUV), .z = viewZprev - viewZ, .a reserved. ARGBFloat.</summary>
+    /// <summary>2.5D motion vectors, NRD convention: .xy = previousUV - currentUV, .z = viewZprev - viewZ, .a reserved. ARGBFloat.</summary>
     public TextureHandle MotionVector;
     /// <summary>This frame's linear depth, persisted for next frame's temporal rejection.</summary>
     public TextureHandle CurrentDepthHistory;

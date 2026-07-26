@@ -110,7 +110,7 @@ public class VoxelisXGBufferPass : ScriptableRenderPass
         resources.Depth = UniversalRenderer.CreateRenderGraphTexture(
             renderGraph, VoxelisXFrameResources.DescriptorWithFormat(cameraData, RenderTextureFormat.RFloat),
             "VoxelisX_outDepth", false);
-        // ARGBFloat: .xy screen motion, .z = viewZprev - viewZ (NRD 2.5D), .a reserved for confidence.
+        // ARGBFloat, NRD 2.5D: .xy = previousUV - currentUV, .z = viewZprev - viewZ, .a reserved.
         resources.MotionVector = UniversalRenderer.CreateRenderGraphTexture(
             renderGraph, VoxelisXFrameResources.BaseDescriptor(cameraData), "VoxelisX_outMotionVector", false);
 

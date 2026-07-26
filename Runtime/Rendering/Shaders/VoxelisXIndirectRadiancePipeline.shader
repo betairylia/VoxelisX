@@ -175,8 +175,9 @@ Shader "Hidden/VoxelisX/IndirectRadiancePipeline"
             }
 
             float2 currentUV = (float2(coord) + 0.5f) / VoxelisXHistoryScale();
+            // Motion is stored previous-minus-current (NRD convention), so reprojection adds it.
             float2 motionVector = LOAD_TEXTURE2D(_MotionVectorTex, coord).rg;
-            float2 previousUV = currentUV - motionVector;
+            float2 previousUV = currentUV + motionVector;
             bool canReproject =
                 all(previousUV >= float2(0.0f, 0.0f)) &&
                 all(previousUV <= float2(1.0f, 1.0f));

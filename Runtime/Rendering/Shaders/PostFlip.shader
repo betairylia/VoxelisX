@@ -40,6 +40,8 @@ Shader "VoxelisX/PostFlip"
 
             if (_DebugView == VOXELISX_DEBUG_MOTION_VECTOR)
             {
+                // Raw buffer contents, so this reads in the stored NRD convention
+                // (previousUV - currentUV): the colour points back to where the surface came from.
                 float2 encodedMotion = source.rg * 64.0f;
                 return float4(
                     saturate(0.5f + encodedMotion.x),
