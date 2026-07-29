@@ -18,7 +18,7 @@ inline void VoxelisXClearRayPayload(out RayPayload payload)
     payload.T = 0.0f;
     payload.materialID_voxelFaceHash = 0u;
     payload.packedWorldNormal = 0u;
-    // payload.packedPrevWorldOffset = uint2(0u, 0u);
+    payload.packedPrevWorldOffset = uint2(0u, 0u);
 }
 
 inline bool VoxelisXRayPayloadHasHit(RayPayload payload)
@@ -55,6 +55,7 @@ inline uint2 VoxelisXPackFloat3ToHalf4(float3 value)
         VoxelisXPackHalf2(float2(value.z, 0.0f)));
 }
 
+// I kinda forgot, why unpack float3 from half4?
 inline float3 VoxelisXUnpackFloat3FromHalf4(uint2 value)
 {
     return float3(VoxelisXUnpackHalf2(value.x), VoxelisXUnpackHalf2(value.y).x);

@@ -22,7 +22,7 @@ Shader "VoxelisX/BrickRTTest"
             #pragma use_dxc
 
             #include "RayPayload.hlsl"
-            #include "Utils.hlsl"
+            #include "Utils/Utils.hlsl"
             #include "Assets/VoxelisX/VoxelMaterials.hlsl"
             #include "Utils/BlueNoise.hlsl"
 

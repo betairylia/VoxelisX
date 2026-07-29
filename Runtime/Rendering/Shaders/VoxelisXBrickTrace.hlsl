@@ -72,7 +72,7 @@
 #endif
 
 #include "RayPayload.hlsl"
-#include "VoxelisXUtils.hlsl"
+#include "def/VoxelisXUtils.hlsl"
 #include "Utils/BlueNoise.hlsl"
 #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
 
