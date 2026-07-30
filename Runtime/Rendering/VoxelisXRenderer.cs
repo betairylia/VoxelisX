@@ -137,16 +137,17 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
             foreach (var kvp in e.Sectors)
             {
                 int3 sectorPos = kvp.Key;
-                ref Sector sector = ref kvp.Value.Get();
 
                 var key = (e, sectorPos);
                 if (!sectorRenderers.ContainsKey(key))
                 {
-                    sectorRenderers[key] = new SectorRenderer();
+                    sectorRenderers[key] = new SectorRenderer(e, sectorPos);
                 }
 
-                sectorRenderers[key].RenderModifyAS(ref _voxelScene, e, sectorPos, sector);
+                sectorRenderers[key].RenderModifyAS(ref _voxelScene, e, sectorPos);
             }
+
+            e._shouldResetMotionVectors = false;
         }
 
         _voxelScene.Build();
@@ -306,7 +307,7 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
                 var key = (e, sectorPos);
                 if (!sectorRenderers.ContainsKey(key))
                 {
-                    sectorRenderers[key] = new SectorRenderer();
+                    sectorRenderers[key] = new SectorRenderer(e, sectorPos);
                 }
 
                 sectorRenderers[key].RenderEmitJob(kvp.Value, e.Neighbors[sectorPos]);
@@ -331,11 +332,14 @@ public class VoxelisXRenderer : MonoSingleton<VoxelisXRenderer>
                 if (!sectorRenderers.ContainsKey(key)) continue;
 
                 sectorRenderers[key].Render();
-                sectorRenderers[key].RenderModifyAS(ref _voxelScene, e, sectorPos, sector);
+                sectorRenderers[key].RenderModifyAS(ref _voxelScene, e, sectorPos);
 
                 // Call sector tick
                 sector.ReorderBricks();
             }
+
+            // Every sector of this entity has consumed the reset; its motion vectors are settled.
+            e._shouldResetMotionVectors = false;
         }
     }
 

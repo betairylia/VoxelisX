@@ -508,7 +508,7 @@ namespace Voxelis
                 _isStatic = value;
             }
         }
-        private bool _isStatic;
+        [SerializeField] private bool _isStatic;
         public bool _shouldResetMotionVectors;
 
         public Guid128 PersistentGuid
@@ -537,6 +537,8 @@ namespace Voxelis
 
         private void Awake()
         {
+            IsStatic = true;
+
             // A loader (e.g. WorldLoader) may assign PersistentGuid while the GameObject is still
             // inactive — that write lands on the default `data` struct BEFORE this Awake runs.
             // Capture it first so the fresh allocation below doesn't clobber the restored identity

@@ -84,12 +84,38 @@ namespace Voxelis.Rendering
         private bool hasRenderable = false;
         private int sectorASHandle;
         private MaterialPropertyBlock matProps = null;
+        private readonly int sectorHashSeed;
 
         /// <summary>
-        /// Constructs a new sector renderer.
+        /// Constructs a new sector renderer for one (entity, sector) pair.
         /// </summary>
-        public SectorRenderer()
+        /// <remarks>
+        /// The identity is captured here (rather than taken per call) so that the per-instance
+        /// property block has a single creation point — see <see cref="EnsureMaterialProperties"/>.
+        /// </remarks>
+        public SectorRenderer(VoxelEntity entity, int3 sectorPos)
         {
+            sectorHashSeed = unchecked((int)ComputeSectorHashSeed(entity, sectorPos));
+        }
+
+        /// <summary>
+        /// Lazily creates this sector's per-instance property block.
+        /// </summary>
+        /// <remarks>
+        /// Sole creation point: the block is filled from two places (<see cref="Render"/> binds
+        /// g_bricks on buffer realloc, <see cref="RenderModifyAS"/> writes the previous transform),
+        /// and constant-per-sector values like the face-hash seed must be set exactly once no
+        /// matter which of them runs first.
+        /// </remarks>
+        private MaterialPropertyBlock EnsureMaterialProperties()
+        {
+            if (matProps == null)
+            {
+                matProps = new MaterialPropertyBlock();
+                matProps.SetInt("_SectorHashSeed", sectorHashSeed);
+            }
+
+            return matProps;
         }
 
         private NativeList<AABB> hostAABBBuffer;
@@ -219,7 +245,6 @@ namespace Voxelis.Rendering
         // Please ensure call RenderEmitJob and Render (after emit job) in the same frame / tick
         private JobHandle jobHandle;
         private GenerateSectorRenderDataJob rendererJob;
-        private int previousBrickBufferSize;
         private bool isRealloc, jobScheduled;
         private RayTracingAABBsInstanceConfig AABBconfig;
         private bool isDirty;
@@ -292,26 +317,18 @@ namespace Voxelis.Rendering
                 Profiler.EndSample();
             }
             
-            // isRealloc = true;
             if (shouldUpdateAABB || isRealloc)
             {
                 Profiler.BeginSample("Handle Realloc");
-                // If we have not yet created an instance in AS
-                if (matProps == null)
-                {
-                    matProps = new MaterialPropertyBlock();
-                }
-                
-                // Will be set by RenderModifyAS when we have sector info
+
+                // Zeroing the config makes RenderModifyAS rebuild it with the current aabbCount.
                 AABBconfig = default;
-            
-                // AS.RemoveInstance(sectorASHandle);
-                // Debug.Log(config.aabbCount);
-                
-                // Setup AABB instance config
-                matProps.SetBuffer("g_bricks", brickBuffer);
+
+                // Only place brickBuffer can be replaced, so the only place the binding can go
+                // stale — RenderModifyAS relies on that and never re-binds it.
+                EnsureMaterialProperties().SetBuffer("g_bricks", brickBuffer);
                 isDirty = true;
-                
+
                 Profiler.EndSample();
             }
 
@@ -335,102 +352,94 @@ namespace Voxelis.Rendering
         /// <param name="AS">The acceleration structure to update.</param>
         /// <param name="entity">The voxel entity this sector belongs to.</param>
         /// <param name="sectorPos">The position of this sector in sector coordinates.</param>
-        /// <param name="sector">The sector data.</param>
         /// <remarks>
-        /// If the sector is dirty (geometry changed), removes and re-adds the instance to the RTAS.
-        /// If just the transform changed, updates the instance transform only.
-        /// This method should be called after Render() to synchronize the RTAS with current voxel data.
+        /// Must be called after Render(), which is what turns fresh voxel data into isDirty.
+        /// Three outcomes:
+        /// - geometry changed: rebuild the RTAS instance (remove + add) and push the property block;
+        /// - instance exists and still needs tracking (moving entity, or the one frame an entity
+        ///   turns static and its motion vectors must settle): push transform + property block;
+        /// - otherwise: nothing, which is how static entities stay free after their first frame.
         /// </remarks>
-        /// TODO: Optimize me for static entities for better performance
-        public void RenderModifyAS(ref RayTracingAccelerationStructure AS, VoxelEntity entity, int3 sectorPos, Sector sector)
+        public void RenderModifyAS(ref RayTracingAccelerationStructure AS, VoxelEntity entity, int3 sectorPos)
         {
-            bool requireTransformUpdate = !(entity.IsStatic && entity._shouldResetMotionVectors);
-            bool requireBricksUpdate = isDirty;
+            Matrix4x4 objectToWorld =
+                entity.transform.localToWorldMatrix *
+                Matrix4x4.Translate((sectorPos * Sector.SECTOR_SIZE_IN_BLOCKS).ToVector3Int());
 
-            // if (!entity.IsStatic)
-            // {
-                Matrix4x4 objectToWorld =
-                    entity.transform.localToWorldMatrix *
-                    Matrix4x4.Translate((sectorPos * Sector.SECTOR_SIZE_IN_BLOCKS).ToVector3Int());
-                Matrix4x4 prevObjectToWorld = hasPreviousObjectToWorld ? previousObjectToWorld : objectToWorld;
-            // }
+            // Set for the frame an entity flips to static (including the initial flip on a
+            // born-static body). Collapsing prev onto the current transform zeroes the motion
+            // vectors once, so the denoiser stops reprojecting a body that will never move again.
+            // VoxelisXRenderer clears the flag after every sector of the entity has consumed it.
+            bool resetsMotionVectors = entity._shouldResetMotionVectors;
+            Matrix4x4 prevObjectToWorld = (hasPreviousObjectToWorld && !resetsMotionVectors)
+                ? previousObjectToWorld
+                : objectToWorld;
 
-            bool updatesRenderableInstance = isDirty || hasRenderable;
+            // A dirty sector with no renderable bricks is legitimate — a freshly loaded sector whose
+            // render-data job has not populated the brick buffer yet, or one whose faces are all
+            // culled. RayTracingAABBsInstanceConfig / AddInstance throw on aabbCount == 0, and since
+            // isDirty is only cleared at the end of this method, letting that throw left isDirty
+            // stuck true: it re-threw every frame and stalled the RTAS update for every other sector
+            // too. Skip instead; the sector re-dirties and retries once real geometry appears.
+            bool rebuildsInstance = isDirty && BrickBufferSize > 0;
+            bool retracksInstance = hasRenderable && (!entity.IsStatic || resetsMotionVectors);
 
-            if (updatesRenderableInstance)
+            if (rebuildsInstance || retracksInstance)
             {
-                if (matProps == null)
-                {
-                    matProps = new MaterialPropertyBlock();
-                    matProps.SetInt("_SectorHashSeed", unchecked((int)ComputeSectorHashSeed(entity, sectorPos)));
-                }
-
-                // if (brickBuffer != null && brickBuffer.IsValid())
-                // {
-                //     matProps.SetBuffer("g_bricks", brickBuffer);
-                // }
-
-                if (!entity.IsStatic && !entity._shouldResetMotionVectors)
-                {
-                    // Previous transform is delivered through the per-instance property block for now.
-                    // This matches the sector-instance RTAS layout, but it means moving sectors need a
-                    // property-block update even when voxel geometry is unchanged. If that gets expensive,
-                    // move these matrices to a structured buffer keyed by a stable instance/sector id.
-                    matProps.SetMatrix("_PrevObjectToWorld", prevObjectToWorld);
-                }
+                // Previous transform is delivered through the per-instance property block for now.
+                // This matches the sector-instance RTAS layout, but it means moving sectors need a
+                // property-block update even when voxel geometry is unchanged. If that gets expensive,
+                // move these matrices to a structured buffer keyed by a stable instance/sector id.
+                // g_bricks needs no refresh here: Render() re-binds it whenever the buffer is replaced.
+                EnsureMaterialProperties().SetMatrix("_PrevObjectToWorld", prevObjectToWorld);
             }
 
-            if (isDirty)
+            if (rebuildsInstance)
             {
-                // Guard against an empty brick buffer: RayTracingAABBsInstanceConfig / AddInstance
-                // throw on aabbCount==0. A sector can legitimately have no renderable bricks for a
-                // frame — e.g. a freshly loaded sector whose render-data job hasn't populated the
-                // brick buffer yet, or a sector all of whose faces are currently culled. Because
-                // isDirty is only cleared at the end of this method, letting AddInstance throw here
-                // left isDirty stuck true, so it re-threw every frame and stalled the entire RTAS
-                // update (no other sector could update either). Skip the instance instead and clear
-                // isDirty; the sector re-dirties and retries once real geometry appears.
-                if (BrickBufferSize == 0)
-                {
-                    isDirty = false;
-                    return;
-                }
-
-                // Create AABB config here now that we have sector info
-                if (AABBconfig.aabbCount == 0 && matProps != null)
-                {
-                    AABBconfig = new RayTracingAABBsInstanceConfig(
-                        aabbBuffer, BrickBufferSize, false, sectorMaterial);
-                    // Tight AABBs change whenever an edit moves a brick's occupied bounds,
-                    // with buffer and aabbCount staying identical. Unity builds static AABB
-                    // geometry once and ignores later buffer writes (Remove+Add reuses the
-                    // cached BLAS), which leaves stale boxes that crop newly grown voxels.
-                    // dynamicGeometry makes every RTAS build re-read the current AABBs.
-                    AABBconfig.dynamicGeometry = true;
-                    AABBconfig.accelerationStructureBuildFlags = RayTracingAccelerationStructureBuildFlags.PreferFastTrace;
-                    AABBconfig.materialProperties = matProps;
-                }
+                EnsureAABBConfig(isDirty);
 
                 AS.RemoveInstance(sectorASHandle);
                 sectorASHandle = AS.AddInstance(AABBconfig, objectToWorld);
                 hasRenderable = true;
                 AS.UpdateInstancePropertyBlock(sectorASHandle, matProps);
             }
-            else if(hasRenderable)
+            else if (retracksInstance)
             {
-                if (!entity.IsStatic)
-                {
-                    AS.UpdateInstanceTransform(sectorASHandle, objectToWorld);
-                    AS.UpdateInstancePropertyBlock(sectorASHandle, matProps);
-                }
+                AS.UpdateInstanceTransform(sectorASHandle, objectToWorld);
+                AS.UpdateInstancePropertyBlock(sectorASHandle, matProps);
             }
 
-            if (updatesRenderableInstance && !entity.IsStatic)
-            {
-                previousObjectToWorld = objectToWorld;
-                hasPreviousObjectToWorld = true;
-            }
+            // Recorded unconditionally: this is simply where the entity was on the last renderer
+            // tick, which is what the next tick needs as its previous transform — whether or not
+            // anything was pushed this tick.
+            previousObjectToWorld = objectToWorld;
+            hasPreviousObjectToWorld = true;
             isDirty = false;
+        }
+
+        /// <summary>
+        /// Builds the AABB instance config if Render() invalidated it (or it was never built).
+        /// </summary>
+        private void EnsureAABBConfig(bool shouldUpdateAABB)
+        {
+            if (AABBconfig.aabbCount != 0)
+            {
+                return;
+            }
+
+            AABBconfig = new RayTracingAABBsInstanceConfig(
+                aabbBuffer, BrickBufferSize, false, sectorMaterial)
+            {
+                // Tight AABBs change whenever an edit moves a brick's occupied bounds,
+                // with buffer and aabbCount staying identical. Unity builds static AABB
+                // geometry once and ignores later buffer writes (Remove+Add reuses the
+                // cached BLAS), which leaves stale boxes that crop newly grown voxels.
+                // dynamicGeometry makes every RTAS build re-read the current AABBs.
+                dynamicGeometry = shouldUpdateAABB,
+                accelerationStructureBuildFlagsOverride = true,
+                accelerationStructureBuildFlags = RayTracingAccelerationStructureBuildFlags.PreferFastTrace,
+                materialProperties = EnsureMaterialProperties(),
+            };
         }
 
         /// <summary>
