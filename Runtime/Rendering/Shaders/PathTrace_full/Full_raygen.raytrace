@@ -76,6 +76,7 @@ struct VoxelisXPathState
     int previousTransparentMaterial;
 };
 
+#define BOUNCEIDX_IS_SPECULAR 0x80000000
 #define BOUNCEIDX_DETERM_MASK 0xF000
 #define BOUNCEIDX_DETERM_SHIFT 12
 #define BOUNCEIDX_STOCHASTIC_MASK 0x000F
@@ -99,6 +100,11 @@ int PathBounceIndexStochastic(VoxelisXPathState path)
     return (path.bounceIndex & BOUNCEIDX_STOCHASTIC_MASK);
 }
 
+bool PathBounceIndexIsSpecular(VoxelisXPathState path)
+{
+    return (path.bounceIndex & BOUNCEIDX_IS_SPECULAR) > 0;
+}
+
 bool AdvanceDeltaRay(RayPayload payload, inout RayDesc ray, inout VoxelisXPathState path)
 {
     float currentRayT = payload.T;
@@ -112,6 +118,7 @@ bool AdvanceDeltaRay(RayPayload payload, inout RayDesc ray, inout VoxelisXPathSt
     
     path.throughput *= ext;
     path.T += currentRayT;
+    path.bounceIndex += (1 << BOUNCEIDX_DETERM_SHIFT);                                      // Advance deterministic bounce count
 
     // Terminate on miss
     if(!VoxelisXRayPayloadHasHit(payload)) { return false; }
@@ -158,12 +165,22 @@ bool AdvanceDeltaRay(RayPayload payload, inout RayDesc ray, inout VoxelisXPathSt
         float fresnelFactor = canRefract
             ? FresnelReflectAmountTransparent(sourceIOR, destinationIOR, ray.Direction, interfaceNormal)
             : 1.0f;
+
+        // fresnelFactor = clamp(2.0f * (fresnelFactor - 0.1f) + 0.5f, 0.05f, 0.95f);
         
         float doRefraction = (canRefract && RandomFloat01(path.rngState) >= fresnelFactor) ? 1.0f : 0.0f;
+        if(path.bounceIndex == (1 << BOUNCEIDX_DETERM_SHIFT)) 
+        {
+            doRefraction = ((DispatchRaysIndex().x + DispatchRaysIndex().y) % 2) == 0;
+        }
         // doRefraction = 0.0f;
         float3 bounceRayDir = SafeNormalize(lerp(reflectionRayDir, refractionRayDir, doRefraction));
         float pushOff = doRefraction == 1.0f ? -K_RAY_ORIGIN_PUSH_OFF : K_RAY_ORIGIN_PUSH_OFF;
 
+        if(path.bounceIndex == (1 << BOUNCEIDX_DETERM_SHIFT))
+        {
+            path.bounceIndex |= ((doRefraction ? 0 : 1) * BOUNCEIDX_IS_SPECULAR);
+        }
         path.previousTransparentMaterial = doRefraction == 1.0f ? destinationMaterialID : sourceMaterialID;
 
         ray.Origin = worldHitPosition + pushOff * interfaceNormal;
@@ -171,6 +188,119 @@ bool AdvanceDeltaRay(RayPayload payload, inout RayDesc ray, inout VoxelisXPathSt
     }
 
     return true;
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+// STOCHASTIC SHADING
+/////////////////////////////////////////////////////////////////////////////////////////////////
+
+struct VoxelisXShadeResult
+{
+    half3 albedo;
+    half3 emission;
+    float3 bounceRayOrigin;
+    float3 bounceRayDirection;
+    half3 worldNormal;
+    // Which lobe the bounce ray sampled: 1 = specular (incl. transparent reflection/refraction,
+    // both delta), 0 = diffuse. Consumed at the primary hit to route the stochastic signal into
+    // DiffuseRadianceTarget vs SpecularRadianceTarget; ignored on later bounces.
+    half specularLobe;
+    float k;
+};
+
+// Attenuation of one straight segment of length segmentT travelling inside mediumMaterialID
+// (0 = vacuum). AdvanceDeltaRay folds this into path.throughput for delta segments; the bounce
+// loop folds it into its own throughput. Shading never applies it, so it is counted exactly once.
+float3 VoxelisXMediumExtinction(int mediumMaterialID, float segmentT)
+{
+    if (mediumMaterialID == 0) { return float3(1.0f, 1.0f, 1.0f); }
+
+    VoxelMaterial medium = GET_MATERIAL(mediumMaterialID);
+    return exp(-(1.0f - medium.albedo.rgb) * segmentT * medium.extinction);
+}
+
+// Shades one hit and samples the next bounce ray. Unlike AdvanceDeltaRay this accepts any
+// material: it is what runs once the delta chain has terminated.
+void VoxelisXShadeVoxelHit(
+    RayPayload payload,
+    float3 worldHitPosition,
+    float3 worldRayDirection,
+    inout VoxelisXPathState path,
+    out VoxelisXShadeResult shade)
+{
+    int materialID = int((payload.materialID_voxelFaceHash >> 16) & 0xFFFFu);
+    VoxelMaterial material = GET_MATERIAL(materialID);
+
+    float3 worldNormal = VoxelisXUnpackWorldNormal(payload.packedWorldNormal);
+
+    path.bounceIndex += 1;                                                                      // Advance stochastic bounce count
+
+    if (IsOpaque(materialID))
+    {
+        shade.albedo = material.albedo;
+        shade.emission = material.emission;
+
+        float fresnelFactor = FresnelReflectAmountOpaque(1.0f, material.IOR, worldRayDirection, worldNormal);
+        float specularChance = lerp(material.metallic, 1.0f, fresnelFactor * material.smoothness);
+        float doSpecular = (RandomFloat01(path.rngState) < specularChance) ? 1.0f : 0.0f;
+
+        float3 diffuseRayDir = SafeNormalize(worldNormal + RandomUnitVector(path.rngState));
+        diffuseRayDir = (dot(diffuseRayDir, diffuseRayDir) > 0.0f) ? diffuseRayDir : worldNormal;
+        float3 specularRayDir = reflect(worldRayDirection, worldNormal);
+        specularRayDir = SafeNormalize(lerp(diffuseRayDir, specularRayDir, material.smoothness));
+        float3 reflectedRayDir = lerp(diffuseRayDir, specularRayDir, doSpecular);
+
+        // shade.k = (doSpecular == 1.0f) ? specularChance : 1.0f - specularChance;
+        shade.k = 1;
+        shade.bounceRayOrigin = worldHitPosition + K_RAY_ORIGIN_PUSH_OFF * worldNormal;
+        shade.bounceRayDirection = reflectedRayDir;
+        shade.worldNormal = worldNormal;
+        shade.specularLobe = half(doSpecular);
+    }
+    else
+    {
+        int sourceMaterialID = path.previousTransparentMaterial;
+        int destinationMaterialID = materialID;
+        bool hasPreviousTransparentMaterial = sourceMaterialID != 0;
+        bool hasDestinationTransparentMaterial = destinationMaterialID != 0;
+        VoxelMaterial previousTransparentMaterial = GET_MATERIAL(sourceMaterialID);
+
+        float3 interfaceNormal = SafeNormalize(worldNormal);
+        if (dot(worldRayDirection, interfaceNormal) > 0.0f)
+        {
+            interfaceNormal = -interfaceNormal;
+        }
+
+        float sourceIOR = hasPreviousTransparentMaterial ? previousTransparentMaterial.IOR : 1.0f;
+        float destinationIOR = hasDestinationTransparentMaterial ? material.IOR : 1.0f;
+        float eta = sourceIOR / destinationIOR;
+
+        float3 reflectionRayDir = reflect(worldRayDirection, interfaceNormal);
+        float3 refractionRayDir = refract(worldRayDirection, interfaceNormal, eta);
+        bool canRefract = dot(refractionRayDir, refractionRayDir) > 0.000001f;
+
+        float fresnelFactor = canRefract
+            ? FresnelReflectAmountTransparent(sourceIOR, destinationIOR, worldRayDirection, interfaceNormal)
+            : 1.0f;
+
+        float doRefraction = (canRefract && RandomFloat01(path.rngState) >= fresnelFactor) ? 1.0f : 0.0f;
+        // doRefraction = 0.0f;
+        float3 bounceRayDir = SafeNormalize(lerp(reflectionRayDir, refractionRayDir, doRefraction));
+        float pushOff = doRefraction == 1.0f ? -K_RAY_ORIGIN_PUSH_OFF : K_RAY_ORIGIN_PUSH_OFF;
+
+        // shade.k = doRefraction == 1.0f ? 1.0f - fresnelFactor : fresnelFactor;
+        shade.k = 1;
+        shade.albedo = half3(1.0f, 1.0f, 1.0f);                                                 // extinction is a per-segment term
+        shade.emission = material.emission;
+        shade.bounceRayOrigin = worldHitPosition + pushOff * interfaceNormal;
+        shade.bounceRayDirection = bounceRayDir;
+        shade.worldNormal = interfaceNormal;
+        // Both transparent lobes are delta (pure reflect/refract): treat them as specular with
+        // roughness 0. Refraction does NOT fit the diffuse-denoiser lobe model; the proper
+        // long-term handling is primary surface replacement, i.e. the delta chain above.
+        shade.specularLobe = half(1.0f);
+        path.previousTransparentMaterial = doRefraction == 1.0f ? destinationMaterialID : sourceMaterialID;
+    }
 }
 
 float3 VoxelisXSampleSkyRadiance(float3 direction)
@@ -199,7 +329,8 @@ void MainRayGenShader()
     uint rngState = g_FrameIndex * 7919u;
 
     // clip space coords
-    float2 subpixelJitter = float2(RandomFloat01(rngState), RandomFloat01(rngState));           // uniform jitter (blue noise)
+    // float2 subpixelJitter = float2(RandomFloat01(rngState), RandomFloat01(rngState));           // uniform jitter (blue noise)
+    float2 subpixelJitter = float2(0.5f, 0.5f);                                                  // no jitter
     float2 ndcCoords = (rayLaunchIndex + subpixelJitter) / float2(rayLaunchDim.x - 1, rayLaunchDim.y - 1);
     ndcCoords = ndcCoords * 2 - float2(1, 1);
     ndcCoords = ndcCoords * g_Zoom;
@@ -219,6 +350,13 @@ void MainRayGenShader()
     //////////////////////////////////////////////
     // Primary ray
     //////////////////////////////////////////////
+
+    // Real geometry of the surface the delta chain terminates on, and the direction it was hit
+    // from. The PSR "virtual" position below is only valid for depth / motion vectors — bounce
+    // rays have to leave the actual surface. Captured per iteration because the loop can also
+    // exit on the deterministic bounce budget, after AdvanceDeltaRay has already moved `ray` on.
+    float3 surfaceWorldPosition = float3(0, 0, 0);
+    float3 surfaceRayDirection = ray.Direction;
 
     // Primary delta
     for(; PathBounceIndexDeterministic(path) < g_BounceCountTransparent;)
@@ -244,6 +382,9 @@ void MainRayGenShader()
             break;
         }
 
+        surfaceWorldPosition = ray.Origin + ray.Direction * payload.T;
+        surfaceRayDirection = ray.Direction;
+
         // Write non-PSR depth
         if(path.bounceIndex == 0)
         {
@@ -258,7 +399,6 @@ void MainRayGenShader()
             // g_CurrentDepthHistory[outputLaunchIndex] = payload.T;
         }
         
-        path.bounceIndex += (1 << BOUNCEIDX_DETERM_SHIFT);                                      // Advance deterministic bounce count
         if(!AdvanceDeltaRay(payload, ray, path))
         {
             break;
@@ -332,16 +472,14 @@ void MainRayGenShader()
         g_CurrentNormalHistory[outputLaunchIndex] = float4(packedNormal, previousSurfaceViewDepth, 1.0f);
         ////////////////////////////////////////////////////////////////////////////
 
+        // Composite does `deterministic + albedo * indirect`, so path.throughput (the tint and
+        // attenuation of everything the delta chain refracted through) rides on the albedo and
+        // modulates the whole stochastic signal. A transparent terminator carries no albedo of
+        // its own — its colour is already in the extinction term.
         /// GBUFFER SET ////////////////////////////////////////////////////////////
-        AlbedoTarget[outputLaunchIndex] = float4(material.albedo, 1);                       // TODO: We still need this?
+        AlbedoTarget[outputLaunchIndex] = float4(                                           // TODO: We still need this?
+            path.throughput * (IsOpaque(materialID) ? material.albedo : float3(1, 1, 1)), 1);
         ////////////////////////////////////////////////////////////////////////////
-        
-        // Debug
-        // DeterministicRadianceTarget[outputLaunchIndex] = float4(path.throughput * material.albedo, 1.0f);
-        DeterministicRadianceTarget[outputLaunchIndex] = float4(0.0f, 0.0f, 0.0f, 1.0f);
-        DiffuseRadianceTarget[outputLaunchIndex] = float4(path.throughput * material.albedo * RandomFloat01(path.rngState), K_T_MAX);
-        // DiffuseRadianceTarget[outputLaunchIndex] = float4(1.0f, 1.0f, 1.0f, K_T_MAX);
-        // SpecularRadianceTarget[outputLaunchIndex] = float4(0.0f, 0.0f, 0.0f, 0.0f);
     }
     // Miss (Direct miss or delta miss)
     else 
@@ -371,6 +509,116 @@ void MainRayGenShader()
     //////////////////////////////////////////////
     // Further Bounces
     //////////////////////////////////////////////
+
+#if VOXELISXRT_BOUNCE
+    if(VoxelisXRayPayloadHasHit(payload))
+    {
+        // Shade the surface the delta chain landed on — the one the G-buffer above describes.
+        // Its lobe choice classifies the entire stochastic path.
+        VoxelisXShadeResult primaryShade;
+        VoxelisXShadeVoxelHit(payload, surfaceWorldPosition, surfaceRayDirection, path, primaryShade);
+
+        // Primary emission is deterministic (nothing was sampled to obtain it), so it bypasses
+        // the denoiser. path.throughput carries the delta chain's transmission.
+        DeterministicRadianceTarget[outputLaunchIndex] = float4(path.throughput * primaryShade.emission, 1.0f);
+
+        // Keep the primary albedo out of the temporal history. It is applied once during final
+        // composition so replaced voxels can reuse lighting history.
+        half3 indirectIncidentRadiance = half3(0, 0, 0);
+        float3 throughput = 1.0f / max(0.001, primaryShade.k);
+        // Hit distance of the first stochastic segment (primary surface -> first bounce hit),
+        // in raw world units per NRD conventions; K_T_MAX when the first bounce hits the sky.
+        float firstSegmentHitT = K_T_MAX;
+        bool firstSegment = true;
+
+        RayDesc bounceRay;
+        bounceRay.Origin = primaryShade.bounceRayOrigin;
+        bounceRay.Direction = primaryShade.bounceRayDirection;
+        bounceRay.TMin = 0;
+        bounceRay.TMax = K_T_MAX;
+
+        // NOTE: the stochastic counter lives in the low nibble of path.bounceIndex, so
+        // g_BounceCountOpaque must stay below 15 — past that the counter wraps and this loop
+        // never terminates.
+        for(; (uint)PathBounceIndexStochastic(path) <= g_BounceCountOpaque;)
+        {
+            RayPayload bouncePayload;
+            VoxelisXClearRayPayload(bouncePayload);
+            TraceRay(g_AccelStruct, RAY_FLAG_FORCE_OPAQUE, 0xFF, 0, 1, 0, bounceRay, bouncePayload);
+
+            // Attenuate the segment by the medium it just crossed, before shading its hit.
+            // On a miss payload.T is 0, so the sky term is unattenuated (same as the old shader).
+            throughput *= VoxelisXMediumExtinction(path.previousTransparentMaterial, bouncePayload.T);
+
+            if (!VoxelisXRayPayloadHasHit(bouncePayload))
+            {
+                indirectIncidentRadiance += VoxelisXSampleSkyRadiance(bounceRay.Direction) * throughput;
+                break;
+            }
+
+            if (firstSegment)
+            {
+                firstSegmentHitT = bouncePayload.T;
+                firstSegment = false;
+            }
+
+            VoxelisXShadeResult bounceShade;
+            VoxelisXShadeVoxelHit(
+                bouncePayload,
+                bounceRay.Origin + bounceRay.Direction * bouncePayload.T,
+                bounceRay.Direction,
+                path,
+                bounceShade);
+
+            indirectIncidentRadiance += bounceShade.emission * throughput;
+            throughput *= bounceShade.albedo / max(0.001, bounceShade.k);
+
+            half pathStopProbability = 1;
+
+    #define ENABLE_RUSSIAN_ROULETTE 1
+
+    #if ENABLE_RUSSIAN_ROULETTE
+            pathStopProbability = max(throughput.r, max(throughput.g, throughput.b));
+
+            // Dark colors have higher chance to terminate the path early.
+            if (pathStopProbability < RandomFloat01(path.rngState))
+                break;
+    #endif
+
+            throughput *= 1 / pathStopProbability;
+
+            bounceRay.Origin = bounceShade.bounceRayOrigin;
+            bounceRay.Direction = bounceShade.bounceRayDirection;
+            bounceRay.TMin = 0;
+            bounceRay.TMax = K_T_MAX;
+        }
+
+        // The path is classified once, by the lobe sampled at the primary hit, and the whole
+        // gathered signal goes to that lobe's target — so diffuse + specular always sums to
+        // exactly what the old combined buffer held. The unsampled lobe gets 0 radiance and
+        // 0 hit distance (no data this frame).
+        // bool primaryLobeIsSpecular = primaryShade.specularLobe > half(0.5f);
+        bool primaryLobeIsSpecular = PathBounceIndexIsSpecular(path);
+        float4 stochasticOut = float4(indirectIncidentRadiance, firstSegmentHitT);
+        DiffuseRadianceTarget[outputLaunchIndex] = primaryLobeIsSpecular ? float4(0, 0, 0, 0) : stochasticOut;
+        SpecularRadianceTarget[outputLaunchIndex] = primaryLobeIsSpecular ? stochasticOut : float4(0, 0, 0, 0);
+    }
+    else
+    {
+        // Sky pixels carry no stochastic signal. These are pooled render-graph textures created
+        // without a clear, so leaving them unwritten feeds a stale frame into the denoiser.
+        DiffuseRadianceTarget[outputLaunchIndex] = float4(0, 0, 0, 0);
+        SpecularRadianceTarget[outputLaunchIndex] = float4(0, 0, 0, 0);
+    }
+#else
+    // Flat debug signal: the denoise chain becomes an identity, so the composite shows albedo only.
+    if(VoxelisXRayPayloadHasHit(payload))
+    {
+        DeterministicRadianceTarget[outputLaunchIndex] = float4(0.0f, 0.0f, 0.0f, 1.0f);
+    }
+    DiffuseRadianceTarget[outputLaunchIndex] = float4(1.0f, 1.0f, 1.0f, K_T_MAX);
+    SpecularRadianceTarget[outputLaunchIndex] = float4(0.0f, 0.0f, 0.0f, 0.0f);
+#endif
 }
 
 [shader("miss")]
