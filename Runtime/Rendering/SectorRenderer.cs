@@ -82,6 +82,7 @@ namespace Voxelis.Rendering
         public static Material sectorMaterial;
 
         private bool hasRenderable = false;
+        private bool instanceIsDynamic;
         private int sectorASHandle;
         private MaterialPropertyBlock matProps = null;
         private readonly int sectorHashSeed;
@@ -375,13 +376,26 @@ namespace Voxelis.Rendering
                 ? previousObjectToWorld
                 : objectToWorld;
 
+            // Tight AABBs change whenever an edit moves a brick's occupied bounds, with buffer and
+            // aabbCount staying identical. Unity builds static AABB geometry once and ignores later
+            // buffer writes (Remove+Add reuses the cached BLAS), which leaves stale boxes that crop
+            // newly grown voxels — so an edited sector must be registered as dynamic geometry for
+            // the build that follows. But dynamicGeometry is baked in at AddInstance time and costs
+            // a full BLAS rebuild on *every* subsequent build, so it has to be taken back off again:
+            // `settles` is the falling edge, the first tick a dynamic instance stops changing, and
+            // the only reason to touch the RTAS when the sector is otherwise clean.
+            bool wantsDynamicGeometry = isDirty;
+            bool settles = hasRenderable && instanceIsDynamic && !wantsDynamicGeometry;
+
             // A dirty sector with no renderable bricks is legitimate — a freshly loaded sector whose
             // render-data job has not populated the brick buffer yet, or one whose faces are all
             // culled. RayTracingAABBsInstanceConfig / AddInstance throw on aabbCount == 0, and since
             // isDirty is only cleared at the end of this method, letting that throw left isDirty
             // stuck true: it re-threw every frame and stalled the RTAS update for every other sector
             // too. Skip instead; the sector re-dirties and retries once real geometry appears.
-            bool rebuildsInstance = isDirty && BrickBufferSize > 0;
+            // (A sector that empties out while registered keeps its last instance, and therefore its
+            // dynamic flag, until the sector itself is removed — nothing can be re-added at count 0.)
+            bool rebuildsInstance = (isDirty || settles) && BrickBufferSize > 0;
             bool retracksInstance = hasRenderable && (!entity.IsStatic || resetsMotionVectors);
 
             if (rebuildsInstance || retracksInstance)
@@ -396,10 +410,15 @@ namespace Voxelis.Rendering
 
             if (rebuildsInstance)
             {
-                EnsureAABBConfig(isDirty);
+                EnsureAABBConfig();
+
+                // Assigned here rather than inside EnsureAABBConfig: on a settle tick Render() never
+                // ran, so the config was never invalidated and still carries the previous tick's flag.
+                // AABBconfig.dynamicGeometry = wantsDynamicGeometry;
 
                 AS.RemoveInstance(sectorASHandle);
                 sectorASHandle = AS.AddInstance(AABBconfig, objectToWorld);
+                instanceIsDynamic = wantsDynamicGeometry;
                 hasRenderable = true;
                 AS.UpdateInstancePropertyBlock(sectorASHandle, matProps);
             }
@@ -420,7 +439,11 @@ namespace Voxelis.Rendering
         /// <summary>
         /// Builds the AABB instance config if Render() invalidated it (or it was never built).
         /// </summary>
-        private void EnsureAABBConfig(bool shouldUpdateAABB)
+        /// <remarks>
+        /// dynamicGeometry is deliberately not set here — it is per-registration state decided by
+        /// the caller, and this method no-ops on the settle tick.
+        /// </remarks>
+        private void EnsureAABBConfig()
         {
             if (AABBconfig.aabbCount != 0)
             {
@@ -430,12 +453,7 @@ namespace Voxelis.Rendering
             AABBconfig = new RayTracingAABBsInstanceConfig(
                 aabbBuffer, BrickBufferSize, false, sectorMaterial)
             {
-                // Tight AABBs change whenever an edit moves a brick's occupied bounds,
-                // with buffer and aabbCount staying identical. Unity builds static AABB
-                // geometry once and ignores later buffer writes (Remove+Add reuses the
-                // cached BLAS), which leaves stale boxes that crop newly grown voxels.
-                // dynamicGeometry makes every RTAS build re-read the current AABBs.
-                dynamicGeometry = shouldUpdateAABB,
+                dynamicGeometry = false,
                 accelerationStructureBuildFlagsOverride = true,
                 accelerationStructureBuildFlags = RayTracingAccelerationStructureBuildFlags.PreferFastTrace,
                 materialProperties = EnsureMaterialProperties(),

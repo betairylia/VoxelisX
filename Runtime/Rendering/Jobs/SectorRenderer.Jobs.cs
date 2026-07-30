@@ -279,7 +279,12 @@ namespace Voxelis.Rendering
 
                 if (boundsChanged)
                 {
-                    aabbBuffer[rendererBrickId] = tightAABB;
+                    // aabbBuffer[rendererBrickId] = tightAABB;
+                    aabbBuffer[rendererBrickId] = new AABB()
+                    {
+                        min = brickBlockPos.ToVector3Int(),
+                        max = (brickBlockPos + 8).ToVector3Int()
+                    };
                     syncRecord[2] = 1;
                 }
             }
