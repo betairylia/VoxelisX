@@ -77,6 +77,9 @@ struct VoxelisXPathState
 };
 
 #define BOUNCEIDX_IS_SPECULAR 0x80000000
+// Set when the first transparent interface actually split into a reflect/refract checkerboard.
+// Published to MotionVectorTarget.a so the final cross resolve knows which pixels to average.
+#define BOUNCEIDX_IS_PSR 0x40000000
 #define BOUNCEIDX_DETERM_MASK 0xF000
 #define BOUNCEIDX_DETERM_SHIFT 12
 #define BOUNCEIDX_STOCHASTIC_MASK 0x000F
@@ -103,6 +106,11 @@ int PathBounceIndexStochastic(VoxelisXPathState path)
 bool PathBounceIndexIsSpecular(VoxelisXPathState path)
 {
     return (path.bounceIndex & BOUNCEIDX_IS_SPECULAR) > 0;
+}
+
+bool PathIsPSR(VoxelisXPathState path)
+{
+    return (path.bounceIndex & BOUNCEIDX_IS_PSR) > 0;
 }
 
 bool AdvanceDeltaRay(RayPayload payload, inout RayDesc ray, inout VoxelisXPathState path)
@@ -169,18 +177,28 @@ bool AdvanceDeltaRay(RayPayload payload, inout RayDesc ray, inout VoxelisXPathSt
         // fresnelFactor = clamp(2.0f * (fresnelFactor - 0.1f) + 0.5f, 0.05f, 0.95f);
         
         float doRefraction = (canRefract && RandomFloat01(path.rngState) >= fresnelFactor) ? 1.0f : 0.0f;
-        if(path.bounceIndex == (1 << BOUNCEIDX_DETERM_SHIFT)) 
+        if(path.bounceIndex == (1 << BOUNCEIDX_DETERM_SHIFT))
         {
-            doRefraction = ((DispatchRaysIndex().x + DispatchRaysIndex().y) % 2) == 0;
+            // First interface: split the two delta branches spatially instead of sampling them,
+            // so both are present every frame and the cross resolve averages them back together.
+            // Total internal reflection has no refracted branch, so it stays unsplit.
+            doRefraction = (canRefract && ((DispatchRaysIndex().x + DispatchRaysIndex().y) % 2) == 0) ? 1.0f : 0.0f;
+
+            // Sampling by RandomFloat01 >= fresnelFactor let *probability* carry the Fresnel
+            // weight, with k = 1. A fixed 50/50 checkerboard destroys that, so the surviving
+            // branch has to carry the weight explicitly, or glass reads as a 50% mirror at
+            // every angle. The x2 cancels the 0.5 the cross resolve puts on each parity.
+            path.throughput *= canRefract
+                ? 2.0f * (doRefraction == 1.0f ? (1.0f - fresnelFactor) : fresnelFactor)
+                : 1.0f;
+
+            path.bounceIndex |= ((doRefraction ? 0 : 1) * BOUNCEIDX_IS_SPECULAR);
+            path.bounceIndex |= (canRefract ? BOUNCEIDX_IS_PSR : 0);
         }
         // doRefraction = 0.0f;
         float3 bounceRayDir = SafeNormalize(lerp(reflectionRayDir, refractionRayDir, doRefraction));
         float pushOff = doRefraction == 1.0f ? -K_RAY_ORIGIN_PUSH_OFF : K_RAY_ORIGIN_PUSH_OFF;
 
-        if(path.bounceIndex == (1 << BOUNCEIDX_DETERM_SHIFT))
-        {
-            path.bounceIndex |= ((doRefraction ? 0 : 1) * BOUNCEIDX_IS_SPECULAR);
-        }
         path.previousTransparentMaterial = doRefraction == 1.0f ? destinationMaterialID : sourceMaterialID;
 
         ray.Origin = worldHitPosition + pushOff * interfaceNormal;
@@ -329,8 +347,8 @@ void MainRayGenShader()
     uint rngState = g_FrameIndex * 7919u;
 
     // clip space coords
-    // float2 subpixelJitter = float2(RandomFloat01(rngState), RandomFloat01(rngState));           // uniform jitter (blue noise)
-    float2 subpixelJitter = float2(0.5f, 0.5f);                                                  // no jitter
+    float2 subpixelJitter = float2(RandomFloat01(rngState), RandomFloat01(rngState));           // uniform jitter (blue noise)
+    // float2 subpixelJitter = float2(0.5f, 0.5f);                                                  // no jitter
     float2 ndcCoords = (rayLaunchIndex + subpixelJitter) / float2(rayLaunchDim.x - 1, rayLaunchDim.y - 1);
     ndcCoords = ndcCoords * 2 - float2(1, 1);
     ndcCoords = ndcCoords * g_Zoom;
@@ -451,10 +469,11 @@ void MainRayGenShader()
         // 2.5D screen-space motion, per the NRD doc: .xy = previousUV - currentUV,
         // .z = viewZprev - viewZ. Both components point "previous minus current", so a
         // consumer reprojects with previousUV = currentUV + mv.xy.
-        // .a is reserved (1 = surface, 0 = sky); NRD takes confidence via separate inputs.
+        // .a = the delta-checkerboard flag (1 = this pixel traced one parity of a reflect/refract
+        // split and needs the final cross resolve, 0 = single unsplit surface or sky).
         /// GBUFFER SET ////////////////////////////////////////////////////////////
-        MotionVectorTarget[outputLaunchIndex] =
-            float4(motionVector, previousSurfaceViewDepth - distanceFromCamera, 1.0f);
+        MotionVectorTarget[outputLaunchIndex] = float4(
+            motionVector, previousSurfaceViewDepth - distanceFromCamera, PathIsPSR(path) ? 1.0f : 0.0f);
         ////////////////////////////////////////////////////////////////////////////
 
         // Normal
@@ -503,7 +522,9 @@ void MainRayGenShader()
         NormalTarget[outputLaunchIndex] = float4(packedNormal, 0.0f, 0);
         g_CurrentNormalHistory[outputLaunchIndex] = float4(packedNormal, 0, 0.0f);
         AlbedoTarget[outputLaunchIndex] = float4(0, 0, 0, 1);
-        MotionVectorTarget[outputLaunchIndex] = float4(0, 0, 0, 0);
+        // A delta miss still belongs to a checkerboard pair — its parity flew off to the sky while
+        // the neighbouring parity hit something — so it has to be resolved like any other PSR pixel.
+        MotionVectorTarget[outputLaunchIndex] = float4(0, 0, 0, PathIsPSR(path) ? 1.0f : 0.0f);
     }
 
     //////////////////////////////////////////////

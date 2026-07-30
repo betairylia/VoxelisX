@@ -8,6 +8,7 @@ using Unity.Collections.NotBurstCompatible;
 using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
+using Voxelis.IO;
 using Voxelis.Utils;
 
 namespace Voxelis
@@ -494,6 +495,21 @@ namespace Voxelis
         private VoxelEntityData data;
         public VoxelEntityData GetDataCopy() => data;
         private static Unity.Mathematics.Random globalEntityRandomState = new Unity.Mathematics.Random(0x6E624EB7u);
+
+        public bool IsStatic
+        {
+            get => _isStatic;
+            set
+            {
+                if(_isStatic == false && value == true)
+                {
+                    _shouldResetMotionVectors = true;
+                }
+                _isStatic = value;
+            }
+        }
+        private bool _isStatic;
+        public bool _shouldResetMotionVectors;
 
         public Guid128 PersistentGuid
         {

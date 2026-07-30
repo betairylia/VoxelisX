@@ -31,7 +31,11 @@ public class VoxelisXFrameResources : ContextItem
     public TextureHandle Normal;
     /// <summary>Linear view depth in world units. The present stage converts it to raw depth for SV_Depth.</summary>
     public TextureHandle Depth;
-    /// <summary>2.5D motion vectors, NRD convention: .xy = previousUV - currentUV, .z = viewZprev - viewZ, .a reserved. ARGBFloat.</summary>
+    /// <summary>
+    /// 2.5D motion vectors, NRD convention: .xy = previousUV - currentUV, .z = viewZprev - viewZ.
+    /// .a is the delta-checkerboard flag (1 = the pixel traced one parity of a reflect/refract
+    /// split and needs the cross resolve, 0 = single unsplit surface or sky). ARGBFloat.
+    /// </summary>
     public TextureHandle MotionVector;
     /// <summary>This frame's linear depth, persisted for next frame's temporal rejection.</summary>
     public TextureHandle CurrentDepthHistory;

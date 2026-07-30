@@ -25,6 +25,7 @@ public class VoxelisXDenoisePass : ScriptableRenderPass
     private const int PassTemporalAccumulation = 2;
     private const int PassComposite = 3;
     private const int PassCombineStochastic = 4;
+    private const int PassCrossResolve = 5;
     private const int PassATrousFilter = 0;
 
     private Material indirectMaterial;
@@ -37,6 +38,7 @@ public class VoxelisXDenoisePass : ScriptableRenderPass
 
     private VoxelisXIndirectDenoisingSettings denoisingSettings = VoxelisXIndirectDenoisingSettings.Default;
     private VoxelisXTemporalRadianceSettings temporalSettings = new VoxelisXTemporalRadianceSettings().Validated();
+    private bool resolveDeltaCheckerboard = true;
 
     internal class CombinePassData
     {
@@ -88,6 +90,14 @@ public class VoxelisXDenoisePass : ScriptableRenderPass
         internal Material material;
     }
 
+    internal class CrossResolvePassData
+    {
+        internal int width;
+        internal int height;
+        internal TextureHandle Source;
+        internal Material material;
+    }
+
     /// <summary>Binds the materials owned by the renderer feature. Called when the feature is created.</summary>
     public void Setup(Material indirectPipelineMaterial, Material[] aTrousIterationMaterials)
     {
@@ -97,10 +107,13 @@ public class VoxelisXDenoisePass : ScriptableRenderPass
 
     /// <summary>Pushes this frame's denoising settings. Called once per camera before enqueueing.</summary>
     public void ConfigureSettings(
-        VoxelisXIndirectDenoisingSettings denoising, VoxelisXTemporalRadianceSettings temporal)
+        VoxelisXIndirectDenoisingSettings denoising,
+        VoxelisXTemporalRadianceSettings temporal,
+        bool resolveCheckerboard)
     {
         denoisingSettings = denoising.Validated();
         temporalSettings = temporal.Validated();
+        resolveDeltaCheckerboard = resolveCheckerboard;
     }
 
     /// <summary>True when the stage has everything it needs to record.</summary>
@@ -140,6 +153,11 @@ public class VoxelisXDenoisePass : ScriptableRenderPass
         history.EndFrame();
 
         resources.Color = RecordComposite(renderGraph, resources, cameraData, width, height);
+
+        if (resolveDeltaCheckerboard)
+        {
+            resources.Color = RecordCrossResolve(renderGraph, resources, cameraData, width, height);
+        }
     }
 
     // --- Combine ------------------------------------------------------------
@@ -429,6 +447,51 @@ public class VoxelisXDenoisePass : ScriptableRenderPass
         }
 
         return color;
+    }
+
+    // --- Cross resolve ------------------------------------------------------
+
+    /// <summary>
+    /// Averages the reflect/refract checkerboard the tracer writes at the first transparent
+    /// interface back into a single image.
+    /// </summary>
+    /// <remarks>
+    /// Runs on the composited colour rather than on any G-buffer: the checkerboard reaches all of
+    /// them (each parity describes a different surface), and only the final colour has collapsed
+    /// the two branches into one value. Keyed off <c>MotionVector.a</c>, which the tracer sets for
+    /// pixels that actually split, so unsplit geometry is passed through rather than softened.
+    /// </remarks>
+    private TextureHandle RecordCrossResolve(
+        RenderGraph renderGraph,
+        VoxelisXFrameResources resources,
+        UniversalCameraData cameraData,
+        int width,
+        int height)
+    {
+        TextureHandle resolved = UniversalRenderer.CreateRenderGraphTexture(
+            renderGraph, VoxelisXFrameResources.BaseDescriptor(cameraData), "VoxelisX_outColorResolved", false);
+
+        using (var builder = renderGraph.AddRasterRenderPass<CrossResolvePassData>(
+                   "VoxelisX Delta Checkerboard Resolve", out var passData))
+        {
+            passData.width = width;
+            passData.height = height;
+            passData.Source = resources.Color;
+            passData.material = indirectMaterial;
+
+            builder.UseTexture(passData.Source, AccessFlags.Read);
+            builder.UseTexture(resources.MotionVector, AccessFlags.Read);
+            builder.UseGlobalTexture(VoxelisXShaderIDs.MotionVectorTex);
+            builder.SetRenderAttachment(resolved, 0, AccessFlags.Write);
+            builder.AllowPassCulling(false);
+            builder.SetRenderFunc((CrossResolvePassData data, RasterGraphContext ctx) =>
+            {
+                SetFrameSize(data.material, data.width, data.height);
+                Blitter.BlitTexture(ctx.cmd, data.Source, FullScreenScaleBias, data.material, PassCrossResolve);
+            });
+        }
+
+        return resolved;
     }
 
     private static readonly Vector4 FullScreenScaleBias = new Vector4(1, 1, 0, 0);

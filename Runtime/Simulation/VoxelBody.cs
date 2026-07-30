@@ -25,6 +25,7 @@ namespace Voxelis
             {
                 _isStatic = value;
                 data.isStatic = value;
+                entity.IsStatic = value;
             }
         }
         
@@ -73,6 +74,7 @@ namespace Voxelis
             CreateCollider();
             InitializeBody();
             _entity = GetComponent<VoxelEntity>();
+            _entity.IsStatic = data.isStatic;
         }
 
         private void CreateCollider()
@@ -148,10 +150,12 @@ namespace Voxelis
         private void OnEnable()
         {
             (VoxelisXCoreWorld.instance as VoxelisXWorld)?.AddBody(this);
+            _entity.IsStatic = data.isStatic;
         }
 
         private void OnDisable()
         {
+            _entity.IsStatic = true;
             (VoxelisXCoreWorld.instance as VoxelisXWorld)?.RemoveBody(this);
         }
 

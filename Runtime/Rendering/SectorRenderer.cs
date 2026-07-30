@@ -344,10 +344,17 @@ namespace Voxelis.Rendering
         /// TODO: Optimize me for static entities for better performance
         public void RenderModifyAS(ref RayTracingAccelerationStructure AS, VoxelEntity entity, int3 sectorPos, Sector sector)
         {
-            Matrix4x4 objectToWorld =
-                entity.transform.localToWorldMatrix *
-                Matrix4x4.Translate((sectorPos * Sector.SECTOR_SIZE_IN_BLOCKS).ToVector3Int());
-            Matrix4x4 prevObjectToWorld = hasPreviousObjectToWorld ? previousObjectToWorld : objectToWorld;
+            bool requireTransformUpdate = !(entity.IsStatic && entity._shouldResetMotionVectors);
+            bool requireBricksUpdate = isDirty;
+
+            // if (!entity.IsStatic)
+            // {
+                Matrix4x4 objectToWorld =
+                    entity.transform.localToWorldMatrix *
+                    Matrix4x4.Translate((sectorPos * Sector.SECTOR_SIZE_IN_BLOCKS).ToVector3Int());
+                Matrix4x4 prevObjectToWorld = hasPreviousObjectToWorld ? previousObjectToWorld : objectToWorld;
+            // }
+
             bool updatesRenderableInstance = isDirty || hasRenderable;
 
             if (updatesRenderableInstance)
@@ -358,16 +365,19 @@ namespace Voxelis.Rendering
                     matProps.SetInt("_SectorHashSeed", unchecked((int)ComputeSectorHashSeed(entity, sectorPos)));
                 }
 
-                if (brickBuffer != null && brickBuffer.IsValid())
-                {
-                    matProps.SetBuffer("g_bricks", brickBuffer);
-                }
+                // if (brickBuffer != null && brickBuffer.IsValid())
+                // {
+                //     matProps.SetBuffer("g_bricks", brickBuffer);
+                // }
 
-                // Previous transform is delivered through the per-instance property block for now.
-                // This matches the sector-instance RTAS layout, but it means moving sectors need a
-                // property-block update even when voxel geometry is unchanged. If that gets expensive,
-                // move these matrices to a structured buffer keyed by a stable instance/sector id.
-                matProps.SetMatrix("_PrevObjectToWorld", prevObjectToWorld);
+                if (!entity.IsStatic && !entity._shouldResetMotionVectors)
+                {
+                    // Previous transform is delivered through the per-instance property block for now.
+                    // This matches the sector-instance RTAS layout, but it means moving sectors need a
+                    // property-block update even when voxel geometry is unchanged. If that gets expensive,
+                    // move these matrices to a structured buffer keyed by a stable instance/sector id.
+                    matProps.SetMatrix("_PrevObjectToWorld", prevObjectToWorld);
+                }
             }
 
             if (isDirty)
@@ -408,11 +418,14 @@ namespace Voxelis.Rendering
             }
             else if(hasRenderable)
             {
-                AS.UpdateInstanceTransform(sectorASHandle, objectToWorld);
-                AS.UpdateInstancePropertyBlock(sectorASHandle, matProps);
+                if (!entity.IsStatic)
+                {
+                    AS.UpdateInstanceTransform(sectorASHandle, objectToWorld);
+                    AS.UpdateInstancePropertyBlock(sectorASHandle, matProps);
+                }
             }
 
-            if (updatesRenderableInstance)
+            if (updatesRenderableInstance && !entity.IsStatic)
             {
                 previousObjectToWorld = objectToWorld;
                 hasPreviousObjectToWorld = true;

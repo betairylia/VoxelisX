@@ -53,6 +53,10 @@ public class VoxelisXRendererFeature : ScriptableRendererFeature
     [Header("Indirect Denoising")]
     [SerializeField] private VoxelisXIndirectDenoisingSettings indirectDenoising = VoxelisXIndirectDenoisingSettings.Default;
 
+    [Header("Delta Checkerboard")]
+    [SerializeField, Tooltip("Average the reflect/refract checkerboard the tracer writes at the first transparent interface back together, as a cross filter on the composited colour. Turn off to see the raw checkerboard.")]
+    private bool resolveDeltaCheckerboard = true;
+
     [Header("Temporal Radiance")]
     [SerializeField] private bool enableTemporalRadiance = true;
     [SerializeField, Range(0.0f, 1.0f)] private float temporalRadianceCurrentFrameMinWeight = 0.0f;
@@ -110,7 +114,7 @@ public class VoxelisXRendererFeature : ScriptableRendererFeature
         }
 
         gbufferPass.ConfigureSettings(voxelisXRenderer, tracer, blueNoiseTexture, BuildTraceSettings());
-        denoisePass.ConfigureSettings(indirectDenoising, BuildTemporalSettings());
+        denoisePass.ConfigureSettings(indirectDenoising, BuildTemporalSettings(), resolveDeltaCheckerboard);
         presentPass.ConfigureSettings(debugView);
 
         if (!gbufferPass.IsReady)
