@@ -60,7 +60,12 @@ namespace Voxelis.Simulation
                         Collider = body.collider,
                         Entity = Entity.Null,
                         Scale = 1.0f,
-                        CustomTags = 0
+                        CustomTags = 0,
+                        // Unity Physics combines a pair's two solver types with a min, so a contact is
+                        // only handed to the direct solver when both bodies opted in.
+                        SolverType = body.accuratePhysics
+                            ? Unity.Physics.SolverType.Direct
+                            : Unity.Physics.SolverType.Iterative
                     };
 
                     if (!body.isStatic)

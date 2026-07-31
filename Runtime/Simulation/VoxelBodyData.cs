@@ -24,6 +24,14 @@ namespace Voxelis
         private bool massCacheInitialized;
 
         public bool isStatic;
+
+        /// <summary>
+        /// Mirrors <see cref="VoxelBody.accuratePhysics"/>. Selects the Unity Physics solver used for
+        /// contacts involving this body: <see cref="SolverType.Direct"/> when true, otherwise
+        /// <see cref="SolverType.Iterative"/>. Re-asserted from the component every tick.
+        /// </summary>
+        public bool accuratePhysics;
+
         public BlobAssetReference<Collider> collider;
         public Unity.Physics.MotionData motionData;
         public Unity.Physics.MotionVelocity motionVelocity;
@@ -36,6 +44,7 @@ namespace Voxelis
             cachedMassMoments = default;
             massCacheInitialized = false;
             isStatic = false;
+            accuratePhysics = true;
             collider = default;
             motionData = DefaultMotionData();
             motionVelocity = DefaultMotionVelocity();

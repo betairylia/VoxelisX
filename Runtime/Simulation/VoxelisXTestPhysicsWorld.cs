@@ -84,7 +84,10 @@ namespace Voxelis.Simulation
                 Collider = voxelCollider,
                 Entity = Unity.Entities.Entity.Null,
                 Scale = 1.0f,
-                CustomTags = 0
+                CustomTags = 0,
+                SolverType = vb.accuratePhysics
+                    ? Unity.Physics.SolverType.Direct
+                    : Unity.Physics.SolverType.Iterative
             };
 
             // If dynamic, create motion data and velocity

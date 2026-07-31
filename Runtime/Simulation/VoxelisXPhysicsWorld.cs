@@ -56,6 +56,12 @@ namespace Voxelis.Simulation
         [Tooltip("Inertia scaling factor")]
         public float inertiaScalingFactor = 0.75f;
 
+        [Header("Direct Solver")]
+        [Tooltip("Tuning for the accurate (Direct) solver. Only applies to contacts where BOTH bodies " +
+                 "have VoxelBody.accuratePhysics enabled. If Contact Stiffness is left at 0 these are " +
+                 "ignored and Unity's defaults are used instead.")]
+        public Solver.DirectSolverSettings directSolverSettings = Solver.DirectSolverSettings.Default;
+
         [Tooltip("Multithreading enabled")] public bool multiThreaded = true;
 
         [Header("Debug")]
@@ -105,6 +111,13 @@ namespace Voxelis.Simulation
                 }
                 : Solver.StabilizationHeuristicSettings.Default;
 
+            // A zero-initialised DirectSolverSettings means zero contact stiffness and damping, which
+            // makes direct-solver contacts collapse. That is what a component serialized before this
+            // field existed deserialises to, so treat it as "unset" and use Unity's defaults.
+            Solver.DirectSolverSettings directSettings = directSolverSettings.ContactStiffness > 0f
+                ? directSolverSettings
+                : Solver.DirectSolverSettings.Default;
+
             SimulationStepInput stepInput = new SimulationStepInput()
             {
                 World = physicsWorld,
@@ -116,6 +129,7 @@ namespace Voxelis.Simulation
                 MaxDynamicDepenetrationVelocity = maxDynamicDepenetrationVelocity,
                 MaxStaticDepenetrationVelocity = maxStaticDepenetrationVelocity,
                 SolverStabilizationHeuristicSettings = stabilizationSettings,
+                DirectSolverSettings = directSettings,
                 HaveStaticBodiesChanged = haveStaticBodiesChanged
             };
             Profiler.EndSample();

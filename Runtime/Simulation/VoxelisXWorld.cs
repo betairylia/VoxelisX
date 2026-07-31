@@ -529,6 +529,10 @@ Profiler.EndSample();
                     var body = go.AddComponent<VoxelBody>();
                     body.physicsEnabled = false;
                     body.isStatic = rec.Body == VoxelBodyState.Static;
+                    // accuratePhysics is deliberately NOT part of the save format (no version bump);
+                    // loaded bodies always come back on the accurate/direct solver. Set explicitly
+                    // rather than leaning on the field initializer so the load default is visible here.
+                    body.accuratePhysics = true;
                 }
 
                 go.SetActive(true);

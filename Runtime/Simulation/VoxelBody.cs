@@ -28,7 +28,32 @@ namespace Voxelis
                 entity.IsStatic = value;
             }
         }
-        
+
+        /// <summary>
+        /// Selects which Unity Physics solver resolves contacts involving this body.
+        /// On (default) uses the Direct solver, which is more accurate but more expensive;
+        /// off falls back to the cheaper Iterative solver.
+        /// </summary>
+        /// <remarks>
+        /// The solver for a contact pair is the <i>least</i> accurate of the two bodies involved
+        /// (Unity Physics combines them with a min), so a pair only gets the direct solver when
+        /// <b>both</b> bodies have this enabled — including the static body in a dynamic-vs-static pair.
+        /// </remarks>
+        [Tooltip("Use the accurate (Direct) solver for contacts involving this body instead of the " +
+                 "cheaper Iterative solver.\n\nA contact pair only uses the Direct solver when BOTH " +
+                 "bodies have this enabled.")]
+        [SerializeField] private bool _accuratePhysics = true;
+
+        public bool accuratePhysics
+        {
+            get => _accuratePhysics;
+            set
+            {
+                _accuratePhysics = value;
+                data.accuratePhysics = value;
+            }
+        }
+
         private Rigidbody body;
         private VoxelEntity _entity;
         private VoxelBodyData data;
@@ -41,6 +66,9 @@ namespace Voxelis
         {
             data = srcData;
             data.isStatic = _isStatic;
+            // Re-assert from the component so inspector edits (which write the backing field
+            // directly, bypassing the property setter) take effect on the next tick.
+            data.accuratePhysics = _accuratePhysics;
         }
 
         /// <summary>
@@ -71,6 +99,7 @@ namespace Voxelis
         {
             data = new VoxelBodyData(Allocator.Persistent);
             data.isStatic = _isStatic;
+            data.accuratePhysics = _accuratePhysics;
             CreateCollider();
             InitializeBody();
             _entity = GetComponent<VoxelEntity>();
@@ -139,6 +168,7 @@ namespace Voxelis
         public void ComputeMassProperties()
         {
             data.isStatic = _isStatic;
+            data.accuratePhysics = _accuratePhysics;
             data.ComputePhysicsProperties(entity.Sectors, entity.Neighbors);
         }
 
