@@ -183,7 +183,7 @@ namespace Voxelis.Rendering
 #if VOXELISX_RENDER_DISABLE_CULLING
             requestedCapacity = sector.RendererNonEmptyBrickCount;
 #endif
-            
+
             // Prepare Host Buffers
             if (!HostBufferInitialized)
             {
@@ -194,7 +194,7 @@ namespace Voxelis.Rendering
                 rendererBrickMap = SparseBrickIdTable.New(Allocator.Persistent);
 #endif
             }
-            
+
             // Pre-allocate buffers only for non-culling case
             // Since we already know how many bricks will be there before running the actual data-filling job
 #if VOXELISX_RENDER_DISABLE_CULLING
@@ -206,6 +206,10 @@ namespace Voxelis.Rendering
         /// <summary>
         /// Prepares and resizes GPU buffers if needed to accommodate current brick count.
         /// </summary>
+        /// <param name="forcedAABBRealloc">
+        /// Force reallocation of the GraphicsBuffer.
+        /// Used to tackle Unity's limitation of non-refittable AABB BLASs.
+        /// </param>
         /// <returns>True if buffers were reallocated; false if existing buffers are sufficient.</returns>
         public bool ExtendGPUBuffers()
         {
@@ -220,6 +224,7 @@ namespace Voxelis.Rendering
             
             if (!GPUBufferInitialized)
             {
+                aabbBuffer?.Dispose();
                 aabbBuffer = new GraphicsBuffer(
                     GraphicsBuffer.Target.Structured,
                     Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS, 24);
@@ -296,6 +301,19 @@ namespace Voxelis.Rendering
             bool shouldUpdateAABB = rendererJob.syncRecord[2] > 0;
             rendererJob.syncRecord.Dispose();
 
+            // TODO: FIXME: Remove this forced realloc
+            // if use fixed AABB or find ways to refit a tight AABB
+            if(shouldUpdateAABB)
+            {
+                aabbBuffer?.Dispose();
+                aabbBuffer = new GraphicsBuffer(
+                    GraphicsBuffer.Target.Structured,
+                    Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS, 24);
+
+                // Invalidate the AABBconfig so later it recreates
+                AABBconfig.aabbCount = 0;
+            }
+
             isRealloc = ExtendGPUBuffers();
 
             if (minModified <= maxModified)
@@ -303,6 +321,8 @@ namespace Voxelis.Rendering
                 // Profiler.BeginSample($"UploadData ({maxModified - minModified + 1} Bricks)");
                 Profiler.BeginSample("UploadData");
                 // Partially update buffers
+                // TODO: This will not work since we need to realloc the full AABB buffer everytime.
+                // Therefore, always upload the full aabbBuffer unless later we can refit the AABB BLAS.
                 // aabbBuffer.SetData(hostAABBBuffer.AsArray(), minModified, minModified, maxModified - minModified + 1);
                 aabbBuffer.SetData(hostAABBBuffer.AsArray());
 

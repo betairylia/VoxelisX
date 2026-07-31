@@ -356,6 +356,9 @@ inline float VoxelisXTraceBrickRay(float3 entryPositionInBrick, float3 rayDir, f
 
 inline float VoxelisXTraceBrickPrimitive(out AttributeData attrib)
 {
+    // attrib.matID_faceNormal = ((0x8001 & 0xFFFF) << 16) + (0b010000 >> 26);
+    // return 10;
+
     uint2 brickInfo = g_bricks.Load2(VoxelisXBrickBase(PrimitiveIndex()) << 2);
 
     // Empty brick

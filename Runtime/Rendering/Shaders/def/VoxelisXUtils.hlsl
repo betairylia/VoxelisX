@@ -19,8 +19,8 @@
 // 0x1000 ~ 0xEFFF -> Solid
 inline bool IsOpaque(int blk)
 {
-    return blk > 0;
-    // return (blk & 0x8000);
+    // return blk > 0;
+    return (blk & 0x8000);
 }
 
 inline int GetFaceBits(int blk)

@@ -511,6 +511,9 @@ namespace Voxelis
         [SerializeField] private bool _isStatic;
         public bool _shouldResetMotionVectors;
 
+        // TODO: Wire me to SectorRenderer
+        // public bool shouldUseDynamicBLAS;
+
         public Guid128 PersistentGuid
         {
             get => data.Guid;
