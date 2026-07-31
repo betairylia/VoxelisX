@@ -266,7 +266,7 @@ namespace Voxelis.Simulation
                     BodyIndexB = dynamicbodies.Count
                 },
                 Entity = Entity.Null,
-                EnableCollision = 0,
+                EnableCollision = false,
                 Version = 0,
                 Constraints = new ConstraintBlock3
                 {

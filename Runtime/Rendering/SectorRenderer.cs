@@ -270,7 +270,8 @@ namespace Voxelis.Rendering
 
         private static uint ComputeSectorHashSeed(VoxelEntity entity, int3 sectorPos)
         {
-            uint seed = (uint)entity.GetInstanceID();
+            // Unity 6.5 made Object.GetInstanceID() an obsolete-as-error; GetEntityId() replaces it.
+            uint seed = (uint)entity.GetEntityId().GetHashCode();
             seed ^= (uint)sectorPos.x * 0x9E3779B9u;
             seed ^= (uint)sectorPos.y * 0x85EBCA6Bu;
             seed ^= (uint)sectorPos.z * 0xC2B2AE35u;
