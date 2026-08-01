@@ -55,6 +55,24 @@ public static class VoxelisXShaderIDs
     public static readonly int TemporalRadianceNormalThreshold = Shader.PropertyToID("_TemporalRadianceNormalThreshold");
     public static readonly int TemporalRadianceMaxFrames = Shader.PropertyToID("_TemporalRadianceMaxFrames");
 
+    // --- Budget mode ---
+    /// <summary>Octahedral view direction in .xy, metallic in .z, surface-valid flag in .w.</summary>
+    public static readonly int BudgetSurfaceTex = Shader.PropertyToID("_BudgetSurfaceTex");
+    /// <summary>
+    /// The AO/shadow signal (.r = AO, .g = sun visibility, .a = validity). One name for the whole
+    /// filter chain, rebound after every pass, so the shared kernels always read "current state".
+    /// </summary>
+    public static readonly int BudgetAOShadowTex = Shader.PropertyToID("_BudgetAOShadowTex");
+    public static readonly int BudgetAOShadowAccumulatedTex = Shader.PropertyToID("_BudgetAOShadowAccumulatedTex");
+    public static readonly int BudgetSkyTex = Shader.PropertyToID("_BudgetSkyTex");
+    public static readonly int BudgetMainLightColor = Shader.PropertyToID("_BudgetMainLightColor");
+    public static readonly int BudgetMainLightDirection = Shader.PropertyToID("_BudgetMainLightDirection");
+    public static readonly int BudgetSkyIntensity = Shader.PropertyToID("_BudgetSkyIntensity");
+    public static readonly int BudgetSkyDiffuseMip = Shader.PropertyToID("_BudgetSkyDiffuseMip");
+    public static readonly int BudgetSkySpecularMaxMip = Shader.PropertyToID("_BudgetSkySpecularMaxMip");
+    public static readonly int BudgetAOStrength = Shader.PropertyToID("_BudgetAOStrength");
+    public static readonly int BudgetAOAffectsSpecular = Shader.PropertyToID("_BudgetAOAffectsSpecular");
+
     // --- Present ---
     public static readonly int DebugView = Shader.PropertyToID("_DebugView");
 

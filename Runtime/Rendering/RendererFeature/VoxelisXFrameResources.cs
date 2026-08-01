@@ -42,6 +42,24 @@ public class VoxelisXFrameResources : ContextItem
     /// <summary>This frame's normal, persisted for next frame's temporal rejection.</summary>
     public TextureHandle CurrentNormalHistory;
 
+    // --- Produced by VoxelisXBudgetGBufferPass (budget mode only) ---
+
+    /// <summary>
+    /// Octahedral direction from the shaded surface towards the viewer in .xy, metallic in .z,
+    /// surface-valid flag in .w. The view direction cannot be re-derived from the pixel under
+    /// primary surface replacement, so the tracer has to publish it.
+    /// </summary>
+    public TextureHandle Surface;
+    /// <summary>Raw AO and sun visibility straight out of the tracer: .r = AO, .g = shadow, .a = validity.</summary>
+    public TextureHandle AOShadowRaw;
+
+    // --- Produced by VoxelisXBudgetDenoisePass (budget mode only) ---
+
+    /// <summary>AO/shadow after the spatial filter.</summary>
+    public TextureHandle AOShadowFiltered;
+    /// <summary>AO/shadow after temporal accumulation, as consumed by the deferred shade.</summary>
+    public TextureHandle AOShadowAccumulated;
+
     // --- Produced by VoxelisXDenoisePass ---
 
     /// <summary>Combined diffuse+specular stochastic radiance — the legacy denoise chain's input signal.</summary>
@@ -73,6 +91,11 @@ public class VoxelisXFrameResources : ContextItem
         CurrentDepthHistory = TextureHandle.nullHandle;
         CurrentNormalHistory = TextureHandle.nullHandle;
 
+        Surface = TextureHandle.nullHandle;
+        AOShadowRaw = TextureHandle.nullHandle;
+        AOShadowFiltered = TextureHandle.nullHandle;
+        AOShadowAccumulated = TextureHandle.nullHandle;
+
         RawIndirectRadiance = TextureHandle.nullHandle;
         FilteredIndirectRadiance = TextureHandle.nullHandle;
         AccumulatedIndirectRadiance = TextureHandle.nullHandle;
@@ -99,6 +122,10 @@ public class VoxelisXFrameResources : ContextItem
             case VoxelisXDebugView.IndirectRadianceAccumulated: return AccumulatedIndirectRadiance;
             case VoxelisXDebugView.StochasticDiffuse: return StochasticDiffuse;
             case VoxelisXDebugView.StochasticSpecular: return StochasticSpecular;
+            case VoxelisXDebugView.BudgetAOShadowRaw: return AOShadowRaw;
+            case VoxelisXDebugView.BudgetAOShadowFiltered: return AOShadowFiltered;
+            case VoxelisXDebugView.BudgetAOShadowAccumulated: return AOShadowAccumulated;
+            case VoxelisXDebugView.BudgetSurface: return Surface;
             case VoxelisXDebugView.Regular:
             default: return Color;
         }

@@ -27,7 +27,18 @@ public enum VoxelisXDebugView
     /// <summary>Stochastic diffuse-path radiance straight out of the tracer (hit distance in alpha).</summary>
     StochasticDiffuse = 9,
     /// <summary>Stochastic specular-path radiance straight out of the tracer (hit distance in alpha).</summary>
-    StochasticSpecular = 10
+    StochasticSpecular = 10,
+
+    // --- Budget mode. Ignored by the path-traced feature, which has no such buffers. ---
+
+    /// <summary>Budget mode's raw AO/shadow signal (red = AO, green = sun visibility).</summary>
+    BudgetAOShadowRaw = 11,
+    /// <summary>Budget mode's AO/shadow after the spatial filter.</summary>
+    BudgetAOShadowFiltered = 12,
+    /// <summary>Budget mode's AO/shadow after temporal accumulation, as fed to the deferred shade.</summary>
+    BudgetAOShadowAccumulated = 13,
+    /// <summary>Budget mode's surface target: packed view direction in red/green, metallic in blue.</summary>
+    BudgetSurface = 14
 }
 
 /// <summary>

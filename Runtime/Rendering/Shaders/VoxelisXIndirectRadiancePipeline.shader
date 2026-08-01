@@ -3,104 +3,24 @@ Shader "Hidden/VoxelisX/IndirectRadiancePipeline"
     HLSLINCLUDE
 
         #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
-        #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Packing.hlsl"
         #include "Packages/com.unity.render-pipelines.core/Runtime/Utilities/Blit.hlsl"
 
+        // The working signal of this chain: the combined diffuse+specular stochastic radiance.
+        // Both VOXELISX_ATROUS_SIGNAL_TEX and VOXELISX_TEMPORAL_SIGNAL_TEX default to it.
         TEXTURE2D(_IndirectRadianceTex);
+
+        #include "Denoise/VoxelisXTemporal.hlsl"
+        #include "Denoise/VoxelisXCrossResolve.hlsl"
+
         TEXTURE2D(_DeterministicRadianceTex);
         TEXTURE2D(_DiffuseRadianceTex);
         TEXTURE2D(_SpecularRadianceTex);
         TEXTURE2D(_AlbedoTex);
-        TEXTURE2D(_NormalTex);
-        TEXTURE2D(_MotionVectorTex);
-        TEXTURE2D(_CurrentDepthHistoryTex);
-        TEXTURE2D(_PreviousDepthHistoryTex);
-        TEXTURE2D(_CurrentNormalHistoryTex);
-        TEXTURE2D(_PreviousNormalHistoryTex);
-        TEXTURE2D(_PreviousIndirectRadianceHistoryTex);
         TEXTURE2D(_AccumulatedIndirectRadianceTex);
 
-        float4 _VoxelisXFrameSize;
         int _SpatialFilterEnabled;
-        int _IndirectRadianceHistoryValid;
-        int _TemporalRadianceEnabled;
-        int _TemporalRadianceBilinearHistory;
-        int _TemporalRadianceDepthRejectionEnabled;
-        int _TemporalRadianceNormalRejectionEnabled;
-        float _TemporalRadianceCurrentFrameMinWeight;
-        float _TemporalRadianceDepthTolerance;
-        float _TemporalRadianceRelativeDepthTolerance;
-        float _TemporalRadianceNormalThreshold;
-        float _TemporalRadianceMaxFrames;
         int _SeparableFilterRadius;
         float _SeparableFilterDistanceSigma;
-
-        uint2 VoxelisXPixelCoord(float2 uv)
-        {
-            uint2 size = max(uint2(_VoxelisXFrameSize.xy), uint2(1, 1));
-            return min((uint2)(uv * size), size - uint2(1, 1));
-        }
-
-        uint2 VoxelisXClampCoord(int2 coord)
-        {
-            uint2 size = max(uint2(_VoxelisXFrameSize.xy), uint2(1, 1));
-            int2 maxCoord = int2(size) - int2(1, 1);
-            return (uint2)clamp(coord, int2(0, 0), maxCoord);
-        }
-
-        float2 VoxelisXHistoryScale()
-        {
-            return max(_VoxelisXFrameSize.xy - 1.0f, float2(1.0f, 1.0f));
-        }
-
-        float3 VoxelisXUnpackNormal(float2 packedNormal)
-        {
-            return UnpackNormalOctQuadEncode(packedNormal * 2.0f - 1.0f);
-        }
-
-        // History alpha stores the per-pixel accumulated frame count (>= 1 when valid).
-        // A tap is only blended in when its stored previous-frame depth matches the
-        // depth this surface is *expected* to have had last frame (computed by the
-        // raygen alongside motion vectors), which stays exact under camera motion.
-        bool VoxelisXValidateHistoryTap(
-            uint2 tapCoord,
-            float expectedPreviousDepth,
-            float3 currentNormal,
-            out float4 history)
-        {
-            history = LOAD_TEXTURE2D(_PreviousIndirectRadianceHistoryTex, tapCoord);
-            if (history.a <= 0.5f)
-            {
-                return false;
-            }
-
-            if (_TemporalRadianceDepthRejectionEnabled != 0)
-            {
-                float previousDepth = LOAD_TEXTURE2D(_PreviousDepthHistoryTex, tapCoord).r;
-                float tolerance = max(_TemporalRadianceDepthTolerance, abs(expectedPreviousDepth) * _TemporalRadianceRelativeDepthTolerance);
-                if (abs(previousDepth - expectedPreviousDepth) > tolerance)
-                {
-                    return false;
-                }
-            }
-
-            if (_TemporalRadianceNormalRejectionEnabled != 0)
-            {
-                float4 previousNormalPacked = LOAD_TEXTURE2D(_PreviousNormalHistoryTex, tapCoord);
-                if (previousNormalPacked.a <= 0.001f)
-                {
-                    return false;
-                }
-
-                float3 previousNormal = normalize(VoxelisXUnpackNormal(previousNormalPacked.rg));
-                if (dot(previousNormal, currentNormal) < _TemporalRadianceNormalThreshold)
-                {
-                    return false;
-                }
-            }
-
-            return true;
-        }
 
         float4 SpatialFilter(float2 uv, int2 filterDirection)
         {
@@ -165,97 +85,7 @@ Shader "Hidden/VoxelisX/IndirectRadiancePipeline"
         float4 TemporalAccumulation(Varyings input) : SV_Target
         {
             UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
-
-            uint2 coord = VoxelisXPixelCoord(input.texcoord);
-            float4 currentIndirect = LOAD_TEXTURE2D(_IndirectRadianceTex, coord);
-            float currentValid = currentIndirect.a > 0.001f ? 1.0f : 0.0f;
-            if (_TemporalRadianceEnabled == 0 || _IndirectRadianceHistoryValid == 0 || currentValid == 0.0f)
-            {
-                return float4(currentIndirect.rgb, currentValid);
-            }
-
-            float2 currentUV = (float2(coord) + 0.5f) / VoxelisXHistoryScale();
-            // Motion is stored previous-minus-current (NRD convention), so reprojection adds it.
-            float2 motionVector = LOAD_TEXTURE2D(_MotionVectorTex, coord).rg;
-            float2 previousUV = currentUV + motionVector;
-            bool canReproject =
-                all(previousUV >= float2(0.0f, 0.0f)) &&
-                all(previousUV <= float2(1.0f, 1.0f));
-
-            if (!canReproject)
-            {
-                return float4(currentIndirect.rgb, 1.0f);
-            }
-
-            float4 currentNormalHistory = LOAD_TEXTURE2D(_CurrentNormalHistoryTex, coord);
-            float3 currentNormal = normalize(VoxelisXUnpackNormal(currentNormalHistory.rg));
-            float expectedPreviousDepth = currentNormalHistory.b;
-
-            float2 historyCoord = previousUV * VoxelisXHistoryScale() - 0.5f;
-
-            float3 historyRadiance = 0.0f;
-            float historyFrames = 0.0f;
-            float weightSum = 0.0f;
-
-            if (_TemporalRadianceBilinearHistory != 0)
-            {
-                // Manual bilinear with per-tap validation: taps that fail the
-                // depth/normal tests drop out and the remaining weights renormalize,
-                // so history never blends across silhouettes.
-                int2 baseCoord = (int2)floor(historyCoord);
-                float2 blend = frac(historyCoord);
-
-                const int2 tapOffsets[4] = { int2(0, 0), int2(1, 0), int2(0, 1), int2(1, 1) };
-                float tapWeights[4] = {
-                    (1.0f - blend.x) * (1.0f - blend.y),
-                    blend.x * (1.0f - blend.y),
-                    (1.0f - blend.x) * blend.y,
-                    blend.x * blend.y
-                };
-
-                [unroll]
-                for (int tap = 0; tap < 4; tap++)
-                {
-                    if (tapWeights[tap] <= 0.0001f)
-                    {
-                        continue;
-                    }
-
-                    uint2 tapCoord = VoxelisXClampCoord(baseCoord + tapOffsets[tap]);
-                    float4 history;
-                    if (!VoxelisXValidateHistoryTap(tapCoord, expectedPreviousDepth, currentNormal, history))
-                    {
-                        continue;
-                    }
-
-                    historyRadiance += history.rgb * tapWeights[tap];
-                    historyFrames += history.a * tapWeights[tap];
-                    weightSum += tapWeights[tap];
-                }
-            }
-            else
-            {
-                uint2 tapCoord = VoxelisXClampCoord((int2)round(historyCoord));
-                float4 history;
-                if (VoxelisXValidateHistoryTap(tapCoord, expectedPreviousDepth, currentNormal, history))
-                {
-                    historyRadiance = history.rgb;
-                    historyFrames = history.a;
-                    weightSum = 1.0f;
-                }
-            }
-
-            if (weightSum <= 0.0001f)
-            {
-                return float4(currentIndirect.rgb, 1.0f);
-            }
-
-            historyRadiance /= weightSum;
-            historyFrames = min(historyFrames / weightSum, max(_TemporalRadianceMaxFrames - 1.0f, 0.0f));
-
-            float currentFrameWeight = max(_TemporalRadianceCurrentFrameMinWeight, 1.0f / (historyFrames + 1.0f));
-            float3 blended = lerp(historyRadiance, currentIndirect.rgb, currentFrameWeight);
-            return float4(blended, historyFrames + 1.0f);
+            return VoxelisXTemporalAccumulate(VoxelisXPixelCoord(input.texcoord));
         }
 
         float4 Composite(Varyings input) : SV_Target
@@ -272,58 +102,10 @@ Shader "Hidden/VoxelisX/IndirectRadiancePipeline"
             return float4(result, deterministicRadiance.a);
         }
 
-        // Resolves the reflect/refract checkerboard the tracer writes at the first transparent
-        // interface: even and odd pixels traced different delta branches, so the two parities have
-        // to be averaged back together.
-        //
-        // This runs on the *composited* colour and not on any G-buffer, because the split reaches
-        // every one of them — albedo, normal, depth and motion all describe a different surface on
-        // each parity — and only the final colour has collapsed them into one value.
-        //
-        // It is also the one filter here that must NOT be edge-aware. Every guide the passes above
-        // use (face hash, depth, normal) would reject exactly the taps this needs, since the
-        // neighbour genuinely IS a different surface. So the cross blends unconditionally and keys
-        // off the checkerboard flag alone; pixels without it pass through untouched rather than
-        // being softened.
-        //
-        // 0.5 * center + 0.125 * each of the 4 orthogonal neighbours puts exactly half the total
-        // weight on each parity — which is what the x2 Fresnel weight in AdvanceDeltaRay is scaled
-        // to cancel. Diagonals are deliberately excluded: they share the center's parity and would
-        // bias the mix back toward the branch this pixel already traced.
         float4 CrossResolve(Varyings input) : SV_Target
         {
             UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
-
-            uint2 centerCoord = VoxelisXPixelCoord(input.texcoord);
-            float4 center = LOAD_TEXTURE2D_X(_BlitTexture, centerCoord);
-
-            if (LOAD_TEXTURE2D(_MotionVectorTex, centerCoord).a <= 0.5f)
-            {
-                return center;
-            }
-
-            float3 radianceSum = center.rgb * 0.5f;
-            float weightSum = 0.5f;
-
-            const int2 tapOffsets[4] = { int2(-1, 0), int2(1, 0), int2(0, -1), int2(0, 1) };
-
-            [unroll]
-            for (int tap = 0; tap < 4; tap++)
-            {
-                uint2 tapCoord = VoxelisXClampCoord(int2(centerCoord) + tapOffsets[tap]);
-                if (LOAD_TEXTURE2D(_MotionVectorTex, tapCoord).a <= 0.5f)
-                {
-                    continue;
-                }
-
-                radianceSum += LOAD_TEXTURE2D_X(_BlitTexture, tapCoord).rgb * 0.125f;
-                weightSum += 0.125f;
-            }
-
-            // Renormalizing keeps the mix at 50/50 when some taps drop out, and degenerates to a
-            // plain passthrough for an isolated flagged pixel with no flagged neighbours.
-            // Alpha is carried through untouched: the present stage clips on it.
-            return float4(radianceSum / weightSum, center.a);
+            return VoxelisXCrossResolve(VoxelisXPixelCoord(input.texcoord));
         }
 
         // Sums the split stochastic targets back into the single combined signal the legacy
