@@ -21,6 +21,11 @@ namespace Voxelis.Rendering.Meshing
         private readonly Material material;
         private readonly Transform parentTransform;
 
+        private const DirtyFlags MeshUpdateFlags =
+            DirtyFlags.BlockBrickAdded |
+            DirtyFlags.BlockBrickRemoved |
+            DirtyFlags.GeometryWithLocalNeighbor;
+
         // Chunk management
         private readonly int3 chunksPerAxis;
         private readonly int totalChunks;
@@ -111,7 +116,7 @@ namespace Voxelis.Rendering.Meshing
 
                         // Assign
                         filter.mesh = mesh;
-                        renderer.material = material;
+                        renderer.sharedMaterial = material;
                         renderer.shadowCastingMode = ShadowCastingMode.On;
                         renderer.receiveShadows = true;
 
@@ -133,16 +138,13 @@ namespace Voxelis.Rendering.Meshing
         {
             ref Sector sector = ref sectorHandle.Get();
 
-            // Sweep all bricks to find dirty ones (Added or content changed)
+            // Dirty source flags have already been propagated and cleared before the renderer tick.
+            // Consume the resulting target-side requireUpdate flags, just like the ray renderer.
             unsafe
             {
                 for (int brickIdx = 0; brickIdx < Sector.BRICKS_IN_SECTOR; brickIdx++)
                 {
-                    // Check if brick is Added or has GeneralAutomata flag (content changed)
-                    bool isAdded = (sector.brickDirtyFlags[brickIdx] & (ushort)DirtyFlags.BlockBrickAdded) != 0;
-                    bool isModified = (sector.brickDirtyFlags[brickIdx] & (ushort)DirtyFlags.GeneralAutomata) != 0;
-
-                    if (isAdded || isModified)
+                    if (RequiresRemesh(sector.brickRequireUpdateFlags[brickIdx]))
                     {
                         int3 brickPos = Sector.ToBrickPos((short)brickIdx);
                         int3 chunkIdx = (brickPos * Sector.SIZE_IN_BLOCKS) / chunkSize;
@@ -249,16 +251,14 @@ namespace Voxelis.Rendering.Meshing
             // Convert NativeList to arrays
             var vertices = new Vector3[meshData.vertices.Length];
             var normals = new Vector3[meshData.vertices.Length];
-            var colors = new Color[meshData.vertices.Length];
-            var uvs = new Vector2[meshData.vertices.Length];
+            var blockIds = new Vector2[meshData.vertices.Length];
 
             for (int i = 0; i < meshData.vertices.Length; i++)
             {
                 VoxelVertex v = meshData.vertices[i];
                 vertices[i] = v.position;
                 normals[i] = v.normal;
-                colors[i] = new Color(v.color.x, v.color.y, v.color.z, v.color.w);
-                uvs[i] = v.uv;
+                blockIds[i] = new Vector2(v.blockID, 0f);
             }
 
             var indices = meshData.indices.AsArray().ToArray();
@@ -266,8 +266,7 @@ namespace Voxelis.Rendering.Meshing
             // Assign to mesh
             mesh.vertices = vertices;
             mesh.normals = normals;
-            mesh.colors = colors;
-            mesh.uv = uvs;
+            mesh.uv = blockIds;
             mesh.triangles = indices;
 
             // Calculate bounds
@@ -286,6 +285,11 @@ namespace Voxelis.Rendering.Meshing
             {
                 dirtyChunks.Add(i);
             }
+        }
+
+        internal static bool RequiresRemesh(ushort requireUpdateFlags)
+        {
+            return (requireUpdateFlags & (ushort)MeshUpdateFlags) != 0;
         }
 
         /// <summary>

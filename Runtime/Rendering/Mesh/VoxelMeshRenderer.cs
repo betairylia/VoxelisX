@@ -48,7 +48,7 @@ namespace Voxelis.Rendering.Meshing
             // Discover and track new entities
             DiscoverEntities();
 
-            // Phase 1: Schedule mesh generation jobs for all dirty sectors
+            // Phase 1: Schedule mesh generation jobs for all invalidated chunks
             foreach (var kvp in sectorRenderers)
             {
                 kvp.Value.ScheduleJobs();
@@ -60,8 +60,7 @@ namespace Voxelis.Rendering.Meshing
                 kvp.Value.CompleteJobs();
             }
 
-            // Note: We don't clear dirty flags here. Dirty cleanup is owned by the
-            // dirty propagation phase after all consumers have read the flags.
+            // requireUpdate cleanup is owned by the world tick after consumers have read it.
 
             // Cleanup removed sectors
             RemoveMissingSectors();

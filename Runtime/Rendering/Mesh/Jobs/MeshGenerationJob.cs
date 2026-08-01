@@ -337,8 +337,6 @@ namespace Voxelis.Rendering.Meshing
             // Add vertices with proper winding order
             int baseIdx = vertices.Length;
             float3 normal = FaceLookup.Normals[faceDir];
-            half4 color = BlockColorDecoder.DecodeColorHalf(mq.blockID);
-            float2 uv = new float2(mq.blockID / 65535.0f, 0); // Pack block ID in UV for future use
 
             // Add vertices in winding order (avoid array indexing)
             int w0 = FaceLookup.GetWindingOrder(faceDir, 0);
@@ -346,10 +344,10 @@ namespace Voxelis.Rendering.Meshing
             int w2 = FaceLookup.GetWindingOrder(faceDir, 2);
             int w3 = FaceLookup.GetWindingOrder(faceDir, 3);
 
-            vertices.Add(new VoxelVertex(w0 == 0 ? v0 : w0 == 1 ? v1 : w0 == 2 ? v2 : v3, normal, color, uv));
-            vertices.Add(new VoxelVertex(w1 == 0 ? v0 : w1 == 1 ? v1 : w1 == 2 ? v2 : v3, normal, color, uv));
-            vertices.Add(new VoxelVertex(w2 == 0 ? v0 : w2 == 1 ? v1 : w2 == 2 ? v2 : v3, normal, color, uv));
-            vertices.Add(new VoxelVertex(w3 == 0 ? v0 : w3 == 1 ? v1 : w3 == 2 ? v2 : v3, normal, color, uv));
+            vertices.Add(new VoxelVertex(w0 == 0 ? v0 : w0 == 1 ? v1 : w0 == 2 ? v2 : v3, normal, mq.blockID));
+            vertices.Add(new VoxelVertex(w1 == 0 ? v0 : w1 == 1 ? v1 : w1 == 2 ? v2 : v3, normal, mq.blockID));
+            vertices.Add(new VoxelVertex(w2 == 0 ? v0 : w2 == 1 ? v1 : w2 == 2 ? v2 : v3, normal, mq.blockID));
+            vertices.Add(new VoxelVertex(w3 == 0 ? v0 : w3 == 1 ? v1 : w3 == 2 ? v2 : v3, normal, mq.blockID));
 
             // Add indices (2 triangles) - clockwise winding for Unity
             indices.Add(baseIdx + 0);

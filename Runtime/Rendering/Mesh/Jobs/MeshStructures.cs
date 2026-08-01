@@ -13,15 +13,13 @@ namespace Voxelis.Rendering.Meshing
     {
         public float3 position;
         public float3 normal;
-        public half4 color;      // RGB555 decoded to Color
-        public float2 uv;        // Pack block ID for future texture support
+        public ushort blockID;   // Uploaded exactly through TEXCOORD0 for GPU material lookup
 
-        public VoxelVertex(float3 position, float3 normal, half4 color, float2 uv)
+        public VoxelVertex(float3 position, float3 normal, ushort blockID)
         {
             this.position = position;
             this.normal = normal;
-            this.color = color;
-            this.uv = uv;
+            this.blockID = blockID;
         }
     }
 
@@ -33,7 +31,7 @@ namespace Voxelis.Rendering.Meshing
     internal struct MeshQuad
     {
         public int next;         // Linked list pointer (-1 = end)
-        public ushort blockID;   // Block ID (RGB555+emission)
+        public ushort blockID;   // Block ID used for material-aware merging
 
         public MeshQuad(int next, ushort blockID)
         {
