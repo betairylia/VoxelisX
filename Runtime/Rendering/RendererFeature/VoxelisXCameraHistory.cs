@@ -26,6 +26,15 @@ public sealed class VoxelisXCameraHistory
     private RTHandle normalB;
     private bool useAAsPrevious = true;
 
+    /// <summary>
+    /// Frame this history was last advanced on, so <see cref="BeginFrame"/> and
+    /// <see cref="EndFrame"/> are idempotent within a frame. Two VoxelisX features enabled on the
+    /// same renderer would otherwise each roll the view matrix and flip the double buffer, leaving
+    /// "previous" pointing at the frame before last and reprojection permanently one frame stale.
+    /// </summary>
+    private int lastAdvancedFrame = -1;
+    private bool flippedThisFrame;
+
     /// <summary>False on the first frame and after any reallocation, i.e. history must not be sampled.</summary>
     public bool IsValid { get; private set; }
 
@@ -65,6 +74,14 @@ public sealed class VoxelisXCameraHistory
 
         history.EnsureAllocated(width, height);
 
+        if (history.lastAdvancedFrame == Time.frameCount)
+        {
+            return history;
+        }
+
+        history.lastAdvancedFrame = Time.frameCount;
+        history.flippedThisFrame = false;
+
         history.PreviousViewMatrix = history.ViewMatrix;
         history.ViewMatrix = viewMatrix;
         history.ConvergedFrames = history.IsValid
@@ -80,6 +97,12 @@ public sealed class VoxelisXCameraHistory
     /// </summary>
     public void EndFrame()
     {
+        if (flippedThisFrame)
+        {
+            return;
+        }
+
+        flippedThisFrame = true;
         useAAsPrevious = !useAAsPrevious;
         IsValid = true;
     }
