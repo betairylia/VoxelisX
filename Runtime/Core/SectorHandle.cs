@@ -75,7 +75,7 @@ namespace Voxelis
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public T GetSlot<T>(SectorSlotId slotId, int x, int y, int z) where T : unmanaged
         {
-            return _ptr->GetSlot<T>(slotId, x, y, z);
+            return _ptr->GetVoxelSlot<T>(slotId, x, y, z);
         }
 
         /// <summary>
@@ -91,7 +91,7 @@ namespace Voxelis
         public void SetSlot<T>(SectorSlotId slotId, int x, int y, int z, T value)
             where T : unmanaged, IEquatable<T>
         {
-            _ptr->SetSlot(slotId, x, y, z, value);
+            _ptr->SetVoxelSlot(slotId, x, y, z, value);
         }
 
         /// <summary>

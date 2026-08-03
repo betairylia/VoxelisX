@@ -259,6 +259,46 @@ namespace VoxelisX.Tests
         }
 
         [Test]
+        public void Pack_SkipsPerBrickSlotsAndStillRoundTripsVoxelSlots()
+        {
+            // Per-brick slots hold derived data and are recomputed on load, so they must not reach
+            // the payload — the record layout describes one element per voxel, and writing a
+            // per-brick slot through it would read BLOCKS_IN_BRICK times past its allocation.
+            const int bytesPerBrick = 8 * sizeof(ulong); // 512-voxel occupancy bitmap
+            const SectorSlotId maskSlot = SectorSlotId.Reserved1;
+
+            var handle = SectorHandle.AllocEmpty();
+            try
+            {
+                Block b1 = MakeBlock(10, 20, 5, false);
+                Block b2 = MakeBlock(31, 31, 31, true);
+                handle.SetBlock(0, 0, 0, b1);
+                handle.SetBlock(64, 64, 64, b2);
+
+                ref Sector source = ref handle.Get();
+
+                // Brick (0,0,0) and (8,8,8) exist thanks to the SetBlock calls above.
+                source.SetBrickSlot(maskSlot, 0, 0, 0, bytesPerBrick, 0, 0xDEADBEEFDEADBEEFul);
+                source.SetBrickSlot(maskSlot, 8, 8, 8, bytesPerBrick, 7 * sizeof(ulong), 0x0123456789ABCDEFul);
+
+                Assert.That(source.slots[(int)maskSlot].IsCreated, Is.True);
+                Assert.That(source.slots[(int)maskSlot].IsVoxelShaped, Is.False);
+
+                byte[] packed = SectorSerializer.Pack(in source);
+                var loaded = SectorSerializer.Unpack(packed, Allocator.Persistent);
+                try
+                {
+                    Assert.That(loaded.GetBlock(0, 0, 0), Is.EqualTo(b1));
+                    Assert.That(loaded.GetBlock(64, 64, 64), Is.EqualTo(b2));
+                    Assert.That(loaded.slots[(int)maskSlot].IsCreated, Is.False,
+                        "per-brick slots are recomputed after load, not persisted");
+                }
+                finally { loaded.Dispose(Allocator.Persistent); }
+            }
+            finally { handle.Dispose(Allocator.Persistent); }
+        }
+
+        [Test]
         public void Pack_AchievesReasonableCompressionOnDenseData()
         {
             var handle = SectorHandle.AllocEmpty();

@@ -25,10 +25,21 @@ namespace Voxelis.IO
     ///     u8    slotId
     ///     u16   stride
     ///     u8    rawSlotData[brickMapCapacity * Sector.BLOCKS_IN_BRICK * stride]
+    ///
+    /// Only voxel-shaped slots (<see cref="SectorSlotStorage.IsVoxelShaped"/>) are persisted; the
+    /// record layout above assumes one element per voxel. Per-brick slots hold derived, on-the-fly
+    /// data (occupancy bitmaps and the like) and are recomputed after load rather than stored, so
+    /// an unpacked sector comes back with those slots uncreated.
     /// </summary>
     public static class SectorSerializer
     {
         private const uint SectorPayloadMagic = 0x32535856u; // VXS2, little-endian
+
+        /// <summary>
+        /// Whether a slot goes into the payload. Per-brick slots carry derived data that is cheaper
+        /// to recompute than to store, and the record layout has no room for their shape anyway.
+        /// </summary>
+        private static bool IsPersisted(in SectorSlotStorage slot) => slot.IsCreated && slot.IsVoxelShaped;
 
         public static unsafe byte[] Pack(in Sector sector)
         {
@@ -54,10 +65,12 @@ namespace Voxelis.IO
                 bw.Write(sector.sectorRequireUpdateFlags);
                 WriteRawBytes(bw, sector.brickRequireUpdateFlags, Sector.BRICKS_IN_SECTOR * sizeof(ushort));
 
+                // Both loops below must agree on which slots produce a record, otherwise the
+                // written count desyncs from the stream — hence the single shared predicate.
                 int slotRecordCount = 0;
                 for (int i = 0; i < Sector.MAX_SLOTS; i++)
                 {
-                    if (sector.slots[i].IsCreated)
+                    if (IsPersisted(sector.slots[i]))
                     {
                         slotRecordCount++;
                     }
@@ -68,7 +81,7 @@ namespace Voxelis.IO
                 for (int i = 0; i < Sector.MAX_SLOTS; i++)
                 {
                     SectorSlotStorage slot = sector.slots[i];
-                    if (!slot.IsCreated) continue;
+                    if (!IsPersisted(slot)) continue;
 
                     bw.Write((byte)i);
                     bw.Write((ushort)slot.stride);

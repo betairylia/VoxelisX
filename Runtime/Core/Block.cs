@@ -13,6 +13,7 @@ namespace Voxelis
     /// The block data encodes RGB555 color (5 bits per channel) plus 1 emission bit.
     /// Metadata lives in the sector's <see cref="Meta"/> slot, not in <see cref="Block"/>.
     /// </remarks>
+    [Serializable]
     public struct Block : IEquatable<Block>
     {
         /// <summary>

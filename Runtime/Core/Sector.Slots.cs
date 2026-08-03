@@ -7,13 +7,6 @@ using Unity.Mathematics;
 
 namespace Voxelis
 {
-    public interface ISlotShape<T> where T: unmanaged
-    {
-        int Id    { [MethodImpl(MethodImplOptions.AggressiveInlining)] get; }
-        int Shift { [MethodImpl(MethodImplOptions.AggressiveInlining)] get; } // log2 elems per brick
-        int Stride{ [MethodImpl(MethodImplOptions.AggressiveInlining)] get; }
-    }
-
     public unsafe struct SectorSlotStorage
     {
         [NativeDisableUnsafePtrRestriction]
@@ -25,9 +18,16 @@ namespace Voxelis
 
         public bool IsCreated => data.IsCreated;
 
+        /// <summary>
+        /// True when this slot holds one element per voxel (the default shape). Per-brick slots
+        /// (<see cref="elemPerBrickShift"/> == 0) and any other custom shape return false.
+        /// Persistence only covers voxel-shaped slots — see <c>SectorSerializer</c>.
+        /// </summary>
+        public bool IsVoxelShaped => elemPerBrickShift == 3 * Sector.SHIFT_IN_BLOCKS;
+
         public static SectorSlotStorage New(
             int stride, int initialBricks, Allocator allocator, NativeArrayOptions initialization = NativeArrayOptions.ClearMemory,
-            int elemPerBrickShift = 9)
+            int elemPerBrickShift = 3 * Sector.SHIFT_IN_BLOCKS)
         {
             int byteCapacity = math.max(1, (initialBricks << elemPerBrickShift) * stride);
             var storage = new SectorSlotStorage
@@ -77,25 +77,37 @@ namespace Voxelis
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public T Get<T>(short bid, int voxelIdxInBrick) where T : unmanaged
+        public T Get<T>(short bid, int voxelIdxInBrick, int inShift, int inStride) where T : unmanaged
         {
             if (!IsCreated) return default;
             
-            int byteOffset = ((bid << elemPerBrickShift) + voxelIdxInBrick) * stride;
+            int byteOffset = ((bid << inShift) + voxelIdxInBrick) * inStride;
+            return Get<T>(byteOffset);
+        }
+        
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal T Get<T>(int byteOffset) where T : unmanaged
+        {
             return UnsafeUtility.ReadArrayElement<T>(data.Ptr + byteOffset, 0);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void Set<T>(short bid, int voxelIdxInBrick, T value) where T : unmanaged
+        public void Set<T>(short bid, int voxelIdxInBrick, int inShift, int inStride, T value) where T : unmanaged
         {
-            int byteOffset = ((bid << elemPerBrickShift) + voxelIdxInBrick) * stride;
+            int byteOffset = ((bid << inShift) + voxelIdxInBrick) * inStride;
+            Set<T>(byteOffset, value);
+        }
+        
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal void Set<T>(int byteOffset, T value) where T : unmanaged
+        {
             UnsafeUtility.WriteArrayElement(data.Ptr + byteOffset, 0, value);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void* GetBrickPtr(short bid)
         {
-            return data.Ptr + bid * Sector.BLOCKS_IN_BRICK * stride;
+            return data.Ptr + (bid << elemPerBrickShift) * stride;
         }
     }
 
@@ -156,10 +168,15 @@ namespace Voxelis
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public Block GetBlock(int x, int y, int z)
-            => GetSlot<Block>(SectorSlotId.Block, x, y, z);
+            => GetVoxelSlot<Block>(SectorSlotId.Block, x, y, z);
+        
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public T GetVoxelSlot<T>(SectorSlotId id, int x, int y, int z)
+            where T : unmanaged
+            => GetVoxelSlot<T>(id, x, y, z, SHIFT_IN_BLOCKS * 3, UnsafeUtility.SizeOf<T>());
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public T GetSlot<T>(SectorSlotId slotId, int x, int y, int z) where T : unmanaged
+        public T GetVoxelSlot<T>(SectorSlotId slotId, int x, int y, int z, int shift, int stride) where T : unmanaged
         {
             int brickIdx = ToBrickIdx(x >> SHIFT_IN_BLOCKS, y >> SHIFT_IN_BLOCKS, z >> SHIFT_IN_BLOCKS);
             short bid = brickMap.indices[brickIdx];
@@ -171,7 +188,24 @@ namespace Voxelis
             SectorSlotStorage* slot = slots + (int)slotId;
             if (!slot->IsCreated) { return default; }
 
-            return slot->Get<T>(bid, ToBlockIdx(x & BRICK_MASK, y & BRICK_MASK, z & BRICK_MASK));
+            return slot->Get<T>(bid, ToBlockIdx(x & BRICK_MASK, y & BRICK_MASK, z & BRICK_MASK), shift, stride);
+        }
+        
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public T GetBrickSlot<T>(SectorSlotId slotId, int bX, int bY, int bZ, int bytesPerBrick, int offsetInBytes)
+            where T : unmanaged
+        {
+            int brickIdx = ToBrickIdx(bX, bY, bZ);
+            short bid = brickMap.indices[brickIdx];
+            if (bid == BRICKID_EMPTY)
+            {
+                return default;
+            }
+
+            SectorSlotStorage* slot = slots + (int)slotId;
+            if (!slot->IsCreated) { return default; }
+
+            return slot->Get<T>(bid * bytesPerBrick + offsetInBytes);
         }
 
         /// <summary>
@@ -179,14 +213,17 @@ namespace Voxelis
         /// allocated brick. Uses the sector's own allocator and <c>sizeof(T)</c> as the stride.
         /// Safe to call repeatedly; only allocates or grows when needed. Intended for bulk
         /// slot producers (e.g. physics-info generation) that write directly into slot storage
-        /// instead of going through <see cref="SetSlot{T}"/>.
+        /// instead of going through <see cref="SetVoxelSlot{T}(SectorSlotId,int,int,int,T)"/>.
         /// </summary>
-        public void EnsureSlotAllocated<T>(SectorSlotId slotId) where T : unmanaged
+        public void EnsureSlotAllocated<T>(SectorSlotId slotId, int elemPerBrickShift = 3 * SHIFT_IN_BLOCKS) where T : unmanaged
         {
             SectorSlotStorage* slot = slots + (int)slotId;
             if (!slot->IsCreated)
             {
-                slots[(int)slotId] = SectorSlotStorage.New(UnsafeUtility.SizeOf<T>(), brickMap.Capacity, _allocator);
+                slots[(int)slotId] = SectorSlotStorage.New(
+                    UnsafeUtility.SizeOf<T>(), brickMap.Capacity, _allocator,
+                    NativeArrayOptions.ClearMemory,
+                    elemPerBrickShift);
             }
             else
             {
@@ -196,10 +233,68 @@ namespace Voxelis
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void SetBlock(int x, int y, int z, Block block)
-            => SetSlot(SectorSlotId.Block, x, y, z, block);
+            => SetVoxelSlot(SectorSlotId.Block, x, y, z, block);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void SetSlot<T>(SectorSlotId slotId, int x, int y, int z, T value)
+        public void SetVoxelSlot<T>(SectorSlotId id, int x, int y, int z, T value)
+            where T : unmanaged, IEquatable<T>
+            => SetVoxelSlot(id, x, y, z, SHIFT_IN_BLOCKS * 3, UnsafeUtility.SizeOf<T>(), value);
+        
+        /// <summary>
+        /// This will NOT set the brick as dirty, unlike its voxel counter-part.
+        /// </summary>
+        /// <param name="slotId">The slot ID to write to.</param>
+        /// <param name="bX">brick X.</param>
+        /// <param name="bY">brick Y.</param>
+        /// <param name="bZ">brick Z.</param>
+        /// <param name="bytesPerBrick">Byte size of one brick's record in this slot (made explicit).</param>
+        /// <param name="offsetInBytes">Optional offset in bytes for the write operation.</param>
+        /// <param name="value">Value to write.</param>
+        /// <typeparam name="T">Type of the written value.</typeparam>
+        /// <exception cref="InvalidOperationException">This method will throw if attempted to write into a non-allocated brick. Write to allocated bricks only or alloc them first with SetVoxelSlot.</exception>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void SetBrickSlot<T>(SectorSlotId slotId, int bX, int bY, int bZ, int bytesPerBrick, int offsetInBytes, T value)
+            where T : unmanaged
+        {
+            ref SparseBrickIdTable targetBrickMap = ref(_snapshot_enabled ? ref _snapshot_brickMap : ref brickMap);
+            SectorSlotStorage* targetSlots = _snapshot_enabled ? _snapshot_slots : slots;
+            
+            int brickIdx = ToBrickIdx(bX, bY, bZ);
+            short bid = targetBrickMap.indices[brickIdx];
+            
+            // Brick does not exist, no alloc for brickSlots
+            if (bid == BRICKID_EMPTY)
+            {
+#if ENABLE_UNITY_COLLECTIONS_CHECKS
+                throw new InvalidOperationException("Cannot set brick slot for non-allocated bricks");
+#endif
+                return;
+            }
+
+            SectorSlotStorage* slot = targetSlots + (int)slotId;
+            // Allocate the slot if not yet allocated for this sector
+            if (!slot->IsCreated)
+            {
+                AcquireSpinGate(ref _sectorAllocLock);
+
+                if (!slot->IsCreated)
+                {
+                    // TODO: Is this _allocator okay?
+                    targetSlots[(int)slotId] =
+                        SectorSlotStorage.New(
+                            bytesPerBrick, targetBrickMap.Capacity, _allocator,
+                            NativeArrayOptions.ClearMemory,
+                            0);
+                }
+
+                ReleaseSpinGate(ref _sectorAllocLock);
+            }
+
+            slot->Set(bid * bytesPerBrick + offsetInBytes, value);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void SetVoxelSlot<T>(SectorSlotId slotId, int x, int y, int z, int shift, int stride, T value)
             where T : unmanaged, IEquatable<T>
         {
             ref SparseBrickIdTable targetBrickMap = ref(_snapshot_enabled ? ref _snapshot_brickMap : ref brickMap);
@@ -219,21 +314,24 @@ namespace Voxelis
                 // Lock and alloc
                 AcquireSpinGate(ref _sectorAllocLock);
 
-                targetBrickMap.AddBrick(new int3(bx, by, bz), out int newId, out bool exceedsCapacity);
-                bid = (short)newId;
-
-                // Alloc or reuse new brick
-                if (exceedsCapacity)
-                    ExtendCreatedSlots(targetSlots, targetBrickMap.Capacity);
-                else
-                    ClearBrickForAllSlots(targetSlots, bid); // TODO: Do we really need to clear it?
-
-                // Record the addition for Block slot
-                if (slotId == SectorSlotId.Block)
+                if (targetBrickMap.indices[brickIdx] == BRICKID_EMPTY)
                 {
-                    MarkBrickDirty(brickIdx, DirtyFlags.BlockBrickAdded, 0);
+                    targetBrickMap.AddBrick(new int3(bx, by, bz), out int newId, out bool exceedsCapacity);
+                    bid = (short)newId;
+
+                    // Alloc or reuse new brick
+                    if (exceedsCapacity)
+                        ExtendCreatedSlots(targetSlots, targetBrickMap.Capacity);
+                    else
+                        ClearBrickForAllSlots(targetSlots, bid); // TODO: Do we really need to clear it?
+
+                    // Record the addition for Block slot
+                    if (slotId == SectorSlotId.Block)
+                    {
+                        MarkBrickDirty(brickIdx, DirtyFlags.BlockBrickAdded, 0);
+                    }
                 }
-                
+
                 // Release the lock
                 ReleaseSpinGate(ref _sectorAllocLock);
             }
@@ -245,7 +343,7 @@ namespace Voxelis
             
             // Check for same value
             // If slot !IsCreated, Get will return default
-            T previous = slot->Get<T>(bid, voxelIdx);
+            T previous = slot->Get<T>(bid, voxelIdx, shift, stride);
             if (value.Equals(previous))
             {
                 return;
@@ -256,9 +354,12 @@ namespace Voxelis
             {
                 AcquireSpinGate(ref _sectorAllocLock);
 
-                // TODO: Is this _allocator okay?
-                targetSlots[(int)slotId] =
-                    SectorSlotStorage.New(UnsafeUtility.SizeOf<T>(), targetBrickMap.Capacity, _allocator);
+                if (!slot->IsCreated)
+                {
+                    // TODO: Is this _allocator okay?
+                    targetSlots[(int)slotId] =
+                        SectorSlotStorage.New(UnsafeUtility.SizeOf<T>(), targetBrickMap.Capacity, _allocator);
+                }
 
                 ReleaseSpinGate(ref _sectorAllocLock);
             }
@@ -275,7 +376,7 @@ namespace Voxelis
             if(slotId == SectorSlotId.Block && !value.Equals(default))
                 blockAABB.Update(new int3(x, y, z));
 
-            slot->Set(bid, voxelIdx, value);
+            slot->Set(bid, voxelIdx, shift, stride, value);
         }
     }
 }
