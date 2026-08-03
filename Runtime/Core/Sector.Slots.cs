@@ -7,52 +7,105 @@ using Unity.Mathematics;
 
 namespace Voxelis
 {
+    /// <summary>
+    /// Backing storage for one sector slot. Every slot is strictly per-voxel: <see cref="data"/>
+    /// holds one <see cref="stride"/>-byte element for each of a brick's
+    /// <see cref="Sector.BLOCKS_IN_BRICK"/> voxels, indexed through the shared brick-id namespace.
+    ///
+    /// A slot may optionally carry an <see cref="aux"/> buffer — one <see cref="extraPerBrickBytes"/>
+    /// record per brick — holding data <em>derived</em> from the per-voxel contents (non-empty
+    /// occupancy bitmaps, physics-key masks, …). Aux lives in its own allocation so it can be
+    /// attached, grown, cleared and dropped independently of the voxel data. It is never
+    /// serialized: it is recomputed from <see cref="data"/> for dirty bricks once a tick's edits
+    /// settle.
+    /// </summary>
     public unsafe struct SectorSlotStorage
     {
         [NativeDisableUnsafePtrRestriction]
-        public UnsafeList<byte> data;
-        public int stride; // TODO: Limit this to po2?
-        public int elemPerBrickShift;
+        public UnsafeList<byte> data;   // per-voxel: brickCapacity * BLOCKS_IN_BRICK * stride bytes
+        [NativeDisableUnsafePtrRestriction]
+        public UnsafeList<byte> aux;    // optional per-brick: brickCapacity * extraPerBrickBytes bytes
+        public int stride;              // bytes per voxel element
+        public int extraPerBrickBytes;  // bytes per brick in aux; meaningful only while HasAux
 
-        public int BytesPerBrick => (stride << elemPerBrickShift);
+        /// <summary>Bytes occupied by one brick's per-voxel records.</summary>
+        public int BytesPerBrick => stride * Sector.BLOCKS_IN_BRICK;
 
+        /// <summary>True once the per-voxel buffer exists. This is what "the slot exists" means.</summary>
         public bool IsCreated => data.IsCreated;
 
-        /// <summary>
-        /// True when this slot holds one element per voxel (the default shape). Per-brick slots
-        /// (<see cref="elemPerBrickShift"/> == 0) and any other custom shape return false.
-        /// Persistence only covers voxel-shaped slots — see <c>SectorSerializer</c>.
-        /// </summary>
-        public bool IsVoxelShaped => elemPerBrickShift == 3 * Sector.SHIFT_IN_BLOCKS;
+        /// <summary>True when this slot carries a derived per-brick aux buffer.</summary>
+        public bool HasAux => aux.IsCreated;
 
         public static SectorSlotStorage New(
-            int stride, int initialBricks, Allocator allocator, NativeArrayOptions initialization = NativeArrayOptions.ClearMemory,
-            int elemPerBrickShift = 3 * Sector.SHIFT_IN_BLOCKS)
+            int stride, int initialBricks, Allocator allocator,
+            NativeArrayOptions initialization = NativeArrayOptions.ClearMemory,
+            int extraPerBrickBytes = 0)
         {
-            int byteCapacity = math.max(1, (initialBricks << elemPerBrickShift) * stride);
+            int voxelBytes = math.max(1, initialBricks * Sector.BLOCKS_IN_BRICK * stride);
             var storage = new SectorSlotStorage
             {
-                data = new UnsafeList<byte>(byteCapacity, allocator),
+                data = new UnsafeList<byte>(voxelBytes, allocator),
+                aux = default,
                 stride = stride,
-                elemPerBrickShift = elemPerBrickShift
+                extraPerBrickBytes = 0
             };
-            storage.data.Resize(byteCapacity, initialization);
+            storage.data.Resize(voxelBytes, initialization);
+
+            if (extraPerBrickBytes > 0)
+            {
+                storage.AttachAux(extraPerBrickBytes, initialBricks, allocator, initialization);
+            }
             return storage;
         }
 
-        public SectorSlotStorage Clone(Allocator allocator)
+        /// <summary>
+        /// Allocates (replacing any existing) the aux buffer for this slot, sized to hold
+        /// <paramref name="brickCapacity"/> bricks. The per-voxel <see cref="data"/> buffer is
+        /// expected to already exist — aux summarizes it.
+        /// </summary>
+        public void AttachAux(
+            int extraPerBrickBytes, int brickCapacity, Allocator allocator,
+            NativeArrayOptions initialization = NativeArrayOptions.ClearMemory)
+        {
+            if (aux.IsCreated) aux.Dispose();
+            this.extraPerBrickBytes = extraPerBrickBytes;
+
+            int auxBytes = math.max(1, brickCapacity * extraPerBrickBytes);
+            aux = new UnsafeList<byte>(auxBytes, allocator);
+            aux.Resize(auxBytes, initialization);
+        }
+
+        /// <summary>
+        /// Deep-copies this slot. The voxel <see cref="data"/> is always copied; the derived
+        /// <see cref="aux"/> buffer is copied only when <paramref name="cloneAux"/> is true. Either
+        /// way <see cref="extraPerBrickBytes"/> is preserved so a later rebuild can tell the slot
+        /// wants an aux of that size and reallocate it.
+        /// </summary>
+        public SectorSlotStorage Clone(Allocator allocator, bool cloneAux = false)
         {
             var clone = new SectorSlotStorage
             {
                 data = IsCreated ? new UnsafeList<byte>(data.Length, allocator) : new UnsafeList<byte>(),
+                aux = default,
                 stride = stride,
-                elemPerBrickShift = elemPerBrickShift
+                extraPerBrickBytes = extraPerBrickBytes
             };
-            
+
             if (IsCreated && data.Length > 0)
             {
                 clone.data.Resize(data.Length, NativeArrayOptions.UninitializedMemory);
                 UnsafeUtility.MemCpy(clone.data.Ptr, data.Ptr, data.Length);
+            }
+
+            if (cloneAux && aux.IsCreated)
+            {
+                clone.aux = new UnsafeList<byte>(aux.Length, allocator);
+                if (aux.Length > 0)
+                {
+                    clone.aux.Resize(aux.Length, NativeArrayOptions.UninitializedMemory);
+                    UnsafeUtility.MemCpy(clone.aux.Ptr, aux.Ptr, aux.Length);
+                }
             }
             return clone;
         }
@@ -60,31 +113,43 @@ namespace Voxelis
         public void Dispose()
         {
             if (data.IsCreated) data.Dispose();
+            if (aux.IsCreated) aux.Dispose();
             data = default;
+            aux = default;
             stride = 0;
-            elemPerBrickShift = 0;
+            extraPerBrickBytes = 0;
         }
 
         public void EnsureBrickCapacity(int brickCapacity, NativeArrayOptions initialization = NativeArrayOptions.ClearMemory)
         {
             int bytes = brickCapacity * BytesPerBrick;
             if (bytes > data.Length) { data.Resize(bytes, initialization); }
+
+            if (aux.IsCreated)
+            {
+                int auxBytes = brickCapacity * extraPerBrickBytes;
+                if (auxBytes > aux.Length) { aux.Resize(auxBytes, initialization); }
+            }
         }
 
         public void ClearBrick(short bid)
         {
             UnsafeUtility.MemClear(data.Ptr + bid * BytesPerBrick, BytesPerBrick);
+            if (aux.IsCreated)
+            {
+                UnsafeUtility.MemClear(aux.Ptr + bid * extraPerBrickBytes, extraPerBrickBytes);
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public T Get<T>(short bid, int voxelIdxInBrick, int inShift, int inStride) where T : unmanaged
+        public T Get<T>(short bid, int voxelIdxInBrick) where T : unmanaged
         {
             if (!IsCreated) return default;
-            
-            int byteOffset = ((bid << inShift) + voxelIdxInBrick) * inStride;
+
+            int byteOffset = (bid * Sector.BLOCKS_IN_BRICK + voxelIdxInBrick) * stride;
             return Get<T>(byteOffset);
         }
-        
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal T Get<T>(int byteOffset) where T : unmanaged
         {
@@ -92,12 +157,12 @@ namespace Voxelis
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void Set<T>(short bid, int voxelIdxInBrick, int inShift, int inStride, T value) where T : unmanaged
+        public void Set<T>(short bid, int voxelIdxInBrick, T value) where T : unmanaged
         {
-            int byteOffset = ((bid << inShift) + voxelIdxInBrick) * inStride;
+            int byteOffset = (bid * Sector.BLOCKS_IN_BRICK + voxelIdxInBrick) * stride;
             Set<T>(byteOffset, value);
         }
-        
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal void Set<T>(int byteOffset, T value) where T : unmanaged
         {
@@ -105,9 +170,27 @@ namespace Voxelis
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal T GetAux<T>(int auxByteOffset) where T : unmanaged
+        {
+            return UnsafeUtility.ReadArrayElement<T>(aux.Ptr + auxByteOffset, 0);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal void SetAux<T>(int auxByteOffset, T value) where T : unmanaged
+        {
+            UnsafeUtility.WriteArrayElement(aux.Ptr + auxByteOffset, 0, value);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void* GetBrickPtr(short bid)
         {
-            return data.Ptr + (bid << elemPerBrickShift) * stride;
+            return data.Ptr + bid * BytesPerBrick;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void* GetBrickAuxPtr(short bid)
+        {
+            return aux.Ptr + bid * extraPerBrickBytes;
         }
     }
 
@@ -119,13 +202,13 @@ namespace Voxelis
         /// </summary>
         [NativeDisableUnsafePtrRestriction]
         public SectorSlotStorage* slots;
-        
+
         /// <summary>
         /// Backbuffer version of slot storage for read access during double-buffered updates (e.g., cellular automata).
         /// </summary>
         [NativeDisableUnsafePtrRestriction]
         public SectorSlotStorage* _snapshot_slots;
-        
+
         private static void ExtendCreatedSlots(SectorSlotStorage* slotTable, int brickCapacity)
         {
             // if (slotTable == null) return;
@@ -151,7 +234,17 @@ namespace Voxelis
         internal static void CopySlotsTo(SectorSlotStorage* from, SectorSlotStorage* to, Allocator allocator)
         {
             ResetSlotTable(ref to);
-            for (int i = 0; i < MAX_SLOTS; i++) { to[i] = from[i].Clone(allocator); }
+
+            // Aux buffers hold derived data that is rebuilt for dirty bricks after each tick, so the
+            // snapshot backbuffer does not carry them across ActivateSnapshot/ApplySnapshot — the
+            // live buffer's aux is regenerated once the applied edits settle. Define
+            // VOXELISX_SNAPSHOT_ALSO_COPY_AUX to deep-copy aux alongside the voxel data instead.
+#if VOXELISX_SNAPSHOT_ALSO_COPY_AUX
+            const bool cloneAux = true;
+#else
+            const bool cloneAux = false;
+#endif
+            for (int i = 0; i < MAX_SLOTS; i++) { to[i] = from[i].Clone(allocator, cloneAux); }
         }
 
         private static void ResetSlotTable(ref SectorSlotStorage* slotTable)
@@ -166,17 +259,14 @@ namespace Voxelis
             }
         }
 
+        // ---- Per-voxel slot access -------------------------------------------------------------
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public Block GetBlock(int x, int y, int z)
             => GetVoxelSlot<Block>(SectorSlotId.Block, x, y, z);
-        
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public T GetVoxelSlot<T>(SectorSlotId id, int x, int y, int z)
-            where T : unmanaged
-            => GetVoxelSlot<T>(id, x, y, z, SHIFT_IN_BLOCKS * 3, UnsafeUtility.SizeOf<T>());
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public T GetVoxelSlot<T>(SectorSlotId slotId, int x, int y, int z, int shift, int stride) where T : unmanaged
+        public T GetVoxelSlot<T>(SectorSlotId slotId, int x, int y, int z) where T : unmanaged
         {
             int brickIdx = ToBrickIdx(x >> SHIFT_IN_BLOCKS, y >> SHIFT_IN_BLOCKS, z >> SHIFT_IN_BLOCKS);
             short bid = brickMap.indices[brickIdx];
@@ -188,11 +278,70 @@ namespace Voxelis
             SectorSlotStorage* slot = slots + (int)slotId;
             if (!slot->IsCreated) { return default; }
 
-            return slot->Get<T>(bid, ToBlockIdx(x & BRICK_MASK, y & BRICK_MASK, z & BRICK_MASK), shift, stride);
+            return slot->Get<T>(bid, ToBlockIdx(x & BRICK_MASK, y & BRICK_MASK, z & BRICK_MASK));
         }
-        
+
+        // ---- Per-brick aux access --------------------------------------------------------------
+        // Aux is companion storage on a per-voxel slot. It is always addressed on the live `slots`
+        // table (never the snapshot backbuffer) since it is rebuilt from settled voxel data.
+
+        /// <summary>
+        /// Ensures the per-voxel storage for <paramref name="slotId"/> exists and can hold every
+        /// currently allocated brick, optionally attaching a derived aux buffer of
+        /// <paramref name="extraPerBrickBytes"/> bytes per brick. Uses <c>sizeof(T)</c> as the voxel
+        /// stride. Safe to call repeatedly; only allocates or grows when needed. Intended for bulk
+        /// slot producers (e.g. physics-info generation) that write directly into slot storage.
+        /// </summary>
+        public void EnsureSlotAllocated<T>(SectorSlotId slotId, int extraPerBrickBytes = 0) where T : unmanaged
+        {
+            SectorSlotStorage* slot = slots + (int)slotId;
+            if (!slot->IsCreated)
+            {
+                slots[(int)slotId] = SectorSlotStorage.New(
+                    UnsafeUtility.SizeOf<T>(), brickMap.Capacity, _allocator,
+                    NativeArrayOptions.ClearMemory, extraPerBrickBytes);
+            }
+            else
+            {
+                slot->EnsureBrickCapacity(brickMap.Capacity);
+                if (extraPerBrickBytes > 0 && !slot->HasAux)
+                {
+                    slot->AttachAux(extraPerBrickBytes, brickMap.Capacity, _allocator);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Ensures the derived aux buffer for an already-created voxel slot exists and can hold every
+        /// currently allocated brick. No-op (or throws under collections checks) if the voxel slot
+        /// itself has not been created — aux summarizes voxel data, so that must come first.
+        /// </summary>
+        public void EnsureAuxAllocated(SectorSlotId slotId, int extraPerBrickBytes)
+        {
+            SectorSlotStorage* slot = slots + (int)slotId;
+            if (!slot->IsCreated)
+            {
+#if ENABLE_UNITY_COLLECTIONS_CHECKS
+                throw new InvalidOperationException(
+                    "Cannot attach aux to a slot whose voxel data is not created; create the slot first.");
+#else
+                return;
+#endif
+            }
+
+            slot->EnsureBrickCapacity(brickMap.Capacity);
+            if (!slot->HasAux)
+            {
+                slot->AttachAux(extraPerBrickBytes, brickMap.Capacity, _allocator);
+            }
+        }
+
+        /// <summary>
+        /// Reads a value from a brick's aux slice at <paramref name="offsetInBytes"/>. Returns
+        /// default when the brick is empty or the slot carries no aux.
+        /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public T GetBrickSlot<T>(SectorSlotId slotId, int bX, int bY, int bZ, int bytesPerBrick, int offsetInBytes)
+        public T GetBrickAux<T>(SectorSlotId slotId, int bX, int bY, int bZ, int offsetInBytes)
             where T : unmanaged
         {
             int brickIdx = ToBrickIdx(bX, bY, bZ);
@@ -203,98 +352,68 @@ namespace Voxelis
             }
 
             SectorSlotStorage* slot = slots + (int)slotId;
-            if (!slot->IsCreated) { return default; }
+            if (!slot->HasAux) { return default; }
 
-            return slot->Get<T>(bid * bytesPerBrick + offsetInBytes);
+            return slot->GetAux<T>(bid * slot->extraPerBrickBytes + offsetInBytes);
         }
 
         /// <summary>
-        /// Ensures the storage for <paramref name="slotId"/> exists and can hold every currently
-        /// allocated brick. Uses the sector's own allocator and <c>sizeof(T)</c> as the stride.
-        /// Safe to call repeatedly; only allocates or grows when needed. Intended for bulk
-        /// slot producers (e.g. physics-info generation) that write directly into slot storage
-        /// instead of going through <see cref="SetVoxelSlot{T}(SectorSlotId,int,int,int,T)"/>.
+        /// Raw pointer to a brick's aux slice, or null when the slot carries no aux. Intended for
+        /// bulk rebuild producers that fill a brick's whole slice at once.
         /// </summary>
-        public void EnsureSlotAllocated<T>(SectorSlotId slotId, int elemPerBrickShift = 3 * SHIFT_IN_BLOCKS) where T : unmanaged
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void* GetBrickAuxPtr(SectorSlotId slotId, short bid)
         {
+            if (bid == BRICKID_EMPTY) { return null; }
             SectorSlotStorage* slot = slots + (int)slotId;
-            if (!slot->IsCreated)
-            {
-                slots[(int)slotId] = SectorSlotStorage.New(
-                    UnsafeUtility.SizeOf<T>(), brickMap.Capacity, _allocator,
-                    NativeArrayOptions.ClearMemory,
-                    elemPerBrickShift);
-            }
-            else
-            {
-                slot->EnsureBrickCapacity(brickMap.Capacity);
-            }
+            return slot->HasAux ? slot->GetBrickAuxPtr(bid) : null;
         }
+
+        /// <summary>
+        /// Writes a value into a brick's aux slice at <paramref name="offsetInBytes"/>. The aux
+        /// buffer must already exist (see <see cref="EnsureAuxAllocated"/>); unlike the voxel setters
+        /// this never lazily allocates and does NOT mark the brick dirty.
+        /// </summary>
+        /// <exception cref="InvalidOperationException">
+        /// Under collections checks, thrown when the brick is not allocated or the slot has no aux.
+        /// </exception>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void SetBrickAux<T>(SectorSlotId slotId, int bX, int bY, int bZ, int offsetInBytes, T value)
+            where T : unmanaged
+        {
+            int brickIdx = ToBrickIdx(bX, bY, bZ);
+            short bid = brickMap.indices[brickIdx];
+            if (bid == BRICKID_EMPTY)
+            {
+#if ENABLE_UNITY_COLLECTIONS_CHECKS
+                throw new InvalidOperationException("Cannot set brick aux for non-allocated bricks");
+#else
+                return;
+#endif
+            }
+
+            SectorSlotStorage* slot = slots + (int)slotId;
+            if (!slot->HasAux)
+            {
+#if ENABLE_UNITY_COLLECTIONS_CHECKS
+                throw new InvalidOperationException(
+                    "Aux buffer not allocated for this slot; call EnsureAuxAllocated first.");
+#else
+                return;
+#endif
+            }
+
+            slot->SetAux<T>(bid * slot->extraPerBrickBytes + offsetInBytes, value);
+        }
+
+        // ---- Per-voxel writes ------------------------------------------------------------------
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void SetBlock(int x, int y, int z, Block block)
             => SetVoxelSlot(SectorSlotId.Block, x, y, z, block);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void SetVoxelSlot<T>(SectorSlotId id, int x, int y, int z, T value)
-            where T : unmanaged, IEquatable<T>
-            => SetVoxelSlot(id, x, y, z, SHIFT_IN_BLOCKS * 3, UnsafeUtility.SizeOf<T>(), value);
-        
-        /// <summary>
-        /// This will NOT set the brick as dirty, unlike its voxel counter-part.
-        /// </summary>
-        /// <param name="slotId">The slot ID to write to.</param>
-        /// <param name="bX">brick X.</param>
-        /// <param name="bY">brick Y.</param>
-        /// <param name="bZ">brick Z.</param>
-        /// <param name="bytesPerBrick">Byte size of one brick's record in this slot (made explicit).</param>
-        /// <param name="offsetInBytes">Optional offset in bytes for the write operation.</param>
-        /// <param name="value">Value to write.</param>
-        /// <typeparam name="T">Type of the written value.</typeparam>
-        /// <exception cref="InvalidOperationException">This method will throw if attempted to write into a non-allocated brick. Write to allocated bricks only or alloc them first with SetVoxelSlot.</exception>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void SetBrickSlot<T>(SectorSlotId slotId, int bX, int bY, int bZ, int bytesPerBrick, int offsetInBytes, T value)
-            where T : unmanaged
-        {
-            ref SparseBrickIdTable targetBrickMap = ref(_snapshot_enabled ? ref _snapshot_brickMap : ref brickMap);
-            SectorSlotStorage* targetSlots = _snapshot_enabled ? _snapshot_slots : slots;
-            
-            int brickIdx = ToBrickIdx(bX, bY, bZ);
-            short bid = targetBrickMap.indices[brickIdx];
-            
-            // Brick does not exist, no alloc for brickSlots
-            if (bid == BRICKID_EMPTY)
-            {
-#if ENABLE_UNITY_COLLECTIONS_CHECKS
-                throw new InvalidOperationException("Cannot set brick slot for non-allocated bricks");
-#endif
-                return;
-            }
-
-            SectorSlotStorage* slot = targetSlots + (int)slotId;
-            // Allocate the slot if not yet allocated for this sector
-            if (!slot->IsCreated)
-            {
-                AcquireSpinGate(ref _sectorAllocLock);
-
-                if (!slot->IsCreated)
-                {
-                    // TODO: Is this _allocator okay?
-                    targetSlots[(int)slotId] =
-                        SectorSlotStorage.New(
-                            bytesPerBrick, targetBrickMap.Capacity, _allocator,
-                            NativeArrayOptions.ClearMemory,
-                            0);
-                }
-
-                ReleaseSpinGate(ref _sectorAllocLock);
-            }
-
-            slot->Set(bid * bytesPerBrick + offsetInBytes, value);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void SetVoxelSlot<T>(SectorSlotId slotId, int x, int y, int z, int shift, int stride, T value)
+        public void SetVoxelSlot<T>(SectorSlotId slotId, int x, int y, int z, T value)
             where T : unmanaged, IEquatable<T>
         {
             ref SparseBrickIdTable targetBrickMap = ref(_snapshot_enabled ? ref _snapshot_brickMap : ref brickMap);
@@ -314,16 +433,16 @@ namespace Voxelis
                 // Lock and alloc
                 AcquireSpinGate(ref _sectorAllocLock);
 
+                // Re-check under the gate; another thread may have created this brick already.
                 if (targetBrickMap.indices[brickIdx] == BRICKID_EMPTY)
                 {
                     targetBrickMap.AddBrick(new int3(bx, by, bz), out int newId, out bool exceedsCapacity);
-                    bid = (short)newId;
 
                     // Alloc or reuse new brick
                     if (exceedsCapacity)
                         ExtendCreatedSlots(targetSlots, targetBrickMap.Capacity);
                     else
-                        ClearBrickForAllSlots(targetSlots, bid); // TODO: Do we really need to clear it?
+                        ClearBrickForAllSlots(targetSlots, (short)newId); // TODO: Do we really need to clear it?
 
                     // Record the addition for Block slot
                     if (slotId == SectorSlotId.Block)
@@ -332,23 +451,26 @@ namespace Voxelis
                     }
                 }
 
+                // Pick up the brick id whether we or another thread created it.
+                bid = targetBrickMap.indices[brickIdx];
+
                 // Release the lock
                 ReleaseSpinGate(ref _sectorAllocLock);
             }
 
             // Brick exists, corresponding slot may not be allocated yet
-            
+
             SectorSlotStorage* slot = targetSlots + (int)slotId;
             int voxelIdx = ToBlockIdx(x & BRICK_MASK, y & BRICK_MASK, z & BRICK_MASK);
-            
+
             // Check for same value
             // If slot !IsCreated, Get will return default
-            T previous = slot->Get<T>(bid, voxelIdx, shift, stride);
+            T previous = slot->Get<T>(bid, voxelIdx);
             if (value.Equals(previous))
             {
                 return;
             }
-            
+
             // Allocate the slot if not yet allocated for this sector
             if (!slot->IsCreated)
             {
@@ -363,20 +485,20 @@ namespace Voxelis
 
                 ReleaseSpinGate(ref _sectorAllocLock);
             }
-            
+
             // Set the data
             DirtyFlags dirtyFlags = slotId == SectorSlotId.Block
                 ? DirtyPropagationSettings.DefaultSetBlockFlags
                 : DirtyFlags.GeneralAutomata;
             MarkBrickDirty(brickIdx, dirtyFlags, GetVoxelPropagationMask(voxelIdx));
-            
+
             // Update AABB
             // TODO: Rescan AABB occasionally to handle block removal
             // TODO: Make AABB tight with current snapshot logic -- current version is correct (always superset) but may not be ideal
             if(slotId == SectorSlotId.Block && !value.Equals(default))
                 blockAABB.Update(new int3(x, y, z));
 
-            slot->Set(bid, voxelIdx, shift, stride, value);
+            slot->Set(bid, voxelIdx, value);
         }
     }
 }

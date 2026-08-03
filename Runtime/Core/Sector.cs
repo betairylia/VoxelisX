@@ -130,6 +130,7 @@ namespace Voxelis
                     SectorSlotStorage slot = slots[i];
                     if (!slot.IsCreated) continue;
                     total += slot.data.Capacity;
+                    if (slot.HasAux) total += slot.aux.Capacity;
                 }
 
                 return total;

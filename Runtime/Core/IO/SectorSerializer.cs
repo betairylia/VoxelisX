@@ -26,20 +26,15 @@ namespace Voxelis.IO
     ///     u16   stride
     ///     u8    rawSlotData[brickMapCapacity * Sector.BLOCKS_IN_BRICK * stride]
     ///
-    /// Only voxel-shaped slots (<see cref="SectorSlotStorage.IsVoxelShaped"/>) are persisted; the
-    /// record layout above assumes one element per voxel. Per-brick slots hold derived, on-the-fly
-    /// data (occupancy bitmaps and the like) and are recomputed after load rather than stored, so
-    /// an unpacked sector comes back with those slots uncreated.
+    /// Only the per-voxel <see cref="SectorSlotStorage.data"/> buffer is persisted. A slot's
+    /// optional <see cref="SectorSlotStorage.aux"/> buffer holds data derived from the voxels
+    /// (occupancy bitmaps and the like); it is cheaper to recompute than to store, so it is left out
+    /// of the payload and an unpacked sector comes back with every slot's aux uncreated, to be
+    /// rebuilt for dirty bricks after load.
     /// </summary>
     public static class SectorSerializer
     {
         private const uint SectorPayloadMagic = 0x32535856u; // VXS2, little-endian
-
-        /// <summary>
-        /// Whether a slot goes into the payload. Per-brick slots carry derived data that is cheaper
-        /// to recompute than to store, and the record layout has no room for their shape anyway.
-        /// </summary>
-        private static bool IsPersisted(in SectorSlotStorage slot) => slot.IsCreated && slot.IsVoxelShaped;
 
         public static unsafe byte[] Pack(in Sector sector)
         {
@@ -65,12 +60,13 @@ namespace Voxelis.IO
                 bw.Write(sector.sectorRequireUpdateFlags);
                 WriteRawBytes(bw, sector.brickRequireUpdateFlags, Sector.BRICKS_IN_SECTOR * sizeof(ushort));
 
-                // Both loops below must agree on which slots produce a record, otherwise the
-                // written count desyncs from the stream — hence the single shared predicate.
+                // Only the per-voxel data buffer is written; the optional aux buffer is derived and
+                // rebuilt on load. Both loops below must agree on which slots produce a record,
+                // otherwise the written count desyncs from the stream.
                 int slotRecordCount = 0;
                 for (int i = 0; i < Sector.MAX_SLOTS; i++)
                 {
-                    if (IsPersisted(sector.slots[i]))
+                    if (sector.slots[i].IsCreated)
                     {
                         slotRecordCount++;
                     }
@@ -81,7 +77,7 @@ namespace Voxelis.IO
                 for (int i = 0; i < Sector.MAX_SLOTS; i++)
                 {
                     SectorSlotStorage slot = sector.slots[i];
-                    if (!IsPersisted(slot)) continue;
+                    if (!slot.IsCreated) continue;
 
                     bw.Write((byte)i);
                     bw.Write((ushort)slot.stride);

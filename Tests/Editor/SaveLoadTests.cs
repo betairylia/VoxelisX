@@ -259,13 +259,14 @@ namespace VoxelisX.Tests
         }
 
         [Test]
-        public void Pack_SkipsPerBrickSlotsAndStillRoundTripsVoxelSlots()
+        public void Pack_ExcludesSlotAuxBufferAndRoundTripsVoxelData()
         {
-            // Per-brick slots hold derived data and are recomputed on load, so they must not reach
-            // the payload — the record layout describes one element per voxel, and writing a
-            // per-brick slot through it would read BLOCKS_IN_BRICK times past its allocation.
-            const int bytesPerBrick = 8 * sizeof(ulong); // 512-voxel occupancy bitmap
-            const SectorSlotId maskSlot = SectorSlotId.Reserved1;
+            // A slot's aux buffer holds per-brick data derived from the voxels; it is recomputed on
+            // load, so it must not reach the payload. The voxel data of the same slot must still
+            // round-trip.
+            const int extraPerBrickBytes = 8 * sizeof(ulong); // 512-voxel occupancy bitmap
+            const SectorSlotId auxSlot = SectorSlotId.Reserved1;
+            const ushort reservedValue = 0xABCD;
 
             var handle = SectorHandle.AllocEmpty();
             try
@@ -277,12 +278,15 @@ namespace VoxelisX.Tests
 
                 ref Sector source = ref handle.Get();
 
-                // Brick (0,0,0) and (8,8,8) exist thanks to the SetBlock calls above.
-                source.SetBrickSlot(maskSlot, 0, 0, 0, bytesPerBrick, 0, 0xDEADBEEFDEADBEEFul);
-                source.SetBrickSlot(maskSlot, 8, 8, 8, bytesPerBrick, 7 * sizeof(ulong), 0x0123456789ABCDEFul);
+                // Give the slot per-voxel data (creating it) plus a derived per-brick aux buffer.
+                // Bricks (0,0,0) and (8,8,8) exist thanks to the SetBlock calls above.
+                source.SetVoxelSlot(auxSlot, 0, 0, 0, reservedValue);
+                source.EnsureAuxAllocated(auxSlot, extraPerBrickBytes);
+                source.SetBrickAux<ulong>(auxSlot, 0, 0, 0, 0, 0xDEADBEEFDEADBEEFul);
+                source.SetBrickAux<ulong>(auxSlot, 8, 8, 8, 7 * sizeof(ulong), 0x0123456789ABCDEFul);
 
-                Assert.That(source.slots[(int)maskSlot].IsCreated, Is.True);
-                Assert.That(source.slots[(int)maskSlot].IsVoxelShaped, Is.False);
+                Assert.That(source.slots[(int)auxSlot].IsCreated, Is.True);
+                Assert.That(source.slots[(int)auxSlot].HasAux, Is.True);
 
                 byte[] packed = SectorSerializer.Pack(in source);
                 var loaded = SectorSerializer.Unpack(packed, Allocator.Persistent);
@@ -290,8 +294,9 @@ namespace VoxelisX.Tests
                 {
                     Assert.That(loaded.GetBlock(0, 0, 0), Is.EqualTo(b1));
                     Assert.That(loaded.GetBlock(64, 64, 64), Is.EqualTo(b2));
-                    Assert.That(loaded.slots[(int)maskSlot].IsCreated, Is.False,
-                        "per-brick slots are recomputed after load, not persisted");
+                    Assert.That(loaded.GetVoxelSlot<ushort>(auxSlot, 0, 0, 0), Is.EqualTo(reservedValue));
+                    Assert.That(loaded.slots[(int)auxSlot].HasAux, Is.False,
+                        "aux is derived data, rebuilt after load rather than persisted");
                 }
                 finally { loaded.Dispose(Allocator.Persistent); }
             }
