@@ -7,21 +7,34 @@ using Unity.Mathematics;
 
 namespace Voxelis
 {
+    public interface ISlotShape<T> where T: unmanaged
+    {
+        int Id    { [MethodImpl(MethodImplOptions.AggressiveInlining)] get; }
+        int Shift { [MethodImpl(MethodImplOptions.AggressiveInlining)] get; } // log2 elems per brick
+        int Stride{ [MethodImpl(MethodImplOptions.AggressiveInlining)] get; }
+    }
+
     public unsafe struct SectorSlotStorage
     {
         [NativeDisableUnsafePtrRestriction]
         public UnsafeList<byte> data;
-        public int stride;
+        public int stride; // TODO: Limit this to po2?
+        public int elemPerBrickShift;
+
+        public int BytesPerBrick => (stride << elemPerBrickShift);
 
         public bool IsCreated => data.IsCreated;
 
-        public static SectorSlotStorage New(int stride, int initialBricks, Allocator allocator, NativeArrayOptions initialization = NativeArrayOptions.ClearMemory)
+        public static SectorSlotStorage New(
+            int stride, int initialBricks, Allocator allocator, NativeArrayOptions initialization = NativeArrayOptions.ClearMemory,
+            int elemPerBrickShift = 9)
         {
-            int byteCapacity = math.max(1, initialBricks * Sector.BLOCKS_IN_BRICK * stride);
+            int byteCapacity = math.max(1, (initialBricks << elemPerBrickShift) * stride);
             var storage = new SectorSlotStorage
             {
                 data = new UnsafeList<byte>(byteCapacity, allocator),
                 stride = stride,
+                elemPerBrickShift = elemPerBrickShift
             };
             storage.data.Resize(byteCapacity, initialization);
             return storage;
@@ -32,7 +45,8 @@ namespace Voxelis
             var clone = new SectorSlotStorage
             {
                 data = IsCreated ? new UnsafeList<byte>(data.Length, allocator) : new UnsafeList<byte>(),
-                stride = stride
+                stride = stride,
+                elemPerBrickShift = elemPerBrickShift
             };
             
             if (IsCreated && data.Length > 0)
@@ -48,17 +62,18 @@ namespace Voxelis
             if (data.IsCreated) data.Dispose();
             data = default;
             stride = 0;
+            elemPerBrickShift = 0;
         }
 
         public void EnsureBrickCapacity(int brickCapacity, NativeArrayOptions initialization = NativeArrayOptions.ClearMemory)
         {
-            int bytes = brickCapacity * Sector.BLOCKS_IN_BRICK * stride;
+            int bytes = brickCapacity * BytesPerBrick;
             if (bytes > data.Length) { data.Resize(bytes, initialization); }
         }
 
         public void ClearBrick(short bid)
         {
-            UnsafeUtility.MemClear(data.Ptr + bid * Sector.BLOCKS_IN_BRICK * stride, Sector.BLOCKS_IN_BRICK * stride);
+            UnsafeUtility.MemClear(data.Ptr + bid * BytesPerBrick, BytesPerBrick);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -66,14 +81,14 @@ namespace Voxelis
         {
             if (!IsCreated) return default;
             
-            int byteOffset = (bid * Sector.BLOCKS_IN_BRICK + voxelIdxInBrick) * stride;
+            int byteOffset = ((bid << elemPerBrickShift) + voxelIdxInBrick) * stride;
             return UnsafeUtility.ReadArrayElement<T>(data.Ptr + byteOffset, 0);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Set<T>(short bid, int voxelIdxInBrick, T value) where T : unmanaged
         {
-            int byteOffset = (bid * Sector.BLOCKS_IN_BRICK + voxelIdxInBrick) * stride;
+            int byteOffset = ((bid << elemPerBrickShift) + voxelIdxInBrick) * stride;
             UnsafeUtility.WriteArrayElement(data.Ptr + byteOffset, 0, value);
         }
 
