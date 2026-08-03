@@ -141,12 +141,17 @@ namespace Voxelis
             }
         }
 
+        // The element size is taken as a parameter rather than read from the `stride` field so that
+        // callers with a statically-known element type can pass a compile-time constant
+        // (UnsafeUtility.SizeOf<T>(), or a literal): under Burst that folds the `* inStride` to a
+        // shift and drops the `this.stride` load from the hot per-voxel path. The brick shift is
+        // already constant via BLOCKS_IN_BRICK, so only the stride needs threading.
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public T Get<T>(short bid, int voxelIdxInBrick) where T : unmanaged
+        public T Get<T>(short bid, int voxelIdxInBrick, int inStride) where T : unmanaged
         {
             if (!IsCreated) return default;
 
-            int byteOffset = (bid * Sector.BLOCKS_IN_BRICK + voxelIdxInBrick) * stride;
+            int byteOffset = (bid * Sector.BLOCKS_IN_BRICK + voxelIdxInBrick) * inStride;
             return Get<T>(byteOffset);
         }
 
@@ -157,9 +162,9 @@ namespace Voxelis
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void Set<T>(short bid, int voxelIdxInBrick, T value) where T : unmanaged
+        public void Set<T>(short bid, int voxelIdxInBrick, int inStride, T value) where T : unmanaged
         {
-            int byteOffset = (bid * Sector.BLOCKS_IN_BRICK + voxelIdxInBrick) * stride;
+            int byteOffset = (bid * Sector.BLOCKS_IN_BRICK + voxelIdxInBrick) * inStride;
             Set<T>(byteOffset, value);
         }
 
@@ -278,7 +283,7 @@ namespace Voxelis
             SectorSlotStorage* slot = slots + (int)slotId;
             if (!slot->IsCreated) { return default; }
 
-            return slot->Get<T>(bid, ToBlockIdx(x & BRICK_MASK, y & BRICK_MASK, z & BRICK_MASK));
+            return slot->Get<T>(bid, ToBlockIdx(x & BRICK_MASK, y & BRICK_MASK, z & BRICK_MASK), UnsafeUtility.SizeOf<T>());
         }
 
         // ---- Per-brick aux access --------------------------------------------------------------
@@ -465,7 +470,7 @@ namespace Voxelis
 
             // Check for same value
             // If slot !IsCreated, Get will return default
-            T previous = slot->Get<T>(bid, voxelIdx);
+            T previous = slot->Get<T>(bid, voxelIdx, UnsafeUtility.SizeOf<T>());
             if (value.Equals(previous))
             {
                 return;
@@ -498,7 +503,7 @@ namespace Voxelis
             if(slotId == SectorSlotId.Block && !value.Equals(default))
                 blockAABB.Update(new int3(x, y, z));
 
-            slot->Set(bid, voxelIdx, value);
+            slot->Set(bid, voxelIdx, UnsafeUtility.SizeOf<T>(), value);
         }
     }
 }
