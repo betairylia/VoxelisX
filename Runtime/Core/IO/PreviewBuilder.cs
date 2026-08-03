@@ -1,4 +1,5 @@
 using Unity.Burst;
+using Unity.Collections.LowLevel.Unsafe;
 
 namespace Voxelis.IO
 {
@@ -15,20 +16,19 @@ namespace Voxelis.IO
         [BurstCompile]
         public static unsafe void Build(Sector* sector, uint* dst)
         {
-            short* indices = sector->brickMap.indices;
-            for (int brickAbsIdx = 0; brickAbsIdx < Sector.BRICKS_IN_SECTOR; brickAbsIdx++)
+            // The preview has a value for every absolute brick position, including unallocated
+            // positions. Clear those in bulk, then let the shared enumerator own allocated-brick
+            // traversal so a future acceleration benefits this path too.
+            UnsafeUtility.MemClear(dst, Sector.BRICKS_IN_SECTOR * sizeof(uint));
+
+            foreach (SectorNonEmptyBrickEnumerator.BrickRef brickRef in sector->EnumerateNonEmptyBricks())
             {
-                short bid = indices[brickAbsIdx];
-                if (bid == SparseBrickIdTable.EMPTY)
-                {
-                    dst[brickAbsIdx] = 0u;
-                    continue;
-                }
+                int brickAbsIdx = brickRef.BrickAbs;
+                short bid = brickRef.Bid;
 
                 Block* brick = sector->GetBrick<Block>(SectorSlotId.Block, bid);
                 if (brick == null)
                 {
-                    dst[brickAbsIdx] = 0u;
                     continue;
                 }
 

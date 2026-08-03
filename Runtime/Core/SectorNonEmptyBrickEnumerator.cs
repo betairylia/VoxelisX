@@ -3,15 +3,16 @@ using System.Runtime.CompilerServices;
 namespace Voxelis
 {
     /// <summary>
-    /// Foreach-able, Burst-safe enumerator over a sector's non-empty bricks, yielding each brick's
-    /// absolute index and shared brick id. Backed by a plain O(BRICKS_IN_SECTOR) sweep for now; the
-    /// backing can be swapped later (e.g. an incrementally-maintained non-empty-brick list) without
-    /// touching callers. Deliberately implements no <c>IEnumerator</c> interface, so it stays usable
-    /// inside Burst jobs — <c>foreach</c> binds to these members directly, with no boxing.
+    /// Foreach-able, Burst-safe enumerator over a sector's allocated brick positions, yielding each
+    /// brick's absolute index and shared brick id. "Non-empty" follows the engine's historical
+    /// naming here: an allocated brick may currently contain only empty blocks. Backed by a plain
+    /// O(BRICKS_IN_SECTOR) sweep for now; the backing can be swapped later without touching callers.
+    /// Deliberately implements no <c>IEnumerator</c> interface, so it stays usable inside Burst jobs
+    /// — <c>foreach</c> binds to these members directly, with no boxing.
     /// </summary>
     public unsafe struct SectorNonEmptyBrickEnumerator
     {
-        /// <summary>One non-empty brick: its absolute index in the sector and its shared brick id.</summary>
+        /// <summary>One allocated brick: its absolute index in the sector and its shared brick id.</summary>
         public readonly struct BrickRef
         {
             public readonly int BrickAbs;
@@ -65,7 +66,7 @@ namespace Voxelis
 
     public unsafe partial struct Sector
     {
-        /// <summary>Iterates this sector's non-empty bricks; see <see cref="SectorNonEmptyBrickEnumerator"/>.</summary>
+        /// <summary>Iterates this sector's allocated bricks; see <see cref="SectorNonEmptyBrickEnumerator"/>.</summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public SectorNonEmptyBrickEnumerator EnumerateNonEmptyBricks()
             => new SectorNonEmptyBrickEnumerator(this);

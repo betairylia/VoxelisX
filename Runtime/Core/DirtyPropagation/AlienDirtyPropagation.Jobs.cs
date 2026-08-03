@@ -184,23 +184,18 @@ namespace Voxelis
                 {
                     AlienDirtyEntityView sourceEntity = Entities[source.EntityId];
 
-                    if (sourceSector.NonEmptyBrickCount > 0)
+                    foreach (SectorNonEmptyBrickEnumerator.BrickRef brickRef in sourceSector.EnumerateNonEmptyBricks())
                     {
-                        for (short brickSlot = 0; brickSlot < Sector.BRICKS_IN_SECTOR; brickSlot++)
-                        {
-                            if (sourceSector.brickIdx[brickSlot] == Sector.BRICKID_EMPTY)
-                                continue;
+                        short brickSlot = (short)brickRef.BrickAbs;
+                        AABB currentAabb = ComputeBrickWorldAabb(source, sourceEntity,
+                            brickSlot, DirtyHaloVoxels, false);
+                        QueryAndEmitCandidates(ref writer, sourceSectorIndex, source,
+                            currentAabb, brickSlot, AlienMotionDirtyMask, true);
 
-                            AABB currentAabb = ComputeBrickWorldAabb(source, sourceEntity,
-                                brickSlot, DirtyHaloVoxels, false);
-                            QueryAndEmitCandidates(ref writer, sourceSectorIndex, source,
-                                currentAabb, brickSlot, AlienMotionDirtyMask, true);
-
-                            AABB previousAabb = ComputeBrickWorldAabb(source, sourceEntity,
-                                brickSlot, DirtyHaloVoxels, true);
-                            QueryAndEmitCandidates(ref writer, sourceSectorIndex, source,
-                                previousAabb, brickSlot, AlienMotionDirtyMask, true);
-                        }
+                        AABB previousAabb = ComputeBrickWorldAabb(source, sourceEntity,
+                            brickSlot, DirtyHaloVoxels, true);
+                        QueryAndEmitCandidates(ref writer, sourceSectorIndex, source,
+                            previousAabb, brickSlot, AlienMotionDirtyMask, true);
                     }
 
                     EmitReverseCandidates(ref writer, sourceSectorIndex, source);
@@ -381,10 +376,9 @@ namespace Voxelis
                 DirtyFlags flags)
             {
                 Sector sourceSector = source.Sector.Get();
-                for (short sourceBrick = 0; sourceBrick < Sector.BRICKS_IN_SECTOR; sourceBrick++)
+                foreach (SectorNonEmptyBrickEnumerator.BrickRef brickRef in sourceSector.EnumerateNonEmptyBricks())
                 {
-                    if (sourceSector.brickIdx[sourceBrick] == Sector.BRICKID_EMPTY)
-                        continue;
+                    short sourceBrick = (short)brickRef.BrickAbs;
 
                     if (TryGetBrickTargetRange(source, target, sourceBrick, DirtyHaloVoxels,
                             false, out int3 currentMin, out int3 currentMax))

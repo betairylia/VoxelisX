@@ -78,15 +78,15 @@ namespace Voxelis
                 SectorSlotStorage* physSlot = sector.slots + (int)SectorSlotId.PhysicsInfo;
                 if (!physSlot->HasAux) { return; }
 
-                for (int brickAbs = 0; brickAbs < Sector.BRICKS_IN_SECTOR; brickAbs++)
+                foreach (SectorNonEmptyBrickEnumerator.BrickRef brickRef in sector.EnumerateNonEmptyBricks())
                 {
+                    int brickAbs = brickRef.BrickAbs;
                     if (!input.FullRebuild && (sector.brickRequireUpdateFlags[brickAbs] & dirtyMask) == 0)
                     {
                         continue;
                     }
 
-                    short bid = sector.brickIdx[brickAbs];
-                    if (bid == Sector.BRICKID_EMPTY) { continue; }
+                    short bid = brickRef.Bid;
 
                     // Build each 64-voxel word in a register, then store once (8 stores per brick)
                     // instead of a read-modify-write per set bit. Writing every word also removes the

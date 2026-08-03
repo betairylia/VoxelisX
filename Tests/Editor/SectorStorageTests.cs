@@ -160,5 +160,31 @@ namespace VoxelisX.Tests
             Assert.That(scope.Sector.NonEmptyBricks[0], Is.EqualTo((short)Sector.ToBrickIdx(0, 0, 0)));
             Assert.That(scope.Sector.NonEmptyBricks[1], Is.EqualTo((short)Sector.ToBrickIdx(2, 0, 0)));
         }
+
+        [Test]
+        public void EnumerateNonEmptyBricksReadsCurrentBrickMapWithoutLegacyListRefresh()
+        {
+            using var scope = new SectorTestScope();
+            scope.Set(16, 0, 0);
+            scope.Set(0, 0, 0);
+
+            // SetBlock does not maintain the legacy list incrementally. The new helper reads the
+            // authoritative brick map, so callers do not need to coordinate a list refresh first.
+            Assert.That(scope.Sector.NonEmptyBricks.Length, Is.Zero);
+
+            SectorNonEmptyBrickEnumerator enumerator = scope.Sector.EnumerateNonEmptyBricks();
+
+            Assert.That(enumerator.MoveNext(), Is.True);
+            Assert.That(enumerator.Current.BrickAbs, Is.EqualTo(Sector.ToBrickIdx(0, 0, 0)));
+            Assert.That(enumerator.Current.Bid,
+                Is.EqualTo(scope.Sector.brickIdx[Sector.ToBrickIdx(0, 0, 0)]));
+
+            Assert.That(enumerator.MoveNext(), Is.True);
+            Assert.That(enumerator.Current.BrickAbs, Is.EqualTo(Sector.ToBrickIdx(2, 0, 0)));
+            Assert.That(enumerator.Current.Bid,
+                Is.EqualTo(scope.Sector.brickIdx[Sector.ToBrickIdx(2, 0, 0)]));
+
+            Assert.That(enumerator.MoveNext(), Is.False);
+        }
     }
 }

@@ -59,11 +59,9 @@ namespace Voxelis.IO
             foreach (var kvp in entity.Sectors)
             {
                 ref Sector sector = ref kvp.Value.Get();
-                int nonEmpty = sector.NonEmptyBricks.Length;
-                for (int i = 0; i < nonEmpty; i++)
+                foreach (SectorNonEmptyBrickEnumerator.BrickRef brickRef in sector.EnumerateNonEmptyBricks())
                 {
-                    short absBrickIdx = sector.NonEmptyBricks[i];
-                    sector.brickDirtyFlags[absBrickIdx] |= FirstFrameUploadFlags;
+                    sector.brickDirtyFlags[brickRef.BrickAbs] |= FirstFrameUploadFlags;
                 }
                 sector.sectorDirtyFlags |= FirstFrameUploadFlags;
             }

@@ -112,25 +112,15 @@ namespace Voxelis
 
                 var helper = new SectorNeighborhoodReaderHelper(handle, input.Neighbors);
 
-                // TODO: FIXME: full 4096-brick sweep instead of iterating sector.NonEmptyBricks.
-                // NonEmptyBricks is not maintained incrementally; it is rebuilt by UpdateNonEmptyBricks()
-                // (an O(4096) scan), and nothing guarantees it is fresh here: the mass path refreshes it
-                // only for non-static, geometry-dirty sectors, whereas this path also covers static
-                // bodies and gates on a different flag/buffer (requireUpdate). The requireUpdate check
-                // below already skips clean and empty bricks cheaply, so the sweep's only cost is the
-                // flag reads. Switch to NonEmptyBricks once a per-tick brick-list refresh owner exists.
-                for (int brickIdxAbs = 0; brickIdxAbs < Sector.BRICKS_IN_SECTOR; brickIdxAbs++)
+                foreach (SectorNonEmptyBrickEnumerator.BrickRef brickRef in sector.EnumerateNonEmptyBricks())
                 {
+                    int brickIdxAbs = brickRef.BrickAbs;
                     if ((sector.brickRequireUpdateFlags[brickIdxAbs] & dirtyMask) == 0)
                     {
                         continue;
                     }
 
-                    short bid = sector.brickIdx[brickIdxAbs];
-                    if (bid == Sector.BRICKID_EMPTY)
-                    {
-                        continue;
-                    }
+                    short bid = brickRef.Bid;
 
                     Block* brick = sector.GetBrick<Block>(SectorSlotId.Block, bid);
                     if (brick == null)

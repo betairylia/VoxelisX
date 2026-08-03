@@ -77,15 +77,15 @@ namespace Voxelis
                 SectorSlotStorage* blockSlot = sector.slots + (int)SectorSlotId.Block;
                 if (!blockSlot->HasAux) { return; }
 
-                for (int brickAbs = 0; brickAbs < Sector.BRICKS_IN_SECTOR; brickAbs++)
+                foreach (SectorNonEmptyBrickEnumerator.BrickRef brickRef in sector.EnumerateNonEmptyBricks())
                 {
+                    int brickAbs = brickRef.BrickAbs;
                     if (!input.FullRebuild && (sector.brickRequireUpdateFlags[brickAbs] & dirtyMask) == 0)
                     {
                         continue;
                     }
 
-                    short bid = sector.brickIdx[brickAbs];
-                    if (bid == Sector.BRICKID_EMPTY) { continue; }
+                    short bid = brickRef.Bid;
 
                     Block* brick = sector.GetBrick<Block>(SectorSlotId.Block, bid);
                     if (brick == null) { continue; }

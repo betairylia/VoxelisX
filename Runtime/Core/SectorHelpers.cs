@@ -21,12 +21,13 @@ namespace Voxelis
     {
         private Sector sector;
 
-        private int bX, bY, bZ, brick_acce_id;
+        private int bX, bY, bZ;
         private int x, y, z;
         private int3 blockPosition;
 
         private short sectorBrickIndex, sectorBlockIndex;
         private Block* currentBrick;
+        private SectorNonEmptyBrickEnumerator nonEmptyBricks;
 
         /// <summary>
         /// Constructs a new sector enumerator for the specified sector.
@@ -43,12 +44,11 @@ namespace Voxelis
             y = Sector.BRICK_MASK;
             z = Sector.BRICK_MASK;
 
-            brick_acce_id = -1;
-
             sectorBlockIndex = 0;
             sectorBrickIndex = 0;
             currentBrick = null;
             blockPosition = new int3(-1, -1, -1);
+            nonEmptyBricks = sector.EnumerateNonEmptyBricks();
         }
 
         /// <summary>
@@ -71,19 +71,19 @@ namespace Voxelis
                     z = 0;
 
                     // Find next non-empty brick
-                    short absolute_bid = Sector.BRICKID_EMPTY;
+                    int absoluteBid;
                     do
                     {
-                        brick_acce_id++;
-                        if (brick_acce_id >= sector.NonEmptyBricks.Length) return false;
-                        absolute_bid = sector.NonEmptyBricks[brick_acce_id];
-                        sectorBrickIndex = sector.brickIdx[absolute_bid];
+                        if (!nonEmptyBricks.MoveNext()) return false;
+                        SectorNonEmptyBrickEnumerator.BrickRef brickRef = nonEmptyBricks.Current;
+                        absoluteBid = brickRef.BrickAbs;
+                        sectorBrickIndex = brickRef.Bid;
                         currentBrick = sector.GetBrick<Block>(SectorSlotId.Block, sectorBrickIndex);
-                    }while(sectorBrickIndex == Sector.BRICKID_EMPTY || currentBrick == null);
+                    } while (currentBrick == null);
 
-                    bX = absolute_bid & Sector.SECTOR_MASK;
-                    bY = (absolute_bid >> Sector.SHIFT_IN_BRICKS) & Sector.SECTOR_MASK;
-                    bZ = (absolute_bid >> (Sector.SHIFT_IN_BRICKS << 1)) & Sector.SECTOR_MASK;
+                    bX = absoluteBid & Sector.SECTOR_MASK;
+                    bY = (absoluteBid >> Sector.SHIFT_IN_BRICKS) & Sector.SECTOR_MASK;
+                    bZ = (absoluteBid >> (Sector.SHIFT_IN_BRICKS << 1)) & Sector.SECTOR_MASK;
                 }
 
                 sectorBlockIndex = (short)((sectorBrickIndex << (Sector.SHIFT_IN_BLOCKS * 3))
@@ -114,6 +114,7 @@ namespace Voxelis
             sectorBlockIndex = 0;
             sectorBrickIndex = 0;
             currentBrick = null;
+            nonEmptyBricks = sector.EnumerateNonEmptyBricks();
         }
 
         /// <summary>
@@ -160,7 +161,8 @@ namespace Voxelis
         private DirtyFlags flagMask;
         private bool includeEmpty;
 
-        private int bX, bY, bZ, brick_acce_id;
+        private int bX, bY, bZ;
+        private SectorNonEmptyBrickEnumerator nonEmptyBricks;
 
         // Compact (Relative) brick index
         private short sectorBrickIndex;
@@ -177,8 +179,8 @@ namespace Voxelis
             bY = 0;
             bZ = 0;
 
-            brick_acce_id = -1;
             sectorBrickIndex = 0;
+            nonEmptyBricks = sector.EnumerateNonEmptyBricks();
             
             flagMask = mask;
             this.includeEmpty = includeEmpty;
@@ -194,41 +196,42 @@ namespace Voxelis
             if((sector.sectorRequireUpdateFlags & (ushort)flagMask) == 0)
                 return false;
             
-            // Find next requiredUpdate brick
-            short absolute_bid = Sector.BRICKID_EMPTY;
-            
-            // No empty block included, safe to use NonEmptyBricks acceleration
+            // Empty positions cannot match this branch, so delegate the allocated-brick traversal
+            // to the shared enumerator and only filter its results by require-update flags here.
             if (!includeEmpty)
             {
-                do
+                while (nonEmptyBricks.MoveNext())
                 {
-                    brick_acce_id++;
-                    if (brick_acce_id >= sector.NonEmptyBricks.Length) return false;
-                    absolute_bid = sector.NonEmptyBricks[brick_acce_id];
-                    sectorBrickIndex = sector.brickIdx[absolute_bid];
-                } while (sectorBrickIndex == Sector.BRICKID_EMPTY
-                         && (sector.brickRequireUpdateFlags[absolute_bid] & (ushort)flagMask) == 0);
-                
-                int3 bPos = Sector.ToBrickPos(absolute_bid);
-                bX = bPos.x;
-                bY = bPos.y;
-                bZ = bPos.z;
-            }
-            // We need to take care of empty spaces, use plain sweep instead
-            else
-            {
-                do
-                {
-                    // Move to next brick
-                    bX++;
-                    if (bX >= Sector.SIZE_IN_BRICKS) { bX = 0; bY++; }
-                    if (bY >= Sector.SIZE_IN_BRICKS) { bY = 0; bZ++; }
-                    if (bZ >= Sector.SIZE_IN_BRICKS) { return false; }
+                    SectorNonEmptyBrickEnumerator.BrickRef brickRef = nonEmptyBricks.Current;
+                    if ((sector.brickRequireUpdateFlags[brickRef.BrickAbs] & (ushort)flagMask) == 0)
+                    {
+                        continue;
+                    }
 
-                    absolute_bid = (short)Sector.ToBrickIdx(bX, bY, bZ);
-                } while ((sector.brickRequireUpdateFlags[absolute_bid] & (ushort)flagMask) == 0);
+                    sectorBrickIndex = brickRef.Bid;
+                    int3 bPos = Sector.ToBrickPos((short)brickRef.BrickAbs);
+                    bX = bPos.x;
+                    bY = bPos.y;
+                    bZ = bPos.z;
+                    return true;
+                }
+
+                return false;
             }
-            
+
+            // We need to take care of empty spaces, use plain sweep instead.
+            short absoluteBid;
+            do
+            {
+                // Move to next brick
+                bX++;
+                if (bX >= Sector.SIZE_IN_BRICKS) { bX = 0; bY++; }
+                if (bY >= Sector.SIZE_IN_BRICKS) { bY = 0; bZ++; }
+                if (bZ >= Sector.SIZE_IN_BRICKS) { return false; }
+
+                absoluteBid = (short)Sector.ToBrickIdx(bX, bY, bZ);
+            } while ((sector.brickRequireUpdateFlags[absoluteBid] & (ushort)flagMask) == 0);
+
             return true;
         }
 
@@ -240,8 +243,8 @@ namespace Voxelis
             bX = -1;
             bY = 0;
             bZ = 0;
-            brick_acce_id = -1;
             sectorBrickIndex = 0;
+            nonEmptyBricks = sector.EnumerateNonEmptyBricks();
         }
 
         /// <summary>
@@ -283,14 +286,14 @@ namespace Voxelis
     {
         private Sector sector;
         private DirtyFlags mask;
-        private int nextIndex;
+        private SectorNonEmptyBrickEnumerator nonEmptyBricks;
         private DirtyBrickInfo current;
 
         public SectorDirtyBrickEnumerator(Sector sector, DirtyFlags mask)
         {
             this.sector = sector;
             this.mask = mask;
-            nextIndex = 0;
+            nonEmptyBricks = sector.EnumerateNonEmptyBricks();
             current = default;
         }
 
@@ -304,11 +307,11 @@ namespace Voxelis
                 return false;
             }
 
-            while (nextIndex < Sector.BRICKS_IN_SECTOR)
+            while (nonEmptyBricks.MoveNext())
             {
-                int brickIdx = nextIndex++;
+                int brickIdx = nonEmptyBricks.Current.BrickAbs;
                 ushort flags = (ushort)(sector.brickDirtyFlags[brickIdx] & (ushort)mask);
-                if (flags != 0 && sector.brickIdx[brickIdx] != Sector.BRICKID_EMPTY)
+                if (flags != 0)
                 {
                     current = new DirtyBrickInfo
                     {
