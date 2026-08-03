@@ -296,6 +296,9 @@ Profiler.BeginSample("Dirty Propagation");
             handle.Complete();
         Profiler.EndSample();
     Profiler.EndSample();
+    
+            // TODO: At least make the jobs below Complete() O(1) times by chaining them
+            // TODO: Refine the tick to job scheduling best practices
 
     Profiler.BeginSample("Alien Propagation");
             if (doAlienPropagation)
