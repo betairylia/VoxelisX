@@ -88,16 +88,20 @@ namespace Voxelis
                     short bid = sector.brickIdx[brickAbs];
                     if (bid == Sector.BRICKID_EMPTY) { continue; }
 
+                    // Build each 64-voxel word in a register, then store once (8 stores per brick)
+                    // instead of a read-modify-write per set bit. Writing every word also removes the
+                    // need for a separate clear pass.
                     var physBrick = (PhysicsInfo*)physSlot->GetBrickPtr(bid);
                     ulong* mask = (ulong*)physSlot->GetBrickAuxPtr(bid);
-                    BrickBitmask.Clear(mask);
-
-                    for (int voxelIdx = 0; voxelIdx < Sector.BLOCKS_IN_BRICK; voxelIdx++)
+                    for (int w = 0; w < BrickBitmask.Words; w++)
                     {
-                        if ((physBrick[voxelIdx].data >> 6) >= PhysicsKeyMinFlag)
+                        int baseIdx = w << 6;
+                        ulong word = 0ul;
+                        for (int b = 0; b < 64; b++)
                         {
-                            BrickBitmask.SetBit(mask, voxelIdx);
+                            word |= (ulong)((physBrick[baseIdx + b].data >> 6) >= PhysicsKeyMinFlag ? 1 : 0) << b;
                         }
+                        mask[w] = word;
                     }
                 }
             }

@@ -12,13 +12,15 @@ namespace Voxelis
         /// bit set when the block at that voxel is not empty. One sector per job index; each sector
         /// writes only its own aux, so parallel execution is race free.
         ///
-        /// Gating mirrors <c>RefreshPhysicsSlot</c>: a sector is (re)built when its aux is missing
-        /// (first tick / freshly loaded) or when it carries the geometry require-update flag. A
+        /// Gating: a sector is (re)built when its aux is missing (first tick / freshly loaded) or
+        /// when it carries the self-only <see cref="DirtyFlags.Geometry"/> require-update flag.
+        /// Occupancy depends only on a brick's own blocks, so unlike physics it needs no neighbor
+        /// halo — the self-only flag (bit set only on bricks whose own blocks changed) is exact. A
         /// missing-aux sector rebuilds every non-empty brick; otherwise only the require-update
         /// bricks are re-marked, leaving untouched bricks' masks (carried through the snapshot clone)
         /// intact. Must run after snapshots are applied, so it reads settled Block data.
         /// </summary>
-        public void RefreshNonEmptyMask(DirtyFlags dirtyMask = DirtyFlags.GeometryWithLocalNeighbor)
+        public void RefreshNonEmptyMask(DirtyFlags dirtyMask = DirtyFlags.Geometry)
         {
             if (sectors.Count == 0) { return; }
 
@@ -88,15 +90,19 @@ namespace Voxelis
                     Block* brick = sector.GetBrick<Block>(SectorSlotId.Block, bid);
                     if (brick == null) { continue; }
 
+                    // Build each 64-voxel word in a register, then store once (8 stores per brick)
+                    // instead of a read-modify-write per set bit. Writing every word also removes the
+                    // need for a separate clear pass.
                     ulong* mask = (ulong*)blockSlot->GetBrickAuxPtr(bid);
-                    BrickBitmask.Clear(mask);
-
-                    for (int voxelIdx = 0; voxelIdx < Sector.BLOCKS_IN_BRICK; voxelIdx++)
+                    for (int w = 0; w < BrickBitmask.Words; w++)
                     {
-                        if (!brick[voxelIdx].isEmpty)
+                        int baseIdx = w << 6;
+                        ulong word = 0ul;
+                        for (int b = 0; b < 64; b++)
                         {
-                            BrickBitmask.SetBit(mask, voxelIdx);
+                            word |= (brick[baseIdx + b].isEmpty ? 0ul : 1ul) << b;
                         }
+                        mask[w] = word;
                     }
                 }
             }
