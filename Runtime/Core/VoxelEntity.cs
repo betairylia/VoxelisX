@@ -13,7 +13,7 @@ using Voxelis.Utils;
 
 namespace Voxelis
 {
-    public unsafe struct VoxelEntityData
+    public unsafe partial struct VoxelEntityData
     {
         /// <summary>
         /// Dictionary mapping sector positions to their corresponding sector data.

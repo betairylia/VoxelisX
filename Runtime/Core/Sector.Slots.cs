@@ -77,12 +77,11 @@ namespace Voxelis
         }
 
         /// <summary>
-        /// Deep-copies this slot. The voxel <see cref="data"/> is always copied; the derived
-        /// <see cref="aux"/> buffer is copied only when <paramref name="cloneAux"/> is true. Either
-        /// way <see cref="extraPerBrickBytes"/> is preserved so a later rebuild can tell the slot
-        /// wants an aux of that size and reallocate it.
+        /// Deep-copies this slot, both the voxel <see cref="data"/> and the derived <see cref="aux"/>
+        /// buffer. Aux travels with its data so that after a snapshot swap a brick whose data did not
+        /// change still has a valid mask; only the bricks that actually changed need re-marking.
         /// </summary>
-        public SectorSlotStorage Clone(Allocator allocator, bool cloneAux = false)
+        public SectorSlotStorage Clone(Allocator allocator)
         {
             var clone = new SectorSlotStorage
             {
@@ -98,7 +97,7 @@ namespace Voxelis
                 UnsafeUtility.MemCpy(clone.data.Ptr, data.Ptr, data.Length);
             }
 
-            if (cloneAux && aux.IsCreated)
+            if (aux.IsCreated)
             {
                 clone.aux = new UnsafeList<byte>(aux.Length, allocator);
                 if (aux.Length > 0)
@@ -240,16 +239,9 @@ namespace Voxelis
         {
             ResetSlotTable(ref to);
 
-            // Aux buffers hold derived data that is rebuilt for dirty bricks after each tick, so the
-            // snapshot backbuffer does not carry them across ActivateSnapshot/ApplySnapshot — the
-            // live buffer's aux is regenerated once the applied edits settle. Define
-            // VOXELISX_SNAPSHOT_ALSO_COPY_AUX to deep-copy aux alongside the voxel data instead.
-#if VOXELISX_SNAPSHOT_ALSO_COPY_AUX
-            const bool cloneAux = true;
-#else
-            const bool cloneAux = false;
-#endif
-            for (int i = 0; i < MAX_SLOTS; i++) { to[i] = from[i].Clone(allocator, cloneAux); }
+            // Clone carries aux across the snapshot so unchanged bricks keep a valid mask; the mark
+            // stages after ApplySnapshot only re-mark the bricks that actually changed this tick.
+            for (int i = 0; i < MAX_SLOTS; i++) { to[i] = from[i].Clone(allocator); }
         }
 
         private static void ResetSlotTable(ref SectorSlotStorage* slotTable)

@@ -321,6 +321,15 @@ Profiler.BeginSample("Dirty Propagation");
     Profiler.EndSample();
 Profiler.EndSample();
 
+            // Mark non-empty blocks: rebuild the Block slot's occupancy aux from settled voxel data,
+            // for every entity, before physics consumes it.
+Profiler.BeginSample("Mark Non-empty Blocks");
+            foreach (var e in tickBuf.VoxelEntities.GetValueArray(Allocator.Temp))
+            {
+                e.RefreshNonEmptyMask();
+            }
+Profiler.EndSample();
+
             // Physics after dirty propagation
 Profiler.BeginSample("Recompute body mass properties");
             foreach (var b in tickBuf.VoxelBodies.GetKeyArray(Allocator.Temp))
@@ -329,6 +338,17 @@ Profiler.BeginSample("Recompute body mass properties");
                 var entityData = tickBuf.VoxelEntities[b];
                 body.ComputePhysicsProperties(entityData.sectors, entityData.sectorNeighbors);
                 tickBuf.VoxelBodies[b] = body;
+            }
+Profiler.EndSample();
+
+            // Mark physics-key blocks: rebuild the PhysicsInfo slot's Corner/Edge aux from the
+            // PhysicsInfo data just written above, before the physics step consumes it.
+Profiler.BeginSample("Mark Physics-key Blocks");
+            foreach (var b in tickBuf.VoxelBodies.GetKeyArray(Allocator.Temp))
+            {
+                var body = tickBuf.VoxelBodies[b];
+                var entityData = tickBuf.VoxelEntities[b];
+                body.RefreshPhysicsKeyMask(entityData.sectors);
             }
 Profiler.EndSample();
 
