@@ -41,6 +41,14 @@ namespace Voxelis
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public SectorNonEmptyBrickEnumerator GetEnumerator() => this;
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void Reset()
+        {
+            cursor = -1;
+            bid = Sector.BRICKID_EMPTY;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool MoveNext()
         {
             for (int i = cursor + 1; i < Sector.BRICKS_IN_SECTOR; i++)

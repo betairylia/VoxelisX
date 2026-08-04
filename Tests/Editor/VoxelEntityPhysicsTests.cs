@@ -15,12 +15,13 @@ namespace VoxelisX.Tests
         [Test]
         public void SectorMassMomentsForSingleBlockUseVoxelCenter()
         {
-            using var scope = new SectorTestScope();
-            scope.Set(0, 0, 0);
-            scope.Sector.UpdateNonEmptyBricks();
+            using var scope = new EntityDataTestScope();
+            SectorHandle sector = scope.AddSector(int3.zero);
+            sector.SetBlock(0, 0, 0, new Block(1));
+            scope.Data.RefreshNonEmptyMask();
 
             VoxelEntityPhysics.SectorMassMoments moments =
-                VoxelEntityPhysics.ComputeSectorMassMoments(scope.Sector, int3.zero, PhysicsSettings.Settings);
+                VoxelEntityPhysics.ComputeSectorMassMoments(sector.Get(), int3.zero, PhysicsSettings.Settings);
 
             Assert.That(moments.Mass, Is.EqualTo(1f));
             Assert.That(moments.FirstMoment, Is.EqualTo(new float3(0.5f, 0.5f, 0.5f)));
@@ -32,13 +33,14 @@ namespace VoxelisX.Tests
         [Test]
         public void InertiaAroundCenterOfMassUsesParallelAxisTheorem()
         {
-            using var scope = new SectorTestScope();
-            scope.Set(0, 0, 0);
-            scope.Set(2, 0, 0);
-            scope.Sector.UpdateNonEmptyBricks();
+            using var scope = new EntityDataTestScope();
+            SectorHandle sector = scope.AddSector(int3.zero);
+            sector.SetBlock(0, 0, 0, new Block(1));
+            sector.SetBlock(2, 0, 0, new Block(1));
+            scope.Data.RefreshNonEmptyMask();
 
             VoxelEntityPhysics.SectorMassMoments moments =
-                VoxelEntityPhysics.ComputeSectorMassMoments(scope.Sector, int3.zero, PhysicsSettings.Settings);
+                VoxelEntityPhysics.ComputeSectorMassMoments(sector.Get(), int3.zero, PhysicsSettings.Settings);
 
             float3 centerOfMass = moments.FirstMoment / moments.Mass;
             float3 inertia = VoxelEntityPhysics.InertiaAroundCenterOfMass(moments, centerOfMass);
@@ -51,13 +53,14 @@ namespace VoxelisX.Tests
         [Test]
         public void SectorMassMomentsIncludeSectorBlockPosition()
         {
-            using var scope = new SectorTestScope();
-            scope.Set(0, 0, 0);
-            scope.Sector.UpdateNonEmptyBricks();
+            using var scope = new EntityDataTestScope();
+            SectorHandle sector = scope.AddSector(int3.zero);
+            sector.SetBlock(0, 0, 0, new Block(1));
+            scope.Data.RefreshNonEmptyMask();
 
             VoxelEntityPhysics.SectorMassMoments moments =
                 VoxelEntityPhysics.ComputeSectorMassMoments(
-                    scope.Sector,
+                    sector.Get(),
                     new int3(Sector.SECTOR_SIZE_IN_BLOCKS, 0, 0),
                     PhysicsSettings.Settings);
 
@@ -71,6 +74,7 @@ namespace VoxelisX.Tests
             using var scope = new EntityDataTestScope();
             SectorHandle sector = scope.AddSector(int3.zero);
             sector.SetBlock(0, 0, 0, new Block(1));
+            scope.Data.RefreshNonEmptyMask();
 
             var bodyData = new VoxelBodyData(Allocator.Persistent);
             try
@@ -94,6 +98,7 @@ namespace VoxelisX.Tests
             using var scope = new EntityDataTestScope();
             SectorHandle sector = scope.AddSector(int3.zero);
             sector.SetBlock(0, 0, 0, new Block(1));
+            scope.Data.RefreshNonEmptyMask();
 
             var bodyData = new VoxelBodyData(Allocator.Persistent);
             try
@@ -135,6 +140,7 @@ namespace VoxelisX.Tests
             // Physics-slot generation is gated on the require-update (read) buffer that dirty
             // propagation would normally populate; mark it directly since no propagation runs here.
             sector.Get().MarkBrickRequireUpdate(Sector.ToBrickIdx(0, 0, 0), DirtyFlags.GeometryWithLocalNeighbor);
+            scope.Data.RefreshNonEmptyMask();
 
             var bodyData = new VoxelBodyData(Allocator.Persistent);
             try
@@ -169,6 +175,7 @@ namespace VoxelisX.Tests
             using var scope = new EntityDataTestScope();
             SectorHandle sector = scope.AddSector(int3.zero);
             sector.SetBlock(0, 0, 0, new Block(1));
+            scope.Data.RefreshNonEmptyMask();
 
             Guid128 guid = new Guid128(1, 2, 3, 4);
             var bodyData = new VoxelBodyData(Allocator.Persistent);
@@ -245,6 +252,7 @@ namespace VoxelisX.Tests
             using var scope = new EntityDataTestScope();
             SectorHandle sector = scope.AddSector(int3.zero);
             sector.SetBlock(0, 0, 0, new Block(1));
+            scope.Data.RefreshNonEmptyMask();
 
             Guid128 guid = new Guid128(5, 6, 7, 8);
             var bodyData = new VoxelBodyData(Allocator.Persistent);
@@ -320,6 +328,7 @@ namespace VoxelisX.Tests
             using var scope = new EntityDataTestScope();
             SectorHandle sector = scope.AddSector(int3.zero);
             sector.SetBlock(0, 0, 0, new Block(1));
+            scope.Data.RefreshNonEmptyMask();
 
             Guid128 guid = new Guid128(9, 10, 11, 12);
             var bodyData = new VoxelBodyData(Allocator.Persistent);
@@ -358,6 +367,7 @@ namespace VoxelisX.Tests
             SectorHandle sector = scope.AddSector(int3.zero);
             sector.SetBlock(0, 0, 0, new Block(1));
             sector.SetBlock(2, 0, 0, new Block(1));
+            scope.Data.RefreshNonEmptyMask();
 
             Guid128 guid = new Guid128(13, 14, 15, 16);
             var bodyData = new VoxelBodyData(Allocator.Persistent);

@@ -126,7 +126,6 @@ namespace Voxelis
                         continue;
                     }
 
-                    sector.UpdateNonEmptyBricks();
                     inputs.Add(new VoxelEntityPhysics.SectorMassMomentInput
                     {
                         SectorPosition = kvp.Key,

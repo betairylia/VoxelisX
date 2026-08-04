@@ -1,101 +1,124 @@
 ﻿using System.Collections;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using Unity.Burst;
-using Unity.Collections;
 using Unity.Mathematics;
-using UnityEngine;
 
 namespace Voxelis
 {
     /// <summary>
-    /// Enumerates through all non-empty blocks within a sector.
-    /// Skips empty bricks entirely for efficiency.
+    /// Enumerates the blocks selected by the Block slot's per-brick occupancy mask.
     /// </summary>
     /// <remarks>
-    /// This enumerator is Burst-compiled for performance. It iterates only through
-    /// allocated bricks and only through non-empty blocks within those bricks,
-    /// making it much more efficient than iterating through all possible block positions.
+    /// <see cref="VoxelEntityData.RefreshNonEmptyMask"/> must have refreshed the Block slot aux
+    /// after voxel writes settle. Each non-zero 64-bit word is consumed with <c>math.tzcnt</c>
+    /// and the lowest-set-bit clear idiom, so empty voxels are never read or tested here. There is
+    /// deliberately no voxel-scan fallback: a missing or stale mask violates the tick contract.
     /// </remarks>
     [BurstCompile]
-    public unsafe struct SectorNonEmptyBlockEnumerator : IEnumerator<BlockIterator>
+    public unsafe struct SectorNonEmptyBlockEnumerator
     {
-        private Sector sector;
-
-        private int bX, bY, bZ;
-        private int x, y, z;
-        private int3 blockPosition;
-
-        private short sectorBrickIndex, sectorBlockIndex;
-        private Block* currentBrick;
         private SectorNonEmptyBrickEnumerator nonEmptyBricks;
+        private readonly Block* blockData;
+        private readonly ulong* occupancyData;
+        private Block* currentBrick;
+        private ulong* currentMask;
+        private ulong remainingBits;
+        private int nextWordIndex;
+        private int currentWordBase;
+        private int3 brickBlockOrigin;
+        private BlockIterator current;
 
         /// <summary>
         /// Constructs a new sector enumerator for the specified sector.
         /// </summary>
         /// <param name="sector">The sector to enumerate.</param>
-        public SectorNonEmptyBlockEnumerator(Sector sector)
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public SectorNonEmptyBlockEnumerator(in Sector sector)
         {
-            this.sector = sector;
+            SectorSlotStorage* blockSlot = sector.slots + (int)SectorSlotId.Block;
+            bool hasRequiredMask = sector.NonEmptyBrickCount == 0 ||
+                                   (blockSlot->IsCreated && blockSlot->HasAux &&
+                                    blockSlot->stride == sizeof(Block) &&
+                                    blockSlot->extraPerBrickBytes == BrickBitmask.Bytes);
+#if ENABLE_UNITY_COLLECTIONS_CHECKS
+            if (!hasRequiredMask)
+            {
+                throw new System.InvalidOperationException(
+                    "SectorNonEmptyBlockEnumerator requires a refreshed Block occupancy mask.");
+            }
+#endif
+            Utils.BurstAssertSimpleExperssionsOnly.IsTrue(hasRequiredMask);
 
-            bX = -1;
-            bY = 0;
-            bZ = 0;
-            x = Sector.BRICK_MASK;
-            y = Sector.BRICK_MASK;
-            z = Sector.BRICK_MASK;
-
-            sectorBlockIndex = 0;
-            sectorBrickIndex = 0;
-            currentBrick = null;
-            blockPosition = new int3(-1, -1, -1);
             nonEmptyBricks = sector.EnumerateNonEmptyBricks();
+            blockData = blockSlot->IsCreated ? (Block*)blockSlot->data.Ptr : null;
+            occupancyData = blockSlot->HasAux ? (ulong*)blockSlot->aux.Ptr : null;
+            currentBrick = null;
+            currentMask = null;
+            remainingBits = 0;
+            nextWordIndex = BrickBitmask.Words;
+            currentWordBase = 0;
+            brickBlockOrigin = default;
+            current = default;
         }
 
         /// <summary>
-        /// Advances the enumerator to the next non-empty block.
+        /// Advances to the next set occupancy bit.
         /// </summary>
         /// <returns>True if a non-empty block was found; false if enumeration is complete.</returns>
-        public unsafe bool MoveNext()
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool MoveNext()
         {
-            // Find next non-empty block
-            do
+            while (true)
             {
-                // Move to next block
-                x++;
-                if (x >= Sector.SIZE_IN_BLOCKS) { x = 0; y++; }
-                if (y >= Sector.SIZE_IN_BLOCKS) { y = 0; z++; }
-
-                // Move to new brick
-                if (z >= Sector.SIZE_IN_BLOCKS)
+                while (remainingBits == 0)
                 {
-                    z = 0;
-
-                    // Find next non-empty brick
-                    int absoluteBid;
-                    do
+                    if (nextWordIndex >= BrickBitmask.Words)
                     {
-                        if (!nonEmptyBricks.MoveNext()) return false;
-                        SectorNonEmptyBrickEnumerator.BrickRef brickRef = nonEmptyBricks.Current;
-                        absoluteBid = brickRef.BrickAbs;
-                        sectorBrickIndex = brickRef.Bid;
-                        currentBrick = sector.GetBrick<Block>(SectorSlotId.Block, sectorBrickIndex);
-                    } while (currentBrick == null);
+                        if (!MoveToNextBrick()) { return false; }
+                    }
 
-                    bX = absoluteBid & Sector.SECTOR_MASK;
-                    bY = (absoluteBid >> Sector.SHIFT_IN_BRICKS) & Sector.SECTOR_MASK;
-                    bZ = (absoluteBid >> (Sector.SHIFT_IN_BRICKS << 1)) & Sector.SECTOR_MASK;
+                    int wordIndex = nextWordIndex++;
+                    currentWordBase = wordIndex << 6;
+                    remainingBits = currentMask[wordIndex];
                 }
 
-                sectorBlockIndex = (short)((sectorBrickIndex << (Sector.SHIFT_IN_BLOCKS * 3))
-                                   + Sector.ToBlockIdx(x, y, z));
-            }while(currentBrick[Sector.ToBlockIdx(x, y, z)].isEmpty);
+                int bitInWord = math.tzcnt(remainingBits);
+                remainingBits &= remainingBits - 1ul;
 
-            blockPosition = new int3(
-                (bX << Sector.SHIFT_IN_BLOCKS) + x,
-                (bY << Sector.SHIFT_IN_BLOCKS) + y,
-                (bZ << Sector.SHIFT_IN_BLOCKS) + z
-            );
-            
+                int voxelIndex = currentWordBase + bitInWord;
+                Block block = currentBrick[voxelIndex];
+                Utils.BurstAssertSimpleExperssionsOnly.IsTrue(!block.isEmpty);
+
+                current = new BlockIterator
+                {
+                    block = block,
+                    position = brickBlockOrigin + new int3(
+                        bitInWord & Sector.BRICK_MASK,
+                        bitInWord >> Sector.SHIFT_IN_BLOCKS,
+                        currentWordBase >> 6)
+                };
+
+                return true;
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private bool MoveToNextBrick()
+        {
+            if (!nonEmptyBricks.MoveNext()) { return false; }
+
+            SectorNonEmptyBrickEnumerator.BrickRef brickRef = nonEmptyBricks.Current;
+            currentBrick = blockData + brickRef.Bid * Sector.BLOCKS_IN_BRICK;
+            currentMask = occupancyData + brickRef.Bid * BrickBitmask.Words;
+            remainingBits = 0;
+            nextWordIndex = 0;
+
+            int brickAbs = brickRef.BrickAbs;
+            brickBlockOrigin = new int3(
+                brickAbs & Sector.SECTOR_MASK,
+                (brickAbs >> Sector.SHIFT_IN_BRICKS) & Sector.SECTOR_MASK,
+                brickAbs >> (Sector.SHIFT_IN_BRICKS << 1)) * Sector.SIZE_IN_BLOCKS;
             return true;
         }
 
@@ -104,45 +127,31 @@ namespace Voxelis
         /// </summary>
         public void Reset()
         {
-            bX = -1;
-            bY = 0;
-            bZ = 0;
-            x = Sector.BRICK_MASK;
-            y = Sector.BRICK_MASK;
-            z = Sector.BRICK_MASK;
-
-            sectorBlockIndex = 0;
-            sectorBrickIndex = 0;
+            nonEmptyBricks.Reset();
             currentBrick = null;
-            nonEmptyBricks = sector.EnumerateNonEmptyBricks();
+            currentMask = null;
+            remainingBits = 0;
+            nextWordIndex = BrickBitmask.Words;
+            currentWordBase = 0;
+            brickBlockOrigin = default;
+            current = default;
         }
 
         /// <summary>
         /// Gets the current block and its position in the enumeration.
         /// </summary>
-        public BlockIterator Current => new() { block = currentBrick[Sector.ToBlockIdx(x, y, z)], position = blockPosition };
-
-        /// <summary>
-        /// Gets the current element (non-generic version).
-        /// </summary>
-        object IEnumerator.Current => Current;
-
-        /// <summary>
-        /// Disposes the enumerator. This enumerator has no unmanaged resources to release.
-        /// </summary>
-        public void Dispose()
+        public BlockIterator Current
         {
-            // Nothing to dispose really
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => current;
         }
 
         /// <summary>
         /// Returns this enumerator (enables foreach usage).
         /// </summary>
         /// <returns>This enumerator instance.</returns>
-        public SectorNonEmptyBlockEnumerator GetEnumerator()
-        {
-            return this;
-        }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public SectorNonEmptyBlockEnumerator GetEnumerator() => this;
     }
     
     /// <summary>

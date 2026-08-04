@@ -66,6 +66,9 @@ namespace Voxelis.Simulation
         }
 
         /// <remarks>
+        /// The Block slot occupancy mask must have been refreshed after the sector's latest voxel
+        /// writes; <see cref="SectorNonEmptyBlockEnumerator"/> deliberately has no scan fallback.
+        ///
         /// TODO: LIMITATION: only the diagonal of the inertia tensor is accumulated
         /// (Ixx, Iyy, Izz). The products of inertia (Ixy, Ixz, Iyz) are not computed,
         /// and the downstream rigid body forces its motion (principal-axis) frame to be

@@ -46,7 +46,7 @@ namespace VoxelisX.Tests
                 m_Sector.SetBlock(x, y, z, new Block(1));
             }
 
-            /// <summary>Recomputes PhysicsInfo exposure data and the non-empty brick list.</summary>
+            /// <summary>Recomputes block occupancy and PhysicsInfo exposure data.</summary>
             public void Build()
             {
                 ref Sector sector = ref m_Sector.Get();
@@ -55,7 +55,7 @@ namespace VoxelisX.Tests
                     sector.MarkBrickRequireUpdate(i, DirtyFlags.GeometryWithLocalNeighbor);
                 }
 
-                sector.UpdateNonEmptyBricks();
+                Scope.Data.RefreshNonEmptyMask(DirtyFlags.GeometryWithLocalNeighbor);
 
                 var bodyData = new VoxelBodyData(Allocator.Persistent);
                 try

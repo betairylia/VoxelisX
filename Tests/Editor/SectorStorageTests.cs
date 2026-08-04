@@ -186,5 +186,69 @@ namespace VoxelisX.Tests
 
             Assert.That(enumerator.MoveNext(), Is.False);
         }
+
+        [Test]
+        public void NonEmptyBlockEnumeratorFollowsOccupancyBitsInVoxelIndexOrder()
+        {
+            using var scope = new EntityDataTestScope();
+            SectorHandle sector = scope.AddSector(int3.zero);
+            sector.SetBlock(7, 7, 7, new Block(4));   // voxel index 511
+            sector.SetBlock(0, 0, 1, new Block(3));   // voxel index 64
+            sector.SetBlock(7, 7, 0, new Block(2));   // voxel index 63
+            sector.SetBlock(0, 0, 0, new Block(1));   // voxel index 0
+            sector.SetBlock(16, 0, 0, new Block(5));  // later absolute brick
+            scope.Data.RefreshNonEmptyMask();
+
+            ref Sector source = ref sector.Get();
+            Assert.That(source.slots[(int)SectorSlotId.Block].HasAux, Is.True);
+
+            int3[] expectedPositions =
+            {
+                new int3(0, 0, 0),
+                new int3(7, 7, 0),
+                new int3(0, 0, 1),
+                new int3(7, 7, 7),
+                new int3(16, 0, 0),
+            };
+
+            var enumerator = new SectorNonEmptyBlockEnumerator(source);
+            for (int i = 0; i < expectedPositions.Length; i++)
+            {
+                Assert.That(enumerator.MoveNext(), Is.True);
+                Assert.That(enumerator.Current.position, Is.EqualTo(expectedPositions[i]));
+                Assert.That(enumerator.Current.block.id, Is.EqualTo(i + 1));
+            }
+
+            Assert.That(enumerator.MoveNext(), Is.False);
+
+            enumerator.Reset();
+            Assert.That(enumerator.MoveNext(), Is.True);
+            Assert.That(enumerator.Current.position, Is.EqualTo(expectedPositions[0]));
+        }
+
+        [Test]
+        public void NonEmptyBlockEnumeratorAllowsEmptySectorWithoutOccupancyAllocation()
+        {
+            using var scope = new SectorTestScope();
+
+            var enumerator = new SectorNonEmptyBlockEnumerator(scope.Sector);
+
+            Assert.That(enumerator.MoveNext(), Is.False);
+        }
+
+#if ENABLE_UNITY_COLLECTIONS_CHECKS
+        [Test]
+        public void NonEmptyBlockEnumeratorRejectsAllocatedSectorWithoutOccupancyMask()
+        {
+            using var scope = new SectorTestScope();
+            scope.Set(0, 0, 0);
+            Sector source = scope.Sector;
+
+            Assert.Throws<System.InvalidOperationException>(() =>
+            {
+                _ = new SectorNonEmptyBlockEnumerator(source);
+            });
+        }
+#endif
     }
 }
