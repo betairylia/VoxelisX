@@ -67,7 +67,7 @@ namespace Voxelis.Simulation
 
         /// <remarks>
         /// The Block slot occupancy mask must have been refreshed after the sector's latest voxel
-        /// writes; <see cref="SectorNonEmptyBlockEnumerator"/> deliberately has no scan fallback.
+        /// writes; <see cref="Sector.EnumerateNonEmptyBlocks"/> deliberately has no scan fallback.
         ///
         /// TODO: LIMITATION: only the diagonal of the inertia tensor is accumulated
         /// (Ixx, Iyy, Izz). The products of inertia (Ixy, Ixz, Iyz) are not computed,
@@ -86,9 +86,9 @@ namespace Voxelis.Simulation
         {
             SectorMassMoments result = default;
 
-            foreach (BlockIterator blockIter in new SectorNonEmptyBlockEnumerator(sector))
+            foreach (SectorBitmaskSlotIterator<Block> blockIter in sector.EnumerateNonEmptyBlocks())
             {
-                float mass = settings.GetBlockMass(blockIter.block);
+                float mass = settings.GetBlockMass(blockIter.value);
                 if (mass <= 0f)
                 {
                     continue;

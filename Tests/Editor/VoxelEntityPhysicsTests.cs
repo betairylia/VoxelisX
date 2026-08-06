@@ -1,4 +1,5 @@
 using NUnit.Framework;
+using Unity.Burst;
 using Unity.Collections;
 using Unity.Jobs;
 using Unity.Mathematics;
@@ -12,6 +13,25 @@ namespace VoxelisX.Tests
 {
     public class VoxelEntityPhysicsTests
     {
+        [BurstCompile]
+        private struct CountPhysicsKeyBlocksJob : IJob
+        {
+            public SectorHandle Sector;
+            [WriteOnly] public NativeArray<int> Result;
+
+            public void Execute()
+            {
+                int count = 0;
+                foreach (SectorBitmaskSlotIterator<PhysicsInfo> item in
+                         Sector.Get().EnumeratePhysicsKeyBlocks())
+                {
+                    count += item.value.data >> 6 >= 2 ? 1 : 0;
+                }
+
+                Result[0] = count;
+            }
+        }
+
         [Test]
         public void SectorMassMomentsForSingleBlockUseVoxelCenter()
         {
@@ -157,6 +177,82 @@ namespace VoxelisX.Tests
                 Assert.That(PhysicsData(sector, 0, 0, 0), Is.EqualTo((3 << 6) | (1 << 1) | (1 << 3) | (1 << 5)));
                 // Air block inside the allocated brick is cleared, not stale.
                 Assert.That(PhysicsData(sector, 5, 5, 5), Is.EqualTo(0));
+            }
+            finally
+            {
+                bodyData.Dispose();
+            }
+        }
+
+        [Test]
+        public unsafe void PhysicsKeyEnumeratorFollowsPhysicsInfoBitmapInVoxelIndexOrder()
+        {
+            using var scope = new EntityDataTestScope();
+            SectorHandle sector = scope.AddSector(int3.zero);
+
+            // A 3x3x3 cube contains 8 Corner and 12 Edge voxels. Its 6 face centers and one
+            // interior voxel must not be selected by the physics-key bitmap.
+            for (int z = 0; z < 3; z++)
+            {
+                for (int y = 0; y < 3; y++)
+                {
+                    for (int x = 0; x < 3; x++)
+                    {
+                        sector.SetBlock(x, y, z, new Block(1));
+                    }
+                }
+            }
+
+            sector.Get().MarkBrickRequireUpdate(
+                Sector.ToBrickIdx(0, 0, 0), DirtyFlags.GeometryWithLocalNeighbor);
+            scope.Data.RefreshNonEmptyMask();
+
+            var bodyData = new VoxelBodyData(Allocator.Persistent);
+            try
+            {
+                bodyData.ComputePhysicsProperties(scope.Data.sectors, scope.Data.sectorNeighbors);
+                bodyData.RefreshPhysicsKeyMask(scope.Data.sectors);
+
+                ref Sector source = ref sector.Get();
+                Assert.That(source.slots[(int)SectorSlotId.PhysicsInfo].HasAux, Is.True);
+
+                SectorBitmaskSlotEnumerator<PhysicsInfo> enumerator =
+                    source.EnumeratePhysicsKeyBlocks();
+                int selected = 0;
+
+                for (int z = 0; z < 3; z++)
+                {
+                    for (int y = 0; y < 3; y++)
+                    {
+                        for (int x = 0; x < 3; x++)
+                        {
+                            int boundaryAxes = (x == 0 || x == 2 ? 1 : 0) +
+                                               (y == 0 || y == 2 ? 1 : 0) +
+                                               (z == 0 || z == 2 ? 1 : 0);
+                            if (boundaryAxes < 2) { continue; }
+
+                            Assert.That(enumerator.MoveNext(), Is.True);
+                            Assert.That(enumerator.Current.position, Is.EqualTo(new int3(x, y, z)));
+                            Assert.That(enumerator.Current.value.data >> 6, Is.EqualTo(boundaryAxes));
+                            selected++;
+                        }
+                    }
+                }
+
+                Assert.That(selected, Is.EqualTo(20));
+                Assert.That(enumerator.MoveNext(), Is.False);
+
+                enumerator.Reset();
+                Assert.That(enumerator.MoveNext(), Is.True);
+                Assert.That(enumerator.Current.position, Is.EqualTo(int3.zero));
+
+                using var burstCount = new NativeArray<int>(1, Allocator.TempJob);
+                new CountPhysicsKeyBlocksJob
+                {
+                    Sector = sector,
+                    Result = burstCount
+                }.Schedule().Complete();
+                Assert.That(burstCount[0], Is.EqualTo(20));
             }
             finally
             {

@@ -9,8 +9,9 @@ namespace Voxelis
     {
         /// <summary>
         /// Rebuilds the per-brick "non-empty voxel" bitmask kept as the Block slot's aux buffer:
-        /// bit set when the block at that voxel is not empty. One sector per job index; each sector
-        /// writes only its own aux, so parallel execution is race free.
+        /// bit set when the block at that voxel is not empty. The mask is consumed by
+        /// <see cref="Sector.EnumerateNonEmptyBlocks"/>. One sector per job index; each sector writes
+        /// only its own aux, so parallel execution is race free.
         ///
         /// Gating: a sector is (re)built when its aux is missing (first tick / freshly loaded) or
         /// when it carries the self-only <see cref="DirtyFlags.Geometry"/> require-update flag.

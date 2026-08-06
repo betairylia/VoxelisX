@@ -211,12 +211,12 @@ namespace VoxelisX.Tests
                 new int3(16, 0, 0),
             };
 
-            var enumerator = new SectorNonEmptyBlockEnumerator(source);
+            SectorBitmaskSlotEnumerator<Block> enumerator = source.EnumerateNonEmptyBlocks();
             for (int i = 0; i < expectedPositions.Length; i++)
             {
                 Assert.That(enumerator.MoveNext(), Is.True);
                 Assert.That(enumerator.Current.position, Is.EqualTo(expectedPositions[i]));
-                Assert.That(enumerator.Current.block.id, Is.EqualTo(i + 1));
+                Assert.That(enumerator.Current.value.id, Is.EqualTo(i + 1));
             }
 
             Assert.That(enumerator.MoveNext(), Is.False);
@@ -231,7 +231,7 @@ namespace VoxelisX.Tests
         {
             using var scope = new SectorTestScope();
 
-            var enumerator = new SectorNonEmptyBlockEnumerator(scope.Sector);
+            SectorBitmaskSlotEnumerator<Block> enumerator = scope.Sector.EnumerateNonEmptyBlocks();
 
             Assert.That(enumerator.MoveNext(), Is.False);
         }
@@ -246,7 +246,22 @@ namespace VoxelisX.Tests
 
             Assert.Throws<System.InvalidOperationException>(() =>
             {
-                _ = new SectorNonEmptyBlockEnumerator(source);
+                _ = source.EnumerateNonEmptyBlocks();
+            });
+        }
+
+        [Test]
+        public void BitmaskSlotEnumeratorRejectsMismatchedValueType()
+        {
+            using var scope = new EntityDataTestScope();
+            SectorHandle sector = scope.AddSector(int3.zero);
+            sector.SetBlock(0, 0, 0, new Block(1));
+            scope.Data.RefreshNonEmptyMask();
+            Sector source = sector.Get();
+
+            Assert.Throws<System.InvalidOperationException>(() =>
+            {
+                _ = source.EnumerateBitmaskSlot<PhysicsInfo>(SectorSlotId.Block);
             });
         }
 #endif

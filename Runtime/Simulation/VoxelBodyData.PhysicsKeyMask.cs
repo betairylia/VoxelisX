@@ -13,7 +13,8 @@ namespace Voxelis
 
         /// <summary>
         /// Rebuilds the per-brick "physics-key voxel" bitmask kept as the PhysicsInfo slot's aux
-        /// buffer: bit set when the block is a Corner or Edge. Must run after
+        /// buffer: bit set when the block is a Corner or Edge. The mask is consumed by
+        /// <see cref="Sector.EnumeratePhysicsKeyBlocks"/>. Must run after
         /// <c>ComputePhysicsProperties</c>, which fills the PhysicsInfo data this reads. Only sectors
         /// whose PhysicsInfo slot exists are processed; gating otherwise matches the non-empty mask
         /// and <c>RefreshPhysicsSlot</c> (same require-update geometry flag).

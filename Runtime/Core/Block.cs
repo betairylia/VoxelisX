@@ -157,19 +157,4 @@ namespace Voxelis
         Reserved6 = 7,
     }
 
-    /// <summary>
-    /// Iterator structure for enumerating blocks within a sector along with their positions.
-    /// </summary>
-    public struct BlockIterator
-    {
-        /// <summary>
-        /// The block at the current iterator position.
-        /// </summary>
-        public Block block;
-
-        /// <summary>
-        /// The 3D position of the block within the sector.
-        /// </summary>
-        public int3 position;
-    }
 }

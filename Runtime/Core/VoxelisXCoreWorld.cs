@@ -115,6 +115,8 @@ namespace Voxelis
             base.Init();
         }
 
+        // TODO: FIXME: Put me in FixedUpdate or something similar
+        // And make RayCaster (player input) and Renderer work accroadingly
         private void Update()
         {
             Profiler.BeginSample("VoxelisX Tick");

@@ -88,7 +88,7 @@ namespace Voxelis.Simulation
 
                 // For all non-empty bricks in source
                 // For now, simply test them one-by-one
-                foreach (BlockIterator blockIter in new SectorNonEmptyBlockEnumerator(src))
+                foreach (SectorBitmaskSlotIterator<Block> blockIter in src.EnumerateNonEmptyBlocks())
                 {
                     float3 srcBlockCenter = new float3(blockIter.position) + 0.5f;
                     float3 dstBlockCenter = math.mul(srcToDst, new float4(
