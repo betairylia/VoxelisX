@@ -8,8 +8,7 @@ namespace Voxelis
     public partial struct VoxelBodyData
     {
         // PhysicsInfo flag lives in data bits 6-7: 3 = Corner, 2 = Edge, 1 = Face, 0 = None.
-        // A "physics-key" block is a Corner or Edge, i.e. flag >= this threshold.
-        private const int PhysicsKeyMinFlag = 2;
+        // A "physics-key" block is a Corner or Edge — see PhysicsInfo.IsPhysicsKey.
 
         /// <summary>
         /// Rebuilds the per-brick "physics-key voxel" bitmask kept as the PhysicsInfo slot's aux
@@ -100,7 +99,7 @@ namespace Voxelis
                         ulong word = 0ul;
                         for (int b = 0; b < 64; b++)
                         {
-                            word |= (ulong)((physBrick[baseIdx + b].data >> 6) >= PhysicsKeyMinFlag ? 1 : 0) << b;
+                            word |= (physBrick[baseIdx + b].IsPhysicsKey ? 1ul : 0ul) << b;
                         }
                         mask[w] = word;
                     }

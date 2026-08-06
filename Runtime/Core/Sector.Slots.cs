@@ -278,6 +278,31 @@ namespace Voxelis
             return slot->Get<T>(bid, ToBlockIdx(x & BRICK_MASK, y & BRICK_MASK, z & BRICK_MASK), UnsafeUtility.SizeOf<T>());
         }
 
+        /// <summary>
+        /// Reads the Block and PhysicsInfo values of one voxel with a single brick-map
+        /// resolution (instead of one per slot). Returns false — with default outputs — when
+        /// the containing brick is not allocated; a true return can still carry an empty block.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool GetBlockAndPhysicsInfo(int x, int y, int z, out Block block, out PhysicsInfo info)
+        {
+            int brickIdx = ToBrickIdx(x >> SHIFT_IN_BLOCKS, y >> SHIFT_IN_BLOCKS, z >> SHIFT_IN_BLOCKS);
+            short bid = brickMap.indices[brickIdx];
+            if (bid == BRICKID_EMPTY)
+            {
+                block = default;
+                info = default;
+                return false;
+            }
+
+            int voxelIdx = ToBlockIdx(x & BRICK_MASK, y & BRICK_MASK, z & BRICK_MASK);
+            block = (slots + (int)SectorSlotId.Block)
+                ->Get<Block>(bid, voxelIdx, UnsafeUtility.SizeOf<Block>());
+            info = (slots + (int)SectorSlotId.PhysicsInfo)
+                ->Get<PhysicsInfo>(bid, voxelIdx, UnsafeUtility.SizeOf<PhysicsInfo>());
+            return true;
+        }
+
         // ---- Per-brick aux access --------------------------------------------------------------
         // Aux is companion storage on a per-voxel slot. It is always addressed on the live `slots`
         // table (never the snapshot backbuffer) since it is rebuilt from settled voxel data.

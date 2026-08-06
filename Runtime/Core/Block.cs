@@ -132,6 +132,14 @@ namespace Voxelis
         // Therefore, data == 0 (default) means an interior block with no exposed faces (thus can be ignored during collision detection).
         public byte data;
 
+        /// <summary>
+        /// True for Corner and Edge blocks — the sparse "physics-key" subset that narrowphase
+        /// iterates as contact sources (every surviving contact pair has at least one key side).
+        /// Must match the mask built by <c>VoxelBodyData.RefreshPhysicsKeyMask</c>, which uses
+        /// this property.
+        /// </summary>
+        public bool IsPhysicsKey => (data >> 6) >= 2;
+
         public bool Equals(PhysicsInfo other)
         {
             return data == other.data;

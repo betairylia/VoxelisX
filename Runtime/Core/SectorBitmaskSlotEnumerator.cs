@@ -162,6 +162,75 @@ namespace Voxelis
         public SectorBitmaskSlotEnumerator<T> GetEnumerator() => this;
     }
 
+    /// <summary>
+    /// Enumerates the values selected by one brick's slice of a slot's per-brick bitmap aux
+    /// buffer. Same contract and hot loop as <see cref="SectorBitmaskSlotEnumerator{T}"/>, but
+    /// scoped to a single brick. Yielded positions are <c>blockOrigin + offset-in-brick</c>, so
+    /// the caller chooses sector-local or global block coordinates by passing the matching
+    /// brick origin. Null data/bitmap pointers enumerate as empty.
+    /// </summary>
+    [BurstCompile]
+    public unsafe struct BrickBitmaskSlotEnumerator<T> where T : unmanaged
+    {
+        private readonly T* brickData;
+        private readonly ulong* brickBitmap;
+        private readonly int3 blockOrigin;
+        private ulong remainingBits;
+        private int nextWordIndex;
+        private int currentWordBase;
+        private SectorBitmaskSlotIterator<T> current;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public BrickBitmaskSlotEnumerator(T* brickData, ulong* brickBitmap, int3 blockOrigin)
+        {
+            this.brickData = brickData;
+            this.brickBitmap = brickBitmap;
+            this.blockOrigin = blockOrigin;
+            remainingBits = 0;
+            nextWordIndex = (brickData == null || brickBitmap == null) ? BrickBitmask.Words : 0;
+            currentWordBase = 0;
+            current = default;
+        }
+
+        /// <summary>Advances to the next set bitmap bit.</summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool MoveNext()
+        {
+            while (remainingBits == 0)
+            {
+                if (nextWordIndex >= BrickBitmask.Words) { return false; }
+
+                int wordIndex = nextWordIndex++;
+                currentWordBase = wordIndex << 6;
+                remainingBits = brickBitmap[wordIndex];
+            }
+
+            int bitInWord = math.tzcnt(remainingBits);
+            remainingBits &= remainingBits - 1ul;
+
+            int voxelIndex = currentWordBase + bitInWord;
+            current = new SectorBitmaskSlotIterator<T>
+            {
+                value = brickData[voxelIndex],
+                position = blockOrigin + new int3(
+                    bitInWord & Sector.BRICK_MASK,
+                    bitInWord >> Sector.SHIFT_IN_BLOCKS,
+                    currentWordBase >> 6)
+            };
+
+            return true;
+        }
+
+        public SectorBitmaskSlotIterator<T> Current
+        {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => current;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public BrickBitmaskSlotEnumerator<T> GetEnumerator() => this;
+    }
+
     public unsafe partial struct Sector
     {
         /// <summary>Enumerates values selected by <paramref name="slotId"/>'s bitmap aux.</summary>
@@ -169,6 +238,58 @@ namespace Voxelis
         public SectorBitmaskSlotEnumerator<T> EnumerateBitmaskSlot<T>(SectorSlotId slotId)
             where T : unmanaged
             => new SectorBitmaskSlotEnumerator<T>(this, slotId);
+
+        /// <summary>
+        /// Enumerates values selected by <paramref name="slotId"/>'s bitmap aux inside one
+        /// allocated brick. <paramref name="blockOrigin"/> is added to every yielded position;
+        /// pass the brick's sector-local or global block origin as needed.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public BrickBitmaskSlotEnumerator<T> EnumerateBitmaskSlotInBrick<T>(
+            SectorSlotId slotId, short bid, int3 blockOrigin)
+            where T : unmanaged
+        {
+            int slotIndex = (int)slotId;
+            bool validSlotId = (uint)slotIndex < MAX_SLOTS;
+#if ENABLE_UNITY_COLLECTIONS_CHECKS
+            if (!validSlotId)
+            {
+                throw new System.ArgumentOutOfRangeException(nameof(slotId));
+            }
+#endif
+            Utils.BurstAssertSimpleExperssionsOnly.IsTrue(validSlotId);
+
+            SectorSlotStorage* slot = slots + slotIndex;
+            bool hasRequiredBitmap = bid == BRICKID_EMPTY ||
+                (slot->IsCreated && slot->HasAux &&
+                 slot->stride == sizeof(T) &&
+                 slot->extraPerBrickBytes == BrickBitmask.Bytes);
+#if ENABLE_UNITY_COLLECTIONS_CHECKS
+            if (!hasRequiredBitmap)
+            {
+                throw new System.InvalidOperationException(
+                    "EnumerateBitmaskSlotInBrick requires a matching slot with a refreshed bitmap aux buffer.");
+            }
+#endif
+            Utils.BurstAssertSimpleExperssionsOnly.IsTrue(hasRequiredBitmap);
+
+            return bid == BRICKID_EMPTY || !hasRequiredBitmap
+                ? new BrickBitmaskSlotEnumerator<T>(null, null, blockOrigin)
+                : new BrickBitmaskSlotEnumerator<T>(
+                    (T*)slot->GetBrickPtr(bid),
+                    (ulong*)slot->GetBrickAuxPtr(bid),
+                    blockOrigin);
+        }
+
+        /// <summary>
+        /// Enumerates Corner/Edge PhysicsInfo values of one brick, selected by the refreshed
+        /// physics-key mask. See <see cref="EnumerateBitmaskSlotInBrick{T}"/> for the position
+        /// convention.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public BrickBitmaskSlotEnumerator<PhysicsInfo> EnumeratePhysicsKeyBlocksInBrick(
+            short bid, int3 blockOrigin)
+            => EnumerateBitmaskSlotInBrick<PhysicsInfo>(SectorSlotId.PhysicsInfo, bid, blockOrigin);
 
         /// <summary>
         /// Enumerates non-empty Block values selected by the refreshed Block occupancy mask.
