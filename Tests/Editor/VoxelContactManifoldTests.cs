@@ -46,7 +46,10 @@ namespace VoxelisX.Tests
                 m_Sector.SetBlock(x, y, z, new Block(1));
             }
 
-            /// <summary>Recomputes block occupancy and PhysicsInfo exposure data.</summary>
+            /// <summary>
+            /// Recomputes block occupancy, PhysicsInfo exposure data and the physics-key mask,
+            /// in the same order as the VoxelisXWorld tick — narrowphase consumes all three.
+            /// </summary>
             public void Build()
             {
                 ref Sector sector = ref m_Sector.Get();
@@ -61,6 +64,7 @@ namespace VoxelisX.Tests
                 try
                 {
                     bodyData.ComputePhysicsProperties(Scope.Data.sectors, Scope.Data.sectorNeighbors);
+                    bodyData.RefreshPhysicsKeyMask(Scope.Data.sectors);
                 }
                 finally
                 {
