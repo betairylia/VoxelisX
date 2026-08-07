@@ -61,6 +61,7 @@ namespace Voxelis.Simulation
                  "have VoxelBody.accuratePhysics enabled. If Contact Stiffness is left at 0 these are " +
                  "ignored and Unity's defaults are used instead.")]
         public Solver.DirectSolverSettings directSolverSettings = Solver.DirectSolverSettings.Default;
+        public bool enableDirectSolver = true;
 
         [Tooltip("Multithreading enabled")] public bool multiThreaded = true;
 
@@ -91,7 +92,8 @@ namespace Voxelis.Simulation
             Profiler.BeginSample("Physics Build World");
             var buildHandle = VoxelisXPhysicsInterface.SchedulePhysicsWorldBuild(
                 ref tickBuf, ref physicsWorld, out bodyIndexToGuid, out nDynamic,
-                linearAirFriction, angularAirFriction, default);
+                linearAirFriction, angularAirFriction, default,
+                enableDirectSolver);
             buildHandle.Complete();
             haveStaticBodiesChanged.Value = 1;
             Profiler.EndSample();

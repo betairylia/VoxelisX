@@ -176,7 +176,8 @@ namespace Voxelis.Simulation
             out int nDynamic,
             float linearDamping,
             float angularDamping,
-            JobHandle inputDeps)
+            JobHandle inputDeps,
+            bool enableDirectSolver = false)
         {
             // Count number of static and dynamic bodies
             int nStatic = 0;
@@ -189,6 +190,7 @@ namespace Voxelis.Simulation
 
             // Reset world for rebuilding
             world.Reset(nStatic, nDynamic, 0);
+            world.DynamicsWorld.EnableDirectSolver = enableDirectSolver;
 
             // Reload sector data into colliders (unsafe, must run on main thread)
             ReloadColliderSectors(ref tickBuf);
