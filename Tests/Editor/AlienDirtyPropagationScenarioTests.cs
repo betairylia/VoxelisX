@@ -1,3 +1,5 @@
+#pragma warning disable 0618 // Exercises the obsolete alien propagation until it is removed
+
 using NUnit.Framework;
 using Unity.Collections;
 using Unity.Mathematics;

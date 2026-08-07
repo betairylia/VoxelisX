@@ -10,6 +10,8 @@ using Voxelis.Mathematics;
 
 namespace Voxelis
 {
+    [Obsolete("Replaced by the post-physics brick-overlap graph (BrickOverlapGraph). " +
+        "Scheduled for removal once dirty propagation consumes the graph.")]
     public struct AlienDirtyPropagationSettings
     {
         public DirtyFlags FlagsToPropagate;
@@ -26,6 +28,8 @@ namespace Voxelis
         };
     }
 
+    [Obsolete("Replaced by the post-physics brick-overlap graph (BrickOverlapGraph). " +
+        "Scheduled for removal once dirty propagation consumes the graph.")]
     public static partial class AlienDirtyPropagation
     {
         private const float MaxBoundEpsilon = 1e-4f;

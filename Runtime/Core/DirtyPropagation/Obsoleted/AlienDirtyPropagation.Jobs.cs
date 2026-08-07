@@ -1,4 +1,6 @@
 using System;
+
+#pragma warning disable 0618 // Obsolete alien propagation, kept functional until removal
 using System.Runtime.CompilerServices;
 using Unity.Burst;
 using Unity.Collections;

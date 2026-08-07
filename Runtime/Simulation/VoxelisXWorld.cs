@@ -309,6 +309,9 @@ Profiler.BeginSample("Dirty Propagation");
             // TODO: Refine the tick to job scheduling best practices
 
     Profiler.BeginSample("Alien Propagation");
+            // Obsolete path, kept functional until dirty propagation consumes the
+            // post-physics BrickOverlapGraph.
+#pragma warning disable 0618
             if (doAlienPropagation)
             {
                 AlienDirtyPropagation.Propagate(tickBuf.VoxelEntities.GetValueArray(Allocator.TempJob), new AlienDirtyPropagationSettings
@@ -319,6 +322,7 @@ Profiler.BeginSample("Dirty Propagation");
                     DirtyHaloVoxels = alienDirtyHaloVoxels,
                 });
             }
+#pragma warning restore 0618
     Profiler.EndSample();
 
     Profiler.BeginSample("Clear Dirty Flags");
