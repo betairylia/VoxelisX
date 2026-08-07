@@ -428,7 +428,7 @@ namespace VoxelisX.Tests
         }
 
         [Test]
-        public void LargePatch_EmitsRawContactsWithoutReduction()
+        public void LargePatch_OnlyCornerVoxelsContactUnderRankGate()
         {
             using var a = new VoxelBodyFixture();
             using var b = new VoxelBodyFixture();
@@ -451,21 +451,31 @@ namespace VoxelisX.Tests
             a.Build();
             b.Build();
 
-            // 10x10 slab on a 12x12 floor: raw generation keeps all 100 per-voxel contacts (no
-            // reduction; that is the future merging stage's job).
+            // 10x10 slab on a 12x12 floor. In a single-layer patch only the four extreme voxels
+            // are Corners (physics flag 3); the border voxels are Edges (flag 2) and the interior
+            // is Face (flag 1). Every floor cell under the slab is a Face. The masking rank gate
+            // admits only pairs whose constraint-rank sum is <= 2:
+            //   Corner (rank 0) + Face (rank 2) = 2  -> kept    (the four slab corners)
+            //   Edge   (rank 1) + Face (rank 2) = 3  -> dropped
+            //   Face   (rank 2) + Face (rank 2) = 4  -> dropped
+            // So a flat resting patch collapses to exactly four corner contacts, each snapped
+            // under its voxel center on the +y face plane. (This is what makes large flat contacts
+            // cheap; contact merging over the corners is the future stage's job.)
             List<ParsedManifold> manifolds = Collide(
                 a, b,
                 new RigidTransform(quaternion.identity, new float3(1f, 1f, 1f)),
                 RigidTransform.identity,
                 out _);
 
-            Assert.That(manifolds.Count, Is.EqualTo(100));
+            Assert.That(manifolds.Count, Is.EqualTo(4), "Only the four Corner voxels survive the rank gate");
             foreach (ParsedManifold m in manifolds)
             {
                 Assert.That(m.Points.Count, Is.EqualTo(1));
                 Assert.That(math.distance(m.Header.Normal, new float3(0f, 1f, 0f)), Is.LessThan(Tolerance));
+                Assert.That(m.Points[0].Distance, Is.EqualTo(0f).Within(Tolerance));
             }
 
+            // The four surviving contacts sit under the slab's corner voxels.
             List<ContactPoint> points = AllPoints(manifolds);
             Assert.That(HasPointNear(points, new float3(1.5f, 1f, 1.5f)), Is.True);
             Assert.That(HasPointNear(points, new float3(10.5f, 1f, 1.5f)), Is.True);
