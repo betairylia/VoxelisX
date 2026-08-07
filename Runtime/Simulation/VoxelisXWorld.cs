@@ -35,6 +35,14 @@ namespace Voxelis
         [SerializeField] protected VoxelisXRenderer rayTracedRenderer;
         [SerializeField] protected VoxelMeshRendererComponent meshingRenderer;
 
+        /// <summary>
+        /// Read-only view of the brick-overlap graph published by the preceding physics step.
+        /// Earlier Tick stages of the next tick see the graph of the previous step. Empty
+        /// (IsCreated false) before the first step.
+        /// </summary>
+        public BrickOverlapGraph BrickOverlapGraph =>
+            physicsWorld != null ? physicsWorld.BrickOverlapGraph : default;
+
         // ---------------- PERFORMANCE ------------------
         [Header("Performance")]
         public float targetTPS = 100.0f;

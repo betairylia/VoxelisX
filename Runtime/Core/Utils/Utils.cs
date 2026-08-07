@@ -11,7 +11,7 @@ namespace Voxelis.Utils
     /// </summary>
     [Serializable]
     [StructLayout(LayoutKind.Sequential)]
-    public readonly struct Guid128 : IEquatable<Guid128>
+    public readonly struct Guid128 : IEquatable<Guid128>, IComparable<Guid128>
     {
         public static Guid128 Zero
         {
@@ -73,6 +73,20 @@ namespace Voxelis.Utils
         public bool Equals(Guid128 other)
         {
             return math.all(value == other.value);
+        }
+
+        /// <summary>
+        /// Deterministic total order over the uint lanes in x, y, z, w order. This is the
+        /// canonical comparison for graph and sort keys built on Guid128.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int CompareTo(Guid128 other)
+        {
+            if (value.x != other.value.x) return value.x < other.value.x ? -1 : 1;
+            if (value.y != other.value.y) return value.y < other.value.y ? -1 : 1;
+            if (value.z != other.value.z) return value.z < other.value.z ? -1 : 1;
+            if (value.w != other.value.w) return value.w < other.value.w ? -1 : 1;
+            return 0;
         }
 
         public override bool Equals(object obj)

@@ -65,6 +65,11 @@ namespace Voxelis.Simulation
 
         [Tooltip("Multithreading enabled")] public bool multiThreaded = true;
 
+        [Header("Brick Overlap Graph")]
+        [Tooltip("Directed-record count (2x raw candidates) at or below which the post-physics " +
+                 "brick-overlap graph builds in one serial job instead of the parallel pipeline.")]
+        public int brickOverlapSerialThreshold = 2048;
+
         [Header("Debug")]
         [Tooltip("Log per-step collision-world / broadphase diagnostics for the first few frames.")]
         public bool verboseLogging = false;
@@ -77,6 +82,7 @@ namespace Voxelis.Simulation
             physicsWorld = new PhysicsWorld(0, 0, 0);
             simulation = Unity.Physics.Simulation.Create();
             haveStaticBodiesChanged = new NativeReference<int>(0, Allocator.Persistent);
+            brickOverlapGraphBuilder = new BrickOverlapGraphBuilder();
         }
 
         internal void AddBodyToProperlySizedWorld(VoxelBody b)
@@ -86,6 +92,19 @@ namespace Voxelis.Simulation
 
         private NativeArray<Guid128> bodyIndexToGuid;
         private int nDynamic;
+
+        private BrickOverlapGraphBuilder brickOverlapGraphBuilder;
+
+        /// <summary>
+        /// Read-only view of the brick-overlap graph published by the last physics step.
+        /// Empty (IsCreated false) before the first step. Re-fetch each step.
+        /// </summary>
+        public BrickOverlapGraph BrickOverlapGraph =>
+            brickOverlapGraphBuilder != null ? brickOverlapGraphBuilder.Graph : default;
+
+        /// <summary> Counters of the last brick-overlap graph build. </summary>
+        public BrickOverlapGraphStats BrickOverlapGraphStats =>
+            brickOverlapGraphBuilder != null ? brickOverlapGraphBuilder.LastBuildStats : default;
 
         public void SimulateStep(float dt, VoxelisXWorld.WorldStageInputs tickBuf)
         {
@@ -180,6 +199,14 @@ namespace Voxelis.Simulation
             LogVoxelContactsAfterStep();
             Profiler.EndSample();
 
+            // Build and publish the brick-overlap graph while bodyIndexToGuid is still valid
+            // and before OnSimulationFinished, so post-physics hooks and the rest of Tick()
+            // read this step's graph.
+            Profiler.BeginSample("Physics Brick Overlap Graph");
+            brickOverlapGraphBuilder.serialBuildThreshold = brickOverlapSerialThreshold;
+            brickOverlapGraphBuilder.BuildAndPublish(simulation.VoxelBrickOverlapCandidates, bodyIndexToGuid);
+            Profiler.EndSample();
+
             Profiler.BeginSample("Physics OnSimulationFinished");
             OnSimulationFinished();
             Profiler.EndSample();
@@ -211,6 +238,8 @@ namespace Voxelis.Simulation
             simulation.Dispose();
             physicsWorld.Dispose();
             haveStaticBodiesChanged.Dispose();
+            brickOverlapGraphBuilder?.Dispose();
+            brickOverlapGraphBuilder = null;
 
             if (verboseLogging) Debug.Log("Physics Disposed!");
         }
