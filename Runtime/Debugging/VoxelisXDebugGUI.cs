@@ -3,10 +3,12 @@ using Unity.Mathematics;
 using UnityEngine;
 using Voxelis;
 using Voxelis.Rendering.Meshing;
+using Voxelis.Simulation;
 
 /// <summary>
 /// Debug GUI overlay for VoxelisX engine.
-/// Displays rendering information and provides controls for debug visualization.
+/// Displays tick, physics, overlap-graph, and rendering diagnostics, and provides controls
+/// for debug visualization.
 /// Toggle with P key.
 /// </summary>
 public class VoxelisXDebugGUI : MonoBehaviour
@@ -19,6 +21,8 @@ public class VoxelisXDebugGUI : MonoBehaviour
     [Header("References")]
     [SerializeField] private VoxelisXRenderer rayTracingRenderer;
     [SerializeField] private VoxelMeshRendererComponent meshRendererComponent;
+    [SerializeField] private VoxelisXPhysicsWorld physicsWorld;
+    [SerializeField] private VoxelisXWorld voxelWorld;
 
     [Header("Debug Visualization")]
     [SerializeField] private bool showSectorBorders = false;
@@ -40,6 +44,8 @@ public class VoxelisXDebugGUI : MonoBehaviour
     private const int CurrentSamplesPerPixel = 1;
     private const int FpsGraphWidth = 320;
     private const int FpsGraphHeight = 76;
+    private const float SectionSpacing = 6f;
+    private const float MinorSpacing = 3f;
 
     private bool isVisible;
     private GUIStyle boxStyle;
@@ -102,8 +108,18 @@ public class VoxelisXDebugGUI : MonoBehaviour
         {
             rayTracingRenderer = VoxelisXRenderer.instance;
         }
-        
-        meshRendererComponent = FindObjectOfType<VoxelMeshRendererComponent>();
+
+        if (physicsWorld == null)
+        {
+            physicsWorld = FindAnyObjectByType<VoxelisXPhysicsWorld>();
+        }
+
+        if (voxelWorld == null)
+        {
+            voxelWorld = FindAnyObjectByType<VoxelisXWorld>();
+        }
+
+        meshRendererComponent = FindAnyObjectByType<VoxelMeshRendererComponent>();
 
         // Create material for runtime line rendering
         CreateLineMaterial();
@@ -161,29 +177,29 @@ public class VoxelisXDebugGUI : MonoBehaviour
         // Create semi-transparent background style
         boxStyle = new GUIStyle(GUI.skin.box);
         boxStyle.normal.background = MakeTexture(2, 2, new Color(0f, 0f, 0f, 0.7f));
-        boxStyle.padding = new RectOffset(10, 10, 10, 10);
-        boxStyle.margin = new RectOffset(5, 5, 5, 5);
+        boxStyle.padding = new RectOffset(8, 8, 7, 7);
+        boxStyle.margin = new RectOffset(3, 3, 3, 3);
 
         // Create button style
         buttonStyle = new GUIStyle(GUI.skin.button);
         buttonStyle.normal.textColor = Color.white;
-        buttonStyle.fontSize = 12;
-        buttonStyle.padding = new RectOffset(10, 10, 5, 5);
+        buttonStyle.fontSize = 11;
+        buttonStyle.padding = new RectOffset(8, 8, 3, 3);
 
         // Create label style
         labelStyle = new GUIStyle(GUI.skin.label);
         labelStyle.normal.textColor = Color.white;
-        labelStyle.fontSize = 12;
-        labelStyle.padding = new RectOffset(5, 5, 2, 2);
+        labelStyle.fontSize = 11;
+        labelStyle.padding = new RectOffset(3, 3, 0, 0);
         labelStyle.richText = true;
 
         graphLabelStyle = new GUIStyle(labelStyle);
-        graphLabelStyle.fontSize = 10;
+        graphLabelStyle.fontSize = 9;
         graphLabelStyle.padding = new RectOffset(2, 2, 0, 0);
 
         tooltipStyle = new GUIStyle(labelStyle);
         tooltipStyle.normal.background = MakeTexture(2, 2, new Color(0f, 0f, 0f, 0.9f));
-        tooltipStyle.padding = new RectOffset(8, 8, 5, 5);
+        tooltipStyle.padding = new RectOffset(6, 6, 4, 4);
         tooltipStyle.wordWrap = true;
 
         stylesInitialized = true;
@@ -284,7 +300,7 @@ public class VoxelisXDebugGUI : MonoBehaviour
 
         // Title
         GUILayout.Label("<b>VoxelisX Debug Info</b>", labelStyle);
-        GUILayout.Space(5);
+        GUILayout.Space(MinorSpacing);
 
         // Rendering Mode
         RenderingMode mode = DetectRenderingMode();
@@ -297,7 +313,11 @@ public class VoxelisXDebugGUI : MonoBehaviour
         };
         GUILayout.Label($"<b>Rendering Mode:</b> {modeText}", labelStyle);
 
-        GUILayout.Space(10);
+        GUILayout.Space(SectionSpacing);
+
+        DrawTickTimingInfo();
+
+        GUILayout.Space(SectionSpacing);
 
         // Ray Tracing Info
         if (rayTracingRenderer != null)
@@ -338,7 +358,7 @@ public class VoxelisXDebugGUI : MonoBehaviour
             }
         }
 
-        GUILayout.Space(10);
+        GUILayout.Space(SectionSpacing);
 
         // Mesh Rendering Info
         if (meshRendererComponent != null && meshRendererComponent.MeshRenderer != null)
@@ -348,7 +368,11 @@ public class VoxelisXDebugGUI : MonoBehaviour
             GUILayout.Label($"  Sector Renderers: {meshRendererComponent.MeshRenderer.SectorRendererCount}", labelStyle);
         }
 
-        GUILayout.Space(10);
+        GUILayout.Space(SectionSpacing);
+
+        DrawBrickOverlapGraphInfo();
+
+        GUILayout.Space(SectionSpacing);
 
         // Debug Visualization Controls
         GUILayout.Label("<b>Debug Visualization:</b>", labelStyle);
@@ -370,7 +394,7 @@ public class VoxelisXDebugGUI : MonoBehaviour
             showBrickBorders = !showBrickBorders;
         }
 
-        GUILayout.Space(10);
+        GUILayout.Space(SectionSpacing);
 
         // Performance info
         GUILayout.Label("<b>Performance:</b>", labelStyle);
@@ -382,11 +406,74 @@ public class VoxelisXDebugGUI : MonoBehaviour
         GUILayout.Label($"  MRays/sec: {currentMraysPerSecond:F2} (SPP {CurrentSamplesPerPixel})", labelStyle);
         DrawFpsGraph();
 
-        GUILayout.Space(5);
+        GUILayout.Space(MinorSpacing);
         GUILayout.Label($"<i>Press {toggleKey} to toggle GUI, {orbitToggleKey} to toggle orbit</i>", labelStyle);
 
         GUILayout.EndVertical();
         GUILayout.EndArea();
+    }
+
+    private void DrawTickTimingInfo()
+    {
+        GUILayout.Label("<b>Last Tick CPU Timings:</b>", labelStyle);
+
+        if (voxelWorld == null)
+        {
+            GUILayout.Label("  Status: <color=#ffaa00>World unavailable</color>", labelStyle);
+            return;
+        }
+
+        VoxelisXWorld.TickTimingStats timings = voxelWorld.LastTickTimings;
+        if (!timings.IsCreated)
+        {
+            GUILayout.Label("  Status: Waiting for first completed tick", labelStyle);
+            return;
+        }
+
+        string renderingMode = GetTimedRenderingMode(timings);
+        GUILayout.Label($"  Tick (World + Automata): {timings.TickMilliseconds:F3} ms", labelStyle);
+        GUILayout.Label($"  Physics: {timings.PhysicsMilliseconds:F3} ms", labelStyle);
+        GUILayout.Label($"  Brick Graph: {timings.BrickGraphMilliseconds:F3} ms", labelStyle);
+        GUILayout.Label($"  Rendering ({renderingMode}): {timings.RenderingMilliseconds:F3} ms", labelStyle);
+        GUILayout.Label($"  Total: {timings.TotalMilliseconds:F3} ms", labelStyle);
+    }
+
+    private static string GetTimedRenderingMode(VoxelisXWorld.TickTimingStats timings)
+    {
+        if (timings.UsedRayTracing && timings.UsedMeshing) return "RT + Meshing";
+        if (timings.UsedRayTracing) return "RT";
+        if (timings.UsedMeshing) return "Meshing";
+        return "Inactive";
+    }
+
+    private void DrawBrickOverlapGraphInfo()
+    {
+        GUILayout.Label("<b>Brick Overlap Graph:</b>", labelStyle);
+
+        if (physicsWorld == null)
+        {
+            GUILayout.Label("  Status: <color=#ffaa00>Physics world unavailable</color>", labelStyle);
+            return;
+        }
+
+        BrickOverlapGraph graph = physicsWorld.BrickOverlapGraph;
+        if (!graph.IsCreated)
+        {
+            GUILayout.Label("  Status: Waiting for first physics step", labelStyle);
+            return;
+        }
+
+        BrickOverlapGraphStats stats = physicsWorld.BrickOverlapGraphStats;
+        string buildPath = stats.RawCandidates == 0 || stats.NumBodies == 0
+            ? "Empty"
+            : stats.UsedSerialPath ? "Serial" : "Parallel";
+
+        GUILayout.Label($"  Version: {graph.Version}", labelStyle);
+        GUILayout.Label($"  Bodies: {stats.NumBodies}", labelStyle);
+        GUILayout.Label($"  Raw Candidates: {stats.RawCandidates}", labelStyle);
+        GUILayout.Label($"  Unique Pairs: {stats.UniquePairs}", labelStyle);
+        GUILayout.Label($"  Active Source Bricks: {stats.ActiveSourceBricks}", labelStyle);
+        GUILayout.Label($"  Build Path: {buildPath}", labelStyle);
     }
 
     private RenderingMode DetectRenderingMode()
@@ -608,7 +695,7 @@ public class VoxelisXDebugGUI : MonoBehaviour
                             float3 brickInSectorPos = sectorLocalPos + brickLocalPos;
 
                             Color colorToUse = (requireUpdateFlags & DirtyFlags.GeometryWithLocalNeighbor) > 0 ? brickBorderColorDirty : brickBorderColor;
-                            
+
                             DrawWireBox(
                                 brickInSectorPos, new float3(Sector.SIZE_IN_BLOCKS), colorToUse, entityMatrix);
                         }

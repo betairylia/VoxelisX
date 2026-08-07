@@ -70,7 +70,6 @@ namespace Voxelis.Simulation
 
         // Persistent, grow-only scratch reused across steps (no per-pair managed allocations
         // on warm runs).
-        NativeList<int> m_StreamCounts;
         NativeList<int> m_StreamOffsets;
         NativeList<DirectedBrickOverlapRecord> m_Directed;
         NativeList<DirectedBrickOverlapRecord> m_Sorted;
@@ -97,7 +96,6 @@ namespace Voxelis.Simulation
         public BrickOverlapGraphBuilder()
         {
             m_Buffers = new[] { new GraphBuffer(), new GraphBuffer() };
-            m_StreamCounts = new NativeList<int>(16, Allocator.Persistent);
             m_StreamOffsets = new NativeList<int>(16, Allocator.Persistent);
             m_Directed = new NativeList<DirectedBrickOverlapRecord>(256, Allocator.Persistent);
             m_Sorted = new NativeList<DirectedBrickOverlapRecord>(256, Allocator.Persistent);
@@ -237,7 +235,6 @@ namespace Voxelis.Simulation
         {
             int forEachTotal = dynamicForEach + staticForEach;
 
-            m_StreamCounts.ResizeUninitialized(forEachTotal);
             m_StreamOffsets.ResizeUninitialized(forEachTotal);
             m_Directed.ResizeUninitialized(totalDirected);
             m_Sorted.ResizeUninitialized(totalDirected);
@@ -251,19 +248,14 @@ namespace Voxelis.Simulation
                 m_Histogram[i] = 0;
             }
 
-            JobHandle countHandle = new CountStreamItemsJob
+            JobHandle offsetsHandle = new ComputeStreamOffsetsJob
             {
                 DynamicReader = dynamicReader,
                 StaticReader = staticReader,
                 DynamicForEachCount = dynamicForEach,
-                Counts = m_StreamCounts.AsArray()
-            }.Schedule(forEachTotal, 1, default);
-
-            JobHandle offsetsHandle = new ComputeStreamOffsetsJob
-            {
-                Counts = m_StreamCounts.AsArray(),
+                StaticForEachCount = staticForEach,
                 Offsets = m_StreamOffsets.AsArray()
-            }.Schedule(countHandle);
+            }.Schedule();
 
             JobHandle flattenHandle = new FlattenCandidatesJob
             {
@@ -388,7 +380,6 @@ namespace Voxelis.Simulation
         {
             m_Buffers[0].Dispose();
             m_Buffers[1].Dispose();
-            if (m_StreamCounts.IsCreated) m_StreamCounts.Dispose();
             if (m_StreamOffsets.IsCreated) m_StreamOffsets.Dispose();
             if (m_Directed.IsCreated) m_Directed.Dispose();
             if (m_Sorted.IsCreated) m_Sorted.Dispose();

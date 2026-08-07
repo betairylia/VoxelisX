@@ -17,11 +17,29 @@ using Voxelis.Rendering.Meshing;
 using Voxelis.Simulation;
 using Voxelis.Tick;
 using Voxelis.Utils;
+using Stopwatch = System.Diagnostics.Stopwatch;
 
 namespace Voxelis
 {
     public class VoxelisXWorld : VoxelisXCoreWorld
     {
+        /// <summary>
+        /// Exclusive CPU timing buckets from the last completed world tick. Physics excludes
+        /// brick-graph construction, and Tick excludes both physics and rendering, so the four
+        /// component times sum to TotalMilliseconds.
+        /// </summary>
+        public struct TickTimingStats
+        {
+            public bool IsCreated;
+            public bool UsedRayTracing;
+            public bool UsedMeshing;
+            public double TickMilliseconds;
+            public double PhysicsMilliseconds;
+            public double BrickGraphMilliseconds;
+            public double RenderingMilliseconds;
+            public double TotalMilliseconds;
+        }
+
         public Dictionary<Guid128, VoxelBody> bodies = new();
 
         public TickStage<WorldStageInputs> physicsStage;
@@ -42,6 +60,9 @@ namespace Voxelis
         /// </summary>
         public BrickOverlapGraph BrickOverlapGraph =>
             physicsWorld != null ? physicsWorld.BrickOverlapGraph : default;
+
+        /// <summary>Exclusive CPU timing buckets from the last completed world tick.</summary>
+        public TickTimingStats LastTickTimings { get; private set; }
 
         // ---------------- PERFORMANCE ------------------
         [Header("Performance")]
@@ -150,6 +171,8 @@ namespace Voxelis
         {
             // TEMP CODE -- Tick logic
             if ((!isFirst) && freeze) return;
+            long tickStartTicks = Stopwatch.GetTimestamp();
+
             // TODO: FIXME: Check entity prevTransform lifespan; currently maybe treated as moved to current location from 0,0,0 in first frame, causing severe performance issues
             isFirst = false;
 
@@ -372,7 +395,9 @@ Profiler.BeginSample("Apply Body Force Commands");
 Profiler.EndSample();
 
 Profiler.BeginSample("Physics Step");
+            long physicsStartTicks = Stopwatch.GetTimestamp();
             physicsWorld.SimulateStep(deltaTime, tickBuf);
+            long physicsElapsedTicks = Stopwatch.GetTimestamp() - physicsStartTicks;
 Profiler.EndSample();
 
             // Copy data back to VoxelEntities
@@ -391,9 +416,38 @@ Profiler.EndSample();
             
             // Tick renderer
 Profiler.BeginSample("Renderer Tick");
-            if (rayTracedRenderer?.enabled ?? false) rayTracedRenderer?.Tick();
-            if (meshingRenderer?.enabled ?? false) meshingRenderer?.Tick();
+            bool usedRayTracing = rayTracedRenderer?.enabled ?? false;
+            bool usedMeshing = meshingRenderer?.enabled ?? false;
+            long renderingStartTicks = Stopwatch.GetTimestamp();
+            if (usedRayTracing) rayTracedRenderer.Tick();
+            if (usedMeshing) meshingRenderer.Tick();
+            long renderingElapsedTicks = Stopwatch.GetTimestamp() - renderingStartTicks;
 Profiler.EndSample();
+
+            long totalElapsedTicks = Stopwatch.GetTimestamp() - tickStartTicks;
+            double totalMilliseconds = TicksToMilliseconds(totalElapsedTicks);
+            double physicsTotalMilliseconds = TicksToMilliseconds(physicsElapsedTicks);
+            double renderingMilliseconds = TicksToMilliseconds(renderingElapsedTicks);
+            double brickGraphMilliseconds = physicsWorld.BrickOverlapGraphStats.BuildMilliseconds;
+
+            LastTickTimings = new TickTimingStats
+            {
+                IsCreated = true,
+                UsedRayTracing = usedRayTracing,
+                UsedMeshing = usedMeshing,
+                TickMilliseconds = Math.Max(
+                    0.0, totalMilliseconds - physicsTotalMilliseconds - renderingMilliseconds),
+                PhysicsMilliseconds = Math.Max(
+                    0.0, physicsTotalMilliseconds - brickGraphMilliseconds),
+                BrickGraphMilliseconds = brickGraphMilliseconds,
+                RenderingMilliseconds = renderingMilliseconds,
+                TotalMilliseconds = totalMilliseconds
+            };
+        }
+
+        private static double TicksToMilliseconds(long ticks)
+        {
+            return ticks * 1000.0 / Stopwatch.Frequency;
         }
 
         public virtual void DoTick(

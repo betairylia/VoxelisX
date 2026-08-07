@@ -129,44 +129,33 @@ namespace Voxelis.Simulation
     }
 
     /// <summary>
-    /// Counts the candidates in every stream work item. The combined index space covers
-    /// the dynamic stream first, then the static-static stream.
+    /// Exclusive prefix sum of candidate counts over the stream work items, mirroring the
+    /// physics scheduler's CreateStreamPrefixSum. The combined index space covers the
+    /// dynamic stream first, then the static-static stream. Counting a work item is a
+    /// single BeginForEachIndex call, and the work item count is tiny (one per narrowphase
+    /// worker), so this stays serial.
     /// </summary>
-    [BurstCompile]
-    internal struct CountStreamItemsJob : IJobParallelFor
-    {
-        [ReadOnly] public NativeStream.Reader DynamicReader;
-        [ReadOnly] public NativeStream.Reader StaticReader;
-        public int DynamicForEachCount;
-        [WriteOnly] public NativeArray<int> Counts;
-
-        public void Execute(int index)
-        {
-            if (index < DynamicForEachCount)
-            {
-                Counts[index] = DynamicReader.BeginForEachIndex(index);
-            }
-            else
-            {
-                Counts[index] = StaticReader.BeginForEachIndex(index - DynamicForEachCount);
-            }
-        }
-    }
-
-    /// <summary> Exclusive prefix sum over the per-work-item candidate counts. </summary>
     [BurstCompile]
     internal struct ComputeStreamOffsetsJob : IJob
     {
-        [ReadOnly] public NativeArray<int> Counts;
+        public NativeStream.Reader DynamicReader;
+        public NativeStream.Reader StaticReader;
+        public int DynamicForEachCount;
+        public int StaticForEachCount;
         [WriteOnly] public NativeArray<int> Offsets;
 
         public void Execute()
         {
             int sum = 0;
-            for (int i = 0; i < Counts.Length; i++)
+            for (int i = 0; i < DynamicForEachCount; i++)
             {
                 Offsets[i] = sum;
-                sum += Counts[i];
+                sum += DynamicReader.BeginForEachIndex(i);
+            }
+            for (int i = 0; i < StaticForEachCount; i++)
+            {
+                Offsets[DynamicForEachCount + i] = sum;
+                sum += StaticReader.BeginForEachIndex(i);
             }
         }
     }
@@ -178,8 +167,8 @@ namespace Voxelis.Simulation
     [BurstCompile]
     internal struct FlattenCandidatesJob : IJobParallelFor
     {
-        [ReadOnly] public NativeStream.Reader DynamicReader;
-        [ReadOnly] public NativeStream.Reader StaticReader;
+        public NativeStream.Reader DynamicReader;
+        public NativeStream.Reader StaticReader;
         public int DynamicForEachCount;
         public int NumBodies;
         [ReadOnly] public NativeArray<int> Offsets;
@@ -549,8 +538,8 @@ namespace Voxelis.Simulation
     [BurstCompile]
     internal struct SerialBuildJob : IJob
     {
-        [ReadOnly] public NativeStream.Reader DynamicReader;
-        [ReadOnly] public NativeStream.Reader StaticReader;
+        public NativeStream.Reader DynamicReader;
+        public NativeStream.Reader StaticReader;
         public int DynamicForEachCount;
         public int StaticForEachCount;
         public int NumBodies;
