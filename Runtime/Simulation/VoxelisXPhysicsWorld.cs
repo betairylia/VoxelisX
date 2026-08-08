@@ -67,7 +67,7 @@ namespace Voxelis.Simulation
 
         [Header("Brick Overlap Graph")]
         [Tooltip("Directed-record count (2x raw candidates) at or below which the post-physics " +
-                 "brick-overlap graph builds in one serial job instead of the parallel pipeline.")]
+                 "brick-overlap graph builds in one serial job. Larger inputs are unsupported.")]
         public int brickOverlapSerialThreshold = 2048;
 
         [Header("Debug")]

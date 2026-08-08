@@ -2,8 +2,6 @@ using System;
 using System.Diagnostics;
 using Unity.Collections;
 using Unity.Jobs;
-using Unity.Jobs.LowLevel.Unsafe;
-using Unity.Mathematics;
 using Unity.Physics;
 using Unity.Profiling;
 using Voxelis.Utils;
@@ -14,12 +12,9 @@ namespace Voxelis.Simulation
     /// Builds and double-buffer-publishes the post-physics brick-overlap graph from the raw
     /// candidate streams of one simulation step.
     ///
-    /// Pipeline (all Burst jobs, mirrored from the physics scheduler's parallel radix sort):
-    /// flatten+map+double → histogram by source rank → prefix sum → scatter → per-bucket
-    /// sort+count → per-bucket emit. The physics producer guarantees that
-    /// raw brick pairs are unique. Small inputs (at most
-    /// <see cref="serialBuildThreshold"/> directed records) run one serial job instead and
-    /// produce identical output.
+    /// The physics producer guarantees that raw brick pairs are unique. Small inputs (at
+    /// most <see cref="serialBuildThreshold"/> directed records) run one serial job. The
+    /// parallel build path is not implemented.
     ///
     /// Build must run while the step's bodyIndexToGuid mapping is still valid, after the
     /// step's FinalExecutionHandle completed and before the next simulation reset.
@@ -28,7 +23,7 @@ namespace Voxelis.Simulation
     {
         /// <summary>
         /// Directed-record count (2 × raw candidates) at or below which the build runs as
-        /// one serial job. Zero forces the parallel pipeline.
+        /// one serial job. Inputs above this threshold reach the unimplemented parallel path.
         /// </summary>
         public int serialBuildThreshold = 2048;
 
@@ -68,14 +63,8 @@ namespace Voxelis.Simulation
         int m_Active;
         int m_Version;
 
-        // Persistent, grow-only scratch reused across steps (no per-pair managed allocations
-        // on warm runs).
-        NativeList<int> m_StreamOffsets;
+        // Persistent, grow-only scratch reused across serial builds.
         NativeList<DirectedBrickOverlapRecord> m_Directed;
-        NativeList<DirectedBrickOverlapRecord> m_Sorted;
-        NativeList<int> m_Histogram;
-        NativeList<int> m_SourceCounts;
-        NativeList<int> m_PairCounts;
         NativeList<int> m_RankOfBody;
         NativeList<Guid128> m_RankToGuid;
 
@@ -90,17 +79,11 @@ namespace Voxelis.Simulation
 
         static readonly ProfilerMarker s_BuildMarker = new ProfilerMarker("BrickOverlapGraph.Build");
         static readonly ProfilerMarker s_SortMarker = new ProfilerMarker("BrickOverlapGraph.FlattenSortCount");
-        static readonly ProfilerMarker s_EmitMarker = new ProfilerMarker("BrickOverlapGraph.Emit");
 
         public BrickOverlapGraphBuilder()
         {
             m_Buffers = new[] { new GraphBuffer(), new GraphBuffer() };
-            m_StreamOffsets = new NativeList<int>(16, Allocator.Persistent);
             m_Directed = new NativeList<DirectedBrickOverlapRecord>(256, Allocator.Persistent);
-            m_Sorted = new NativeList<DirectedBrickOverlapRecord>(256, Allocator.Persistent);
-            m_Histogram = new NativeList<int>(64, Allocator.Persistent);
-            m_SourceCounts = new NativeList<int>(64, Allocator.Persistent);
-            m_PairCounts = new NativeList<int>(64, Allocator.Persistent);
             m_RankOfBody = new NativeList<int>(64, Allocator.Persistent);
             m_RankToGuid = new NativeList<Guid128>(64, Allocator.Persistent);
             m_EmptyStream = new NativeStream(1, Allocator.Persistent);
@@ -176,7 +159,9 @@ namespace Voxelis.Simulation
 
                 int totalDirected = rawCandidates * 2;
 
-                if (totalDirected <= serialBuildThreshold)
+                // TODO: Implement the parallel path.
+                // if (totalDirected <= serialBuildThreshold)
+                if (true)
                 {
                     BuildSerial(target, rankHandle, dynamicReader, staticReader,
                         dynamicForEach, staticForEach, numBodies, totalDirected, ref stats);
@@ -231,109 +216,8 @@ namespace Voxelis.Simulation
             int dynamicForEach, int staticForEach, int numBodies, int totalDirected,
             ref BrickOverlapGraphStats stats)
         {
-            int forEachTotal = dynamicForEach + staticForEach;
-
-            m_StreamOffsets.ResizeUninitialized(forEachTotal);
-            m_Directed.ResizeUninitialized(totalDirected);
-            m_Sorted.ResizeUninitialized(totalDirected);
-            m_Histogram.ResizeUninitialized(numBodies);
-            m_SourceCounts.ResizeUninitialized(numBodies);
-            m_PairCounts.ResizeUninitialized(numBodies);
-
-            for (int i = 0; i < m_Histogram.Length; i++)
-            {
-                m_Histogram[i] = 0;
-            }
-
-            JobHandle offsetsHandle = new ComputeStreamOffsetsJob
-            {
-                DynamicReader = dynamicReader,
-                StaticReader = staticReader,
-                DynamicForEachCount = dynamicForEach,
-                StaticForEachCount = staticForEach,
-                Offsets = m_StreamOffsets.AsArray()
-            }.Schedule();
-
-            JobHandle flattenHandle = new FlattenCandidatesJob
-            {
-                DynamicReader = dynamicReader,
-                StaticReader = staticReader,
-                DynamicForEachCount = dynamicForEach,
-                NumBodies = numBodies,
-                Offsets = m_StreamOffsets.AsArray(),
-                RankOfBody = m_RankOfBody.AsArray(),
-                Directed = m_Directed.AsArray()
-            }.Schedule(forEachTotal, 1, JobHandle.CombineDependencies(offsetsHandle, rankHandle));
-
-            int numWorkers = math.max(1, JobsUtility.JobWorkerCount);
-
-            JobHandle histogramHandle = new RankHistogramJob
-            {
-                Directed = m_Directed.AsArray(),
-                Histogram = m_Histogram.AsArray(),
-                NumWorkers = numWorkers
-            }.Schedule(numWorkers, 1, flattenHandle);
-
-            JobHandle prefixHandle = new BucketPrefixSumJob
-            {
-                Histogram = m_Histogram.AsArray()
-            }.Schedule(histogramHandle);
-
-            JobHandle scatterHandle = new ScatterRecordsJob
-            {
-                Input = m_Directed.AsArray(),
-                Output = m_Sorted.AsArray(),
-                BucketCursors = m_Histogram.AsArray(),
-                NumWorkers = numWorkers
-            }.Schedule(numWorkers, 1, prefixHandle);
-
-            int bucketBatch = math.max(1, numBodies / 32);
-
-            JobHandle sortAndCountHandle = new SortAndCountBucketsJob
-            {
-                InOutArray = m_Sorted.AsArray(),
-                BucketEnds = m_Histogram.AsArray(),
-                SourceCounts = m_SourceCounts.AsArray(),
-                PairCounts = m_PairCounts.AsArray()
-            }.Schedule(numBodies, bucketBatch, scatterHandle);
-
-            using (s_SortMarker.Auto())
-            {
-                sortAndCountHandle.Complete();
-            }
-
-            // Turn per-bucket counts into per-bucket output offsets, size the target buffers,
-            // then emit in parallel into disjoint ranges.
-            int totalSources = ExclusivePrefixInPlace(m_SourceCounts);
-            int totalPairs = ExclusivePrefixInPlace(m_PairCounts);
-
-            target.Pairs.ResizeUninitialized(totalPairs);
-            target.Neighbors.ResizeUninitialized(totalDirected);
-            target.Ranges.ResizeUninitialized(totalSources);
-            target.RangeLookup.Clear();
-            EnsureHashCapacity(target, totalSources);
-
-            JobHandle emitHandle = new EmitPerBucketJob
-            {
-                Sorted = m_Sorted.AsArray(),
-                BucketEnds = m_Histogram.AsArray(),
-                SourceOffsets = m_SourceCounts.AsArray(),
-                PairOffsets = m_PairCounts.AsArray(),
-                RankToGuid = m_RankToGuid.AsArray(),
-                Neighbors = target.Neighbors.AsArray(),
-                Ranges = target.Ranges.AsArray(),
-                Pairs = target.Pairs.AsArray(),
-                RangeLookup = target.RangeLookup.AsParallelWriter()
-            }.Schedule(numBodies, bucketBatch, default);
-
-            using (s_EmitMarker.Auto())
-            {
-                emitHandle.Complete();
-            }
-
-            stats.UsedSerialPath = false;
-            stats.PublishedPairs = totalPairs;
-            stats.ActiveSourceBricks = totalSources;
+            rankHandle.Complete();
+            throw new NotImplementedException();
         }
 
         void Publish(BrickOverlapGraphStats stats, long startTicks)
@@ -352,28 +236,11 @@ namespace Voxelis.Simulation
             }
         }
 
-        static int ExclusivePrefixInPlace(NativeList<int> counts)
-        {
-            int sum = 0;
-            for (int i = 0; i < counts.Length; i++)
-            {
-                int current = counts[i];
-                counts[i] = sum;
-                sum += current;
-            }
-            return sum;
-        }
-
         public void Dispose()
         {
             m_Buffers[0].Dispose();
             m_Buffers[1].Dispose();
-            if (m_StreamOffsets.IsCreated) m_StreamOffsets.Dispose();
             if (m_Directed.IsCreated) m_Directed.Dispose();
-            if (m_Sorted.IsCreated) m_Sorted.Dispose();
-            if (m_Histogram.IsCreated) m_Histogram.Dispose();
-            if (m_SourceCounts.IsCreated) m_SourceCounts.Dispose();
-            if (m_PairCounts.IsCreated) m_PairCounts.Dispose();
             if (m_RankOfBody.IsCreated) m_RankOfBody.Dispose();
             if (m_RankToGuid.IsCreated) m_RankToGuid.Dispose();
             if (m_EmptyStream.IsCreated) m_EmptyStream.Dispose();

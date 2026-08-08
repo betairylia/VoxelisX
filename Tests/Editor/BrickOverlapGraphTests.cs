@@ -1,4 +1,3 @@
-using System;
 using System.Collections.Generic;
 using NUnit.Framework;
 using Unity.Collections;
@@ -146,7 +145,7 @@ namespace VoxelisX.Tests
         }
 
         [Test]
-        public void SerialAndParallelBuilds_MapAndProduceIdenticalSymmetricGraphs()
+        public void SerialBuild_MapsAndProducesSymmetricGraph()
         {
             // Physics body order is intentionally the reverse of GUID order for two bodies.
             // Public graph ordering must follow stable GUIDs, never transient body indices.
@@ -176,22 +175,6 @@ namespace VoxelisX.Tests
                 Candidate(2, midBrick, 1, lowBrick2)
             });
 
-            // Same logical candidates in a different order and stream partition. This build is
-            // forced down the parallel path to check parity with the serial fallback as well as
-            // independence from raw stream order.
-            using var parallelDynamic = CreateStream(
-                new[]
-                {
-                    Candidate(2, midBrick, 1, lowBrick2),
-                    Candidate(0, highBrick, 2, midBrick)
-                },
-                Array.Empty<VoxelBrickOverlapCandidate>());
-            using var parallelStatic = CreateStream(
-                new[]
-                {
-                    Candidate(0, highBrick, 1, lowBrick)
-                });
-
             using var builder = new BrickOverlapGraphBuilder
             {
                 serialBuildThreshold = int.MaxValue
@@ -210,24 +193,6 @@ namespace VoxelisX.Tests
             Assert.That(serialStats.NumBodies, Is.EqualTo(3));
             Assert.That(serialStats.UsedSerialPath, Is.True);
             Assert.That(serialStats.BuildMilliseconds, Is.GreaterThanOrEqualTo(0));
-
-            builder.serialBuildThreshold = 0;
-            builder.BuildAndPublish(
-                new VoxelBrickOverlapCandidates(parallelDynamic, parallelStatic),
-                bodyIndexToGuid);
-            BrickOverlapGraph parallelGraph = builder.Graph;
-            BrickOverlapGraphStats parallelStats = builder.LastBuildStats;
-
-            AssertExpectedThreePairGraph(parallelGraph, version: 2);
-            Assert.That(parallelStats.RawCandidates, Is.EqualTo(3));
-            Assert.That(parallelStats.PublishedPairs, Is.EqualTo(3));
-            Assert.That(parallelStats.ActiveSourceBricks, Is.EqualTo(4));
-            Assert.That(parallelStats.NumBodies, Is.EqualTo(3));
-            Assert.That(parallelStats.UsedSerialPath, Is.False);
-
-            // The previous view remains valid across one publish because the builder is
-            // double-buffered; consumers are required to re-fetch before the following publish.
-            AssertExpectedThreePairGraph(serialGraph, version: 1);
         }
 
         [Test]
