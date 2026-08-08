@@ -140,16 +140,21 @@ namespace Voxelis.Simulation
         /// <summary> Publication counter. Advances once per successful publish. </summary>
         public int Version => m_Version;
 
-        /// <summary> Number of canonical unique undirected pairs. </summary>
+        /// <summary> Number of canonical undirected pairs. </summary>
         public int PairCount => m_IsCreated ? m_Pairs.Length : 0;
 
         /// <summary> Number of source bricks that have at least one neighbor. </summary>
         public int SourceCount => m_IsCreated ? m_Ranges.Length : 0;
 
-        /// <summary> Indexed access to the canonical unique pair list (sorted, deduplicated). </summary>
+        /// <summary>
+        /// Indexed access to the sorted canonical pair list. Pair uniqueness is guaranteed by
+        /// the physics producer.
+        /// </summary>
         public BrickOverlapPair GetPair(int index) => m_Pairs[index];
 
-        /// <summary> The canonical unique pair list (sorted, deduplicated). </summary>
+        /// <summary>
+        /// The sorted canonical pair list. Pair uniqueness is guaranteed by the physics producer.
+        /// </summary>
         public NativeArray<BrickOverlapPair>.ReadOnly Pairs => m_Pairs.AsReadOnly();
 
         /// <summary> All source ranges, sorted by source key. </summary>
@@ -180,7 +185,7 @@ namespace Voxelis.Simulation
     public struct BrickOverlapGraphStats
     {
         public int RawCandidates;
-        public int UniquePairs;
+        public int PublishedPairs;
         public int ActiveSourceBricks;
         public int NumBodies;
         public double BuildMilliseconds;

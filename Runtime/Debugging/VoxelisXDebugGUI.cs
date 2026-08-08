@@ -471,7 +471,7 @@ public class VoxelisXDebugGUI : MonoBehaviour
         GUILayout.Label($"  Version: {graph.Version}", labelStyle);
         GUILayout.Label($"  Bodies: {stats.NumBodies}", labelStyle);
         GUILayout.Label($"  Raw Candidates: {stats.RawCandidates}", labelStyle);
-        GUILayout.Label($"  Unique Pairs: {stats.UniquePairs}", labelStyle);
+        GUILayout.Label($"  Published Pairs: {stats.PublishedPairs}", labelStyle);
         GUILayout.Label($"  Active Source Bricks: {stats.ActiveSourceBricks}", labelStyle);
         GUILayout.Label($"  Build Path: {buildPath}", labelStyle);
     }

@@ -146,7 +146,7 @@ namespace VoxelisX.Tests
         }
 
         [Test]
-        public void SerialAndParallelBuilds_MapDeduplicateAndProduceIdenticalSymmetricGraphs()
+        public void SerialAndParallelBuilds_MapAndProduceIdenticalSymmetricGraphs()
         {
             // Physics body order is intentionally the reverse of GUID order for two bodies.
             // Public graph ordering must follow stable GUIDs, never transient body indices.
@@ -160,17 +160,15 @@ namespace VoxelisX.Tests
             int3 midBrick = new int3(2, 0, 0);
             int3 lowBrick2 = new int3(-2, 0, 0);
 
-            // Original input: an exact duplicate, a reversed duplicate, and candidates split
-            // across the dynamic and static-static streams and multiple work items.
+            // Unique producer records split across the dynamic and static-static streams and
+            // multiple work items.
             using var serialDynamic = CreateStream(
                 new[]
                 {
-                    Candidate(0, highBrick, 1, lowBrick),
                     Candidate(0, highBrick, 1, lowBrick)
                 },
                 new[]
                 {
-                    Candidate(1, lowBrick, 0, highBrick),
                     Candidate(0, highBrick, 2, midBrick)
                 });
             using var serialStatic = CreateStream(new[]
@@ -191,11 +189,6 @@ namespace VoxelisX.Tests
             using var parallelStatic = CreateStream(
                 new[]
                 {
-                    Candidate(1, lowBrick, 0, highBrick),
-                    Candidate(0, highBrick, 1, lowBrick)
-                },
-                new[]
-                {
                     Candidate(0, highBrick, 1, lowBrick)
                 });
 
@@ -211,8 +204,8 @@ namespace VoxelisX.Tests
             BrickOverlapGraphStats serialStats = builder.LastBuildStats;
 
             AssertExpectedThreePairGraph(serialGraph, version: 1);
-            Assert.That(serialStats.RawCandidates, Is.EqualTo(5));
-            Assert.That(serialStats.UniquePairs, Is.EqualTo(3));
+            Assert.That(serialStats.RawCandidates, Is.EqualTo(3));
+            Assert.That(serialStats.PublishedPairs, Is.EqualTo(3));
             Assert.That(serialStats.ActiveSourceBricks, Is.EqualTo(4));
             Assert.That(serialStats.NumBodies, Is.EqualTo(3));
             Assert.That(serialStats.UsedSerialPath, Is.True);
@@ -226,8 +219,8 @@ namespace VoxelisX.Tests
             BrickOverlapGraphStats parallelStats = builder.LastBuildStats;
 
             AssertExpectedThreePairGraph(parallelGraph, version: 2);
-            Assert.That(parallelStats.RawCandidates, Is.EqualTo(5));
-            Assert.That(parallelStats.UniquePairs, Is.EqualTo(3));
+            Assert.That(parallelStats.RawCandidates, Is.EqualTo(3));
+            Assert.That(parallelStats.PublishedPairs, Is.EqualTo(3));
             Assert.That(parallelStats.ActiveSourceBricks, Is.EqualTo(4));
             Assert.That(parallelStats.NumBodies, Is.EqualTo(3));
             Assert.That(parallelStats.UsedSerialPath, Is.False);
@@ -267,7 +260,7 @@ namespace VoxelisX.Tests
             Assert.That(empty.SourceCount, Is.Zero);
             Assert.That(empty.TryGetOverlaps(Key(HighGuid, 4), out _), Is.False);
             Assert.That(builder.LastBuildStats.RawCandidates, Is.Zero);
-            Assert.That(builder.LastBuildStats.UniquePairs, Is.Zero);
+            Assert.That(builder.LastBuildStats.PublishedPairs, Is.Zero);
             Assert.That(builder.LastBuildStats.ActiveSourceBricks, Is.Zero);
         }
     }

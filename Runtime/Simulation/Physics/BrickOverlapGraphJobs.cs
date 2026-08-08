@@ -50,13 +50,6 @@ namespace Voxelis.Simulation
             return CompareWithinBucket(a, b);
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static bool Equals(in DirectedBrickOverlapRecord a, in DirectedBrickOverlapRecord b)
-        {
-            return a.SrcRank == b.SrcRank && a.TgtRank == b.TgtRank
-                && math.all(a.SrcBrick == b.SrcBrick) && math.all(a.TgtBrick == b.TgtBrick);
-        }
-
         /// <summary>
         /// True when the directed record's source key is strictly smaller than its target
         /// key, which selects exactly one of the two directions of an undirected pair.
@@ -325,28 +318,28 @@ namespace Voxelis.Simulation
     }
 
     /// <summary>
-    /// Sorts every rank bucket by (SrcBrick, TgtRank, TgtBrick). Mirrors the physics
-    /// scheduler's SortSubArraysJob. The scatter order inside a bucket is timing
-    /// dependent, but the sort key covers the whole record and duplicates are
-    /// bit-identical, so the sorted array is deterministic.
+    /// Sorts every rank bucket by (SrcBrick, TgtRank, TgtBrick), then counts its source
+    /// ranges and canonical pairs. The scatter order inside a bucket is timing dependent,
+    /// but the sort key covers the whole record, so the sorted array is deterministic.
     /// </summary>
     [BurstCompile]
-    internal struct SortBucketsJob : IJobParallelFor
+    internal struct SortAndCountBucketsJob : IJobParallelFor
     {
         [NativeDisableParallelForRestriction]
         public NativeArray<DirectedBrickOverlapRecord> InOutArray;
         // BucketEnds[b] = end of bucket b = start of bucket b + 1 (see ScatterRecordsJob).
         [ReadOnly, NativeDisableParallelForRestriction]
         public NativeArray<int> BucketEnds;
+        [WriteOnly, NativeDisableParallelForRestriction]
+        public NativeArray<int> SourceCounts;
+        [WriteOnly, NativeDisableParallelForRestriction]
+        public NativeArray<int> PairCounts;
 
         public void Execute(int bucket)
         {
             int start = bucket == 0 ? 0 : BucketEnds[bucket - 1];
-            if (start >= InOutArray.Length)
-            {
-                return;
-            }
-            int length = BucketEnds[bucket] - start;
+            int end = BucketEnds[bucket];
+            int length = end - start;
 
             if (length > 2)
             {
@@ -362,34 +355,7 @@ namespace Voxelis.Simulation
                     InOutArray[start] = tmp;
                 }
             }
-        }
-    }
 
-    /// <summary>
-    /// Per-bucket counting scan: unique directed records (= neighbor entries), distinct
-    /// source bricks (= range entries) and canonical pairs. Duplicates of a directed
-    /// record always share the source body, so deduplication is bucket-local.
-    /// </summary>
-    [BurstCompile]
-    internal struct CountUniquePerBucketJob : IJobParallelFor
-    {
-        [ReadOnly, NativeDisableParallelForRestriction]
-        public NativeArray<DirectedBrickOverlapRecord> Sorted;
-        [ReadOnly, NativeDisableParallelForRestriction]
-        public NativeArray<int> BucketEnds;
-        [WriteOnly, NativeDisableParallelForRestriction]
-        public NativeArray<int> NeighborCounts;
-        [WriteOnly, NativeDisableParallelForRestriction]
-        public NativeArray<int> SourceCounts;
-        [WriteOnly, NativeDisableParallelForRestriction]
-        public NativeArray<int> PairCounts;
-
-        public void Execute(int bucket)
-        {
-            int start = bucket == 0 ? 0 : BucketEnds[bucket - 1];
-            int end = BucketEnds[bucket];
-
-            int neighborCount = 0;
             int sourceCount = 0;
             int pairCount = 0;
 
@@ -397,16 +363,11 @@ namespace Voxelis.Simulation
             bool hasPrev = false;
             for (int i = start; i < end; i++)
             {
-                var record = Sorted[i];
-                if (hasPrev && DirectedBrickOverlapRecord.Equals(record, prev))
-                {
-                    continue;
-                }
+                var record = InOutArray[i];
                 if (!hasPrev || math.any(record.SrcBrick != prev.SrcBrick))
                 {
                     sourceCount++;
                 }
-                neighborCount++;
                 if (DirectedBrickOverlapRecord.IsCanonical(record))
                 {
                     pairCount++;
@@ -415,7 +376,6 @@ namespace Voxelis.Simulation
                 hasPrev = true;
             }
 
-            NeighborCounts[bucket] = neighborCount;
             SourceCounts[bucket] = sourceCount;
             PairCounts[bucket] = pairCount;
         }
@@ -434,8 +394,6 @@ namespace Voxelis.Simulation
         public NativeArray<DirectedBrickOverlapRecord> Sorted;
         [ReadOnly, NativeDisableParallelForRestriction]
         public NativeArray<int> BucketEnds;
-        [ReadOnly, NativeDisableParallelForRestriction]
-        public NativeArray<int> NeighborOffsets;
         [ReadOnly, NativeDisableParallelForRestriction]
         public NativeArray<int> SourceOffsets;
         [ReadOnly, NativeDisableParallelForRestriction]
@@ -459,14 +417,15 @@ namespace Voxelis.Simulation
                 return;
             }
 
-            int neighborCursor = NeighborOffsets[bucket];
+            // Every sorted directed record becomes exactly one neighbor, so the bucket's
+            // input offset is also its output offset.
+            int neighborCursor = start;
             int sourceCursor = SourceOffsets[bucket];
             int pairCursor = PairOffsets[bucket];
 
             Guid128 sourceGuid = RankToGuid[bucket];
 
-            DirectedBrickOverlapRecord prev = default;
-            bool hasPrev = false;
+            bool hasRun = false;
             int3 runBrick = default;
             int runStart = 0;
             int runCount = 0;
@@ -474,14 +433,9 @@ namespace Voxelis.Simulation
             for (int i = start; i < end; i++)
             {
                 var record = Sorted[i];
-                if (hasPrev && DirectedBrickOverlapRecord.Equals(record, prev))
+                if (!hasRun || math.any(record.SrcBrick != runBrick))
                 {
-                    continue;
-                }
-
-                if (!hasPrev || math.any(record.SrcBrick != runBrick))
-                {
-                    if (hasPrev)
+                    if (hasRun)
                     {
                         var closedSource = new BrickOverlapKey { EntityId = sourceGuid, BrickCoord = runBrick };
                         Ranges[sourceCursor] = new BrickOverlapSourceRange
@@ -496,6 +450,7 @@ namespace Voxelis.Simulation
                     runBrick = record.SrcBrick;
                     runStart = neighborCursor;
                     runCount = 0;
+                    hasRun = true;
                 }
 
                 Neighbors[neighborCursor] = new BrickOverlapKey
@@ -515,9 +470,6 @@ namespace Voxelis.Simulation
                     };
                     pairCursor++;
                 }
-
-                prev = record;
-                hasPrev = true;
             }
 
             var lastSource = new BrickOverlapKey { EntityId = sourceGuid, BrickCoord = runBrick };
@@ -532,7 +484,7 @@ namespace Voxelis.Simulation
     }
 
     /// <summary>
-    /// Small-input fallback: flatten, sort, deduplicate and emit in one Burst job.
+    /// Small-input fallback: flatten, sort and emit in one Burst job.
     /// Produces bit-identical output to the parallel pipeline.
     /// </summary>
     [BurstCompile]
@@ -569,11 +521,6 @@ namespace Voxelis.Simulation
             for (int i = 0; i < Scratch.Length; i++)
             {
                 var record = Scratch[i];
-                if (hasPrev && DirectedBrickOverlapRecord.Equals(record, prev))
-                {
-                    continue;
-                }
-
                 if (!hasPrev || record.SrcRank != prev.SrcRank || math.any(record.SrcBrick != prev.SrcBrick))
                 {
                     if (hasPrev)

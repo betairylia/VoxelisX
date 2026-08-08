@@ -15,9 +15,9 @@ namespace Voxelis.Simulation
     /// candidate streams of one simulation step.
     ///
     /// Pipeline (all Burst jobs, mirrored from the physics scheduler's parallel radix sort):
-    /// flatten+map+double → histogram by source rank → prefix sum → scatter → per-bucket sort
-    /// → per-bucket count → per-bucket emit. Deduplication is bucket-local because duplicates
-    /// of a directed record always share the source body. Small inputs (at most
+    /// flatten+map+double → histogram by source rank → prefix sum → scatter → per-bucket
+    /// sort+count → per-bucket emit. The physics producer guarantees that
+    /// raw brick pairs are unique. Small inputs (at most
     /// <see cref="serialBuildThreshold"/> directed records) run one serial job instead and
     /// produce identical output.
     ///
@@ -74,7 +74,6 @@ namespace Voxelis.Simulation
         NativeList<DirectedBrickOverlapRecord> m_Directed;
         NativeList<DirectedBrickOverlapRecord> m_Sorted;
         NativeList<int> m_Histogram;
-        NativeList<int> m_NeighborCounts;
         NativeList<int> m_SourceCounts;
         NativeList<int> m_PairCounts;
         NativeList<int> m_RankOfBody;
@@ -100,7 +99,6 @@ namespace Voxelis.Simulation
             m_Directed = new NativeList<DirectedBrickOverlapRecord>(256, Allocator.Persistent);
             m_Sorted = new NativeList<DirectedBrickOverlapRecord>(256, Allocator.Persistent);
             m_Histogram = new NativeList<int>(64, Allocator.Persistent);
-            m_NeighborCounts = new NativeList<int>(64, Allocator.Persistent);
             m_SourceCounts = new NativeList<int>(64, Allocator.Persistent);
             m_PairCounts = new NativeList<int>(64, Allocator.Persistent);
             m_RankOfBody = new NativeList<int>(64, Allocator.Persistent);
@@ -224,7 +222,7 @@ namespace Voxelis.Simulation
             }
 
             stats.UsedSerialPath = true;
-            stats.UniquePairs = target.Pairs.Length;
+            stats.PublishedPairs = target.Pairs.Length;
             stats.ActiveSourceBricks = target.Ranges.Length;
         }
 
@@ -238,8 +236,7 @@ namespace Voxelis.Simulation
             m_StreamOffsets.ResizeUninitialized(forEachTotal);
             m_Directed.ResizeUninitialized(totalDirected);
             m_Sorted.ResizeUninitialized(totalDirected);
-            m_Histogram.ResizeUninitialized(numBodies + 1);
-            m_NeighborCounts.ResizeUninitialized(numBodies);
+            m_Histogram.ResizeUninitialized(numBodies);
             m_SourceCounts.ResizeUninitialized(numBodies);
             m_PairCounts.ResizeUninitialized(numBodies);
 
@@ -292,34 +289,26 @@ namespace Voxelis.Simulation
 
             int bucketBatch = math.max(1, numBodies / 32);
 
-            JobHandle sortHandle = new SortBucketsJob
+            JobHandle sortAndCountHandle = new SortAndCountBucketsJob
             {
                 InOutArray = m_Sorted.AsArray(),
-                BucketEnds = m_Histogram.AsArray()
-            }.Schedule(numBodies + 1, bucketBatch, scatterHandle);
-
-            JobHandle countUniqueHandle = new CountUniquePerBucketJob
-            {
-                Sorted = m_Sorted.AsArray(),
                 BucketEnds = m_Histogram.AsArray(),
-                NeighborCounts = m_NeighborCounts.AsArray(),
                 SourceCounts = m_SourceCounts.AsArray(),
                 PairCounts = m_PairCounts.AsArray()
-            }.Schedule(numBodies, bucketBatch, sortHandle);
+            }.Schedule(numBodies, bucketBatch, scatterHandle);
 
             using (s_SortMarker.Auto())
             {
-                countUniqueHandle.Complete();
+                sortAndCountHandle.Complete();
             }
 
             // Turn per-bucket counts into per-bucket output offsets, size the target buffers,
             // then emit in parallel into disjoint ranges.
-            int totalNeighbors = ExclusivePrefixInPlace(m_NeighborCounts);
             int totalSources = ExclusivePrefixInPlace(m_SourceCounts);
             int totalPairs = ExclusivePrefixInPlace(m_PairCounts);
 
             target.Pairs.ResizeUninitialized(totalPairs);
-            target.Neighbors.ResizeUninitialized(totalNeighbors);
+            target.Neighbors.ResizeUninitialized(totalDirected);
             target.Ranges.ResizeUninitialized(totalSources);
             target.RangeLookup.Clear();
             EnsureHashCapacity(target, totalSources);
@@ -328,7 +317,6 @@ namespace Voxelis.Simulation
             {
                 Sorted = m_Sorted.AsArray(),
                 BucketEnds = m_Histogram.AsArray(),
-                NeighborOffsets = m_NeighborCounts.AsArray(),
                 SourceOffsets = m_SourceCounts.AsArray(),
                 PairOffsets = m_PairCounts.AsArray(),
                 RankToGuid = m_RankToGuid.AsArray(),
@@ -344,7 +332,7 @@ namespace Voxelis.Simulation
             }
 
             stats.UsedSerialPath = false;
-            stats.UniquePairs = totalPairs;
+            stats.PublishedPairs = totalPairs;
             stats.ActiveSourceBricks = totalSources;
         }
 
@@ -384,7 +372,6 @@ namespace Voxelis.Simulation
             if (m_Directed.IsCreated) m_Directed.Dispose();
             if (m_Sorted.IsCreated) m_Sorted.Dispose();
             if (m_Histogram.IsCreated) m_Histogram.Dispose();
-            if (m_NeighborCounts.IsCreated) m_NeighborCounts.Dispose();
             if (m_SourceCounts.IsCreated) m_SourceCounts.Dispose();
             if (m_PairCounts.IsCreated) m_PairCounts.Dispose();
             if (m_RankOfBody.IsCreated) m_RankOfBody.Dispose();

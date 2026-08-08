@@ -210,10 +210,8 @@ namespace VoxelisX.Tests
                         : 0
                 };
 
-                foreach (VoxelBrickOverlapCandidate candidate in candidates)
-                {
-                    result.Candidates.Add(candidate);
-                }
+                AppendCandidates(candidates.DynamicStream, result.Candidates);
+                AppendCandidates(candidates.StaticStream, result.Candidates);
 
                 // Simulation.Contacts is consumed while the full step builds Jacobians.
                 // VoxelContactEvents is the post-step evidence that contact handling ran.
@@ -231,6 +229,26 @@ namespace VoxelisX.Tests
                     handles.FinalDisposeHandle.Complete();
                 }
                 simulation.Dispose();
+            }
+        }
+
+        static void AppendCandidates(NativeStream stream,
+            List<VoxelBrickOverlapCandidate> destination)
+        {
+            if (!stream.IsCreated)
+            {
+                return;
+            }
+
+            NativeStream.Reader reader = stream.AsReader();
+            for (int workItem = 0; workItem < stream.ForEachCount; workItem++)
+            {
+                int count = reader.BeginForEachIndex(workItem);
+                for (int i = 0; i < count; i++)
+                {
+                    destination.Add(reader.Read<VoxelBrickOverlapCandidate>());
+                }
+                reader.EndForEachIndex();
             }
         }
 
