@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using NUnit.Framework;
 using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
 using Unity.Entities;
 using Unity.Jobs;
 using Unity.Mathematics;
@@ -12,8 +13,8 @@ using VoxelisX.Tests.TestSupport;
 namespace VoxelisX.Tests
 {
     /// <summary>
-    /// Tests the explicit post-simulation brick query API. Unlike the former producer, these
-    /// queries are not part of narrowphase or the regular simulation step.
+    /// Tests the explicit post-simulation brick query API. These queries are not part of
+    /// narrowphase or the regular simulation step.
     /// </summary>
     public unsafe class VoxelBrickOverlapCandidateTests
     {
@@ -119,13 +120,22 @@ namespace VoxelisX.Tests
             }
         }
 
-        struct AddZeroBrickQueryJob : IJobParallelFor
+        struct BuildZeroBrickQueryBatchesJob : IJobParallelFor
         {
-            public NativeParallelMultiHashMap<int, int3>.ParallelWriter Writer;
+            public NativeArray<VoxelBrickOverlapQueryBatch> Batches;
+            public NativeStream.Writer QueryWriter;
 
-            public void Execute(int bodyIndex)
+            public void Execute(int batchIndex)
             {
-                Writer.Add(bodyIndex, int3.zero);
+                Batches[batchIndex] = new VoxelBrickOverlapQueryBatch
+                {
+                    SourceBodyIndex = batchIndex
+                };
+
+                NativeStream.Writer writer = QueryWriter;
+                writer.BeginForEachIndex(batchIndex);
+                writer.Write(new VoxelBrickOverlapQuery(int3.zero, (ushort)(batchIndex + 1)));
+                writer.EndForEachIndex();
             }
         }
 
@@ -181,23 +191,64 @@ namespace VoxelisX.Tests
             PhysicsWorldFixture fixture,
             params (int BodyIndex, int3 Brick)[] queries)
         {
-            using var queryMap = new NativeParallelMultiHashMap<int, int3>(
+            using var batches = new NativeArray<VoxelBrickOverlapQueryBatch>(
+                queries.Length, Allocator.TempJob);
+            NativeArray<VoxelBrickOverlapQueryBatch> batchWriter = batches;
+            using var queryStream = new NativeStream(
                 math.max(1, queries.Length), Allocator.TempJob);
-            for (int i = 0; i < queries.Length; i++)
+            NativeStream.Writer writer = queryStream.AsWriter();
+
+            for (int batchIndex = 0; batchIndex < queryStream.ForEachCount; batchIndex++)
             {
-                queryMap.Add(queries[i].BodyIndex, queries[i].Brick);
+                writer.BeginForEachIndex(batchIndex);
+                if (batchIndex < queries.Length)
+                {
+                    batchWriter[batchIndex] = new VoxelBrickOverlapQueryBatch
+                    {
+                        SourceBodyIndex = queries[batchIndex].BodyIndex
+                    };
+                    writer.Write(new VoxelBrickOverlapQuery(
+                        queries[batchIndex].Brick, (ushort)(batchIndex + 1)));
+                }
+                writer.EndForEachIndex();
             }
 
-            return RunQuery(fixture, queryMap, default);
+            return RunQuery(fixture, batches, queryStream, default);
+        }
+
+        static List<VoxelBrickOverlapCandidate> RunQueryBatch(
+            PhysicsWorldFixture fixture,
+            int sourceBodyIndex,
+            params VoxelBrickOverlapQuery[] queries)
+        {
+            using var batches = new NativeArray<VoxelBrickOverlapQueryBatch>(
+                1, Allocator.TempJob);
+            NativeArray<VoxelBrickOverlapQueryBatch> batchWriter = batches;
+            batchWriter[0] = new VoxelBrickOverlapQueryBatch
+            {
+                SourceBodyIndex = sourceBodyIndex
+            };
+
+            using var queryStream = new NativeStream(1, Allocator.TempJob);
+            NativeStream.Writer writer = queryStream.AsWriter();
+            writer.BeginForEachIndex(0);
+            for (int i = 0; i < queries.Length; i++)
+            {
+                writer.Write(queries[i]);
+            }
+            writer.EndForEachIndex();
+
+            return RunQuery(fixture, batches, queryStream, default);
         }
 
         static List<VoxelBrickOverlapCandidate> RunQuery(
             PhysicsWorldFixture fixture,
-            NativeParallelMultiHashMap<int, int3> queryMap,
+            NativeArray<VoxelBrickOverlapQueryBatch> queryBatches,
+            NativeStream queryStream,
             JobHandle inputDeps)
         {
             JobHandle handle = fixture.World.CollisionWorld.ScheduleVoxelBrickOverlaps(
-                queryMap, out NativeStream stream, inputDeps);
+                queryBatches, queryStream, out NativeStream stream, inputDeps);
             handle.Complete();
 
             try
@@ -219,6 +270,12 @@ namespace VoxelisX.Tests
             {
                 stream.Dispose();
             }
+        }
+
+        [Test]
+        public void QueryRecordHasStableSixteenByteLayout()
+        {
+            Assert.That(UnsafeUtility.SizeOf<VoxelBrickOverlapQuery>(), Is.EqualTo(16));
         }
 
         static void AssertCandidate(
@@ -293,7 +350,69 @@ namespace VoxelisX.Tests
         }
 
         [Test]
-        public void ParallelWriterInputMayEmitReversedRawDuplicatesWithoutProducerCompletion()
+        public void OneBatchMayContainArbitrarilyGroupedBricksFromOneBody()
+        {
+            using var source = new VoxelColliderFixture();
+            using var target = new VoxelColliderFixture();
+            source.SetBlock(int3.zero, int3.zero, new Block(1));
+            source.SetBlock(int3.zero, new int3(16, 0, 0), new Block(1));
+            target.SetBlock(int3.zero, int3.zero, new Block(1));
+            target.SetBlock(int3.zero, new int3(16, 0, 0), new Block(1));
+            source.Build();
+            target.Build();
+
+            using var world = new PhysicsWorldFixture(2, 0);
+            NativeArray<RigidBody> bodies = world.World.Bodies;
+            bodies[0] = Body(source.Collider, RigidTransform.identity, 1);
+            bodies[1] = Body(target.Collider, RigidTransform.identity, 2);
+            BuildBroadphase(world);
+
+            List<VoxelBrickOverlapCandidate> result = RunQueryBatch(
+                world,
+                0,
+                new VoxelBrickOverlapQuery(int3.zero, 0x0001),
+                new VoxelBrickOverlapQuery(new int3(2, 0, 0), 0x8000));
+
+            Assert.That(result, Has.Count.EqualTo(2));
+            Assert.That(result.Exists(candidate =>
+                candidate.BodyIndexA == 0 &&
+                candidate.BodyIndexB == 1 &&
+                candidate.BrickCoordsInA.Equals(int3.zero) &&
+                candidate.BrickCoordsInB.Equals(int3.zero)), Is.True);
+            Assert.That(result.Exists(candidate =>
+                candidate.BodyIndexA == 0 &&
+                candidate.BodyIndexB == 1 &&
+                candidate.BrickCoordsInA.Equals(new int3(2, 0, 0)) &&
+                candidate.BrickCoordsInB.Equals(new int3(2, 0, 0))), Is.True);
+        }
+
+        [Test]
+        public void UnallocatedSourceBrickMayOverlapAllocatedTargetBrick()
+        {
+            using var source = new VoxelColliderFixture();
+            using var target = new VoxelColliderFixture();
+
+            // Brick 1 keeps the source collider valid while queried brick 0 stays unallocated.
+            source.SetBlock(int3.zero, new int3(8, 0, 0), new Block(1));
+            target.SetBlock(int3.zero, int3.zero, new Block(1));
+            source.Build();
+            target.Build();
+
+            using var world = new PhysicsWorldFixture(2, 0);
+            NativeArray<RigidBody> bodies = world.World.Bodies;
+            bodies[0] = Body(source.Collider, RigidTransform.identity, 1);
+            bodies[1] = Body(target.Collider, RigidTransform.identity, 2);
+            BuildBroadphase(world);
+
+            List<VoxelBrickOverlapCandidate> result = RunQueryBatch(
+                world, 0, new VoxelBrickOverlapQuery(int3.zero, 0x0040));
+
+            Assert.That(result, Has.Count.EqualTo(1));
+            AssertCandidate(result[0], 0, int3.zero, 1, int3.zero);
+        }
+
+        [Test]
+        public void ParallelBatchInputMayEmitReversedRawDuplicatesWithoutProducerCompletion()
         {
             using var body0 = new VoxelColliderFixture();
             using var body1 = new VoxelColliderFixture();
@@ -308,17 +427,19 @@ namespace VoxelisX.Tests
             bodies[1] = Body(body1.Collider, RigidTransform.identity, 2);
             BuildBroadphase(world);
 
-            using var queryMap = new NativeParallelMultiHashMap<int, int3>(
+            using var batches = new NativeArray<VoxelBrickOverlapQueryBatch>(
                 2, Allocator.TempJob);
-            JobHandle producer = new AddZeroBrickQueryJob
+            using var queryStream = new NativeStream(2, Allocator.TempJob);
+            JobHandle producer = new BuildZeroBrickQueryBatchesJob
             {
-                Writer = queryMap.AsParallelWriter()
+                Batches = batches,
+                QueryWriter = queryStream.AsWriter()
             }.Schedule(2, 1);
 
-            // ScheduleVoxelBrickOverlaps consumes the map behind the producer dependency;
+            // ScheduleVoxelBrickOverlaps consumes both inputs behind the producer dependency;
             // no producer.Complete() is required at this boundary.
             List<VoxelBrickOverlapCandidate> result =
-                RunQuery(world, queryMap, producer);
+                RunQuery(world, batches, queryStream, producer);
 
             Assert.That(result, Has.Count.EqualTo(2));
             Assert.That(result.Exists(candidate =>
