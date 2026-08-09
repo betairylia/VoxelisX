@@ -9,11 +9,12 @@ using Voxelis.Utils;
 namespace Voxelis.Simulation
 {
     /// <summary>
-    /// Builds and double-buffer-publishes the post-physics brick-overlap graph from the raw
-    /// candidate streams of one simulation step.
+    /// Builds and double-buffer-publishes the post-physics brick-overlap graph from a raw
+    /// candidate stream.
     ///
-    /// The physics producer guarantees that raw brick pairs are unique. Small inputs (at
-    /// most <see cref="serialBuildThreshold"/> directed records) run one serial job. The
+    /// Querying both endpoints or submitting duplicate source bricks can produce duplicate raw
+    /// pairs. The sorted build removes them before publishing symmetric adjacency. Small inputs
+    /// (at most <see cref="serialBuildThreshold"/> directed records) run one serial job. The
     /// parallel build path is not implemented.
     ///
     /// Build must run while the step's bodyIndexToGuid mapping is still valid, after the
@@ -68,12 +69,6 @@ namespace Voxelis.Simulation
         NativeList<int> m_RankOfBody;
         NativeList<Guid128> m_RankToGuid;
 
-        // Stand-in for an uncreated candidate stream (for example the dynamic stream in a
-        // world with zero dynamic bodies): jobs cannot be scheduled with a default
-        // NativeStream.Reader field, so an always-created empty stream substitutes. Its
-        // ForEachCount is never used; the real per-stream counts stay zero.
-        NativeStream m_EmptyStream;
-
         /// <summary> Counters of the most recent build. </summary>
         public BrickOverlapGraphStats LastBuildStats { get; private set; }
 
@@ -86,7 +81,6 @@ namespace Voxelis.Simulation
             m_Directed = new NativeList<DirectedBrickOverlapRecord>(256, Allocator.Persistent);
             m_RankOfBody = new NativeList<int>(64, Allocator.Persistent);
             m_RankToGuid = new NativeList<Guid128>(64, Allocator.Persistent);
-            m_EmptyStream = new NativeStream(1, Allocator.Persistent);
         }
 
         /// <summary>
@@ -118,7 +112,7 @@ namespace Voxelis.Simulation
         /// (it replaces, not preserves, the previous one). Completes all internal jobs
         /// before returning.
         /// </summary>
-        public void BuildAndPublish(VoxelBrickOverlapCandidates candidates, NativeArray<Guid128> bodyIndexToGuid)
+        public void BuildAndPublish(NativeStream candidates, NativeArray<Guid128> bodyIndexToGuid)
         {
             using (s_BuildMarker.Auto())
             {
@@ -126,7 +120,7 @@ namespace Voxelis.Simulation
 
                 GraphBuffer target = m_Buffers[1 - m_Active];
                 int numBodies = bodyIndexToGuid.IsCreated ? bodyIndexToGuid.Length : 0;
-                int rawCandidates = candidates.Count();
+                int rawCandidates = candidates.IsCreated ? candidates.Count() : 0;
 
                 var stats = new BrickOverlapGraphStats
                 {
@@ -141,12 +135,8 @@ namespace Voxelis.Simulation
                     return;
                 }
 
-                NativeStream dynamicStream = candidates.DynamicStream;
-                NativeStream staticStream = candidates.StaticStream;
-                int dynamicForEach = dynamicStream.IsCreated ? dynamicStream.ForEachCount : 0;
-                int staticForEach = staticStream.IsCreated ? staticStream.ForEachCount : 0;
-                NativeStream.Reader dynamicReader = (dynamicStream.IsCreated ? dynamicStream : m_EmptyStream).AsReader();
-                NativeStream.Reader staticReader = (staticStream.IsCreated ? staticStream : m_EmptyStream).AsReader();
+                int candidateForEach = candidates.ForEachCount;
+                NativeStream.Reader candidateReader = candidates.AsReader();
 
                 m_RankOfBody.ResizeUninitialized(numBodies);
                 m_RankToGuid.ResizeUninitialized(numBodies);
@@ -163,21 +153,21 @@ namespace Voxelis.Simulation
                 // if (totalDirected <= serialBuildThreshold)
                 if (true)
                 {
-                    BuildSerial(target, rankHandle, dynamicReader, staticReader,
-                        dynamicForEach, staticForEach, numBodies, totalDirected, ref stats);
+                    BuildSerial(target, rankHandle, candidateReader,
+                        candidateForEach, numBodies, totalDirected, ref stats);
                     Publish(stats, startTicks);
                     return;
                 }
 
-                BuildParallel(target, rankHandle, dynamicReader, staticReader,
-                    dynamicForEach, staticForEach, numBodies, totalDirected, ref stats);
+                BuildParallel(target, rankHandle, candidateReader,
+                    candidateForEach, numBodies, totalDirected, ref stats);
                 Publish(stats, startTicks);
             }
         }
 
         void BuildSerial(GraphBuffer target, JobHandle rankHandle,
-            NativeStream.Reader dynamicReader, NativeStream.Reader staticReader,
-            int dynamicForEach, int staticForEach, int numBodies, int totalDirected,
+            NativeStream.Reader candidateReader,
+            int candidateForEach, int numBodies, int totalDirected,
             ref BrickOverlapGraphStats stats)
         {
             target.Clear();
@@ -187,10 +177,8 @@ namespace Voxelis.Simulation
 
             JobHandle serialHandle = new SerialBuildJob
             {
-                DynamicReader = dynamicReader,
-                StaticReader = staticReader,
-                DynamicForEachCount = dynamicForEach,
-                StaticForEachCount = staticForEach,
+                CandidateReader = candidateReader,
+                CandidateForEachCount = candidateForEach,
                 NumBodies = numBodies,
                 RankOfBody = m_RankOfBody.AsArray(),
                 RankToGuid = m_RankToGuid.AsArray(),
@@ -212,8 +200,8 @@ namespace Voxelis.Simulation
         }
 
         void BuildParallel(GraphBuffer target, JobHandle rankHandle,
-            NativeStream.Reader dynamicReader, NativeStream.Reader staticReader,
-            int dynamicForEach, int staticForEach, int numBodies, int totalDirected,
+            NativeStream.Reader candidateReader,
+            int candidateForEach, int numBodies, int totalDirected,
             ref BrickOverlapGraphStats stats)
         {
             rankHandle.Complete();
@@ -243,7 +231,6 @@ namespace Voxelis.Simulation
             if (m_Directed.IsCreated) m_Directed.Dispose();
             if (m_RankOfBody.IsCreated) m_RankOfBody.Dispose();
             if (m_RankToGuid.IsCreated) m_RankToGuid.Dispose();
-            if (m_EmptyStream.IsCreated) m_EmptyStream.Dispose();
         }
     }
 }

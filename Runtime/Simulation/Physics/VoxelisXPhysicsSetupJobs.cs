@@ -15,6 +15,44 @@ namespace Voxelis.Simulation
 {
     public static class VoxelisXPhysicsInterface
     {
+        [BurstCompile]
+        public struct BuildBodyIndexByGuidJob : IJobParallelFor
+        {
+            [ReadOnly] public NativeArray<Guid128> BodyIndexToGuid;
+            public NativeParallelHashMap<Guid128, int>.ParallelWriter BodyIndexByGuid;
+
+            public void Execute(int bodyIndex)
+            {
+                BodyIndexByGuid.TryAdd(BodyIndexToGuid[bodyIndex], bodyIndex);
+            }
+        }
+
+        /// <summary>
+        /// Maps stable voxel-side brick keys to this step's transient physics body indices.
+        /// The multi-map is intentionally parallel-writable because future dirty/persistent
+        /// collectors can feed it directly without first producing a serial flat list.
+        /// </summary>
+        [BurstCompile]
+        public struct BuildBrickOverlapQueriesJob : IJobParallelFor
+        {
+            [ReadOnly] public NativeArray<VoxelisXWorld.BrickInfo> SourceBricks;
+            [ReadOnly] public NativeParallelHashMap<Guid128, int> BodyIndexByGuid;
+            public NativeParallelMultiHashMap<int, int3>.ParallelWriter Queries;
+
+            public void Execute(int index)
+            {
+                VoxelisXWorld.BrickInfo source = SourceBricks[index];
+                if (!BodyIndexByGuid.TryGetValue(source.EntityId, out int bodyIndex))
+                {
+                    return;
+                }
+
+                int3 brickCoord = source.SectorPos * Sector.SIZE_IN_BRICKS +
+                    (source.BrickOrigin >> Sector.SHIFT_IN_BLOCKS);
+                Queries.Add(bodyIndex, brickCoord);
+            }
+        }
+
         // TODO: Parallelization
         [BurstCompile]
         public struct FillPhysicsWorldJob : IJob

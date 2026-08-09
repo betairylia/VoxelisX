@@ -44,7 +44,7 @@ namespace Voxelis.Simulation
         public float maxStaticDepenetrationVelocity = 10f;
 
         [Tooltip("Synchronize collision world after physics step (enable for precise queries within same frame)")]
-        public bool synchronizeCollisionWorld = false;
+        public bool synchronizeCollisionWorld = true;
 
         [Header("Solver Stabilization")]
         [Tooltip("Enable stabilization heuristic")]
@@ -106,7 +106,9 @@ namespace Voxelis.Simulation
         public BrickOverlapGraphStats BrickOverlapGraphStats =>
             brickOverlapGraphBuilder != null ? brickOverlapGraphBuilder.LastBuildStats : default;
 
-        public void SimulateStep(float dt, VoxelisXWorld.WorldStageInputs tickBuf)
+        public void SimulateStep(
+            float dt,
+            VoxelisXWorld.WorldStageInputs tickBuf)
         {
             Profiler.BeginSample("Physics Build World");
             var buildHandle = VoxelisXPhysicsInterface.SchedulePhysicsWorldBuild(
@@ -116,6 +118,24 @@ namespace Voxelis.Simulation
             buildHandle.Complete();
             haveStaticBodiesChanged.Value = 1;
             Profiler.EndSample();
+
+            // args: NativeArray<VoxelisXWorld.BrickInfo> brickOverlapSourceBricks
+            // var bodyIndexByGuid = new NativeParallelHashMap<Guid128, int>(
+            //     System.Math.Max(1, bodyIndexToGuid.Length), Allocator.TempJob);
+            // JobHandle buildBodyIndexHandle = new VoxelisXPhysicsInterface.BuildBodyIndexByGuidJob
+            // {
+            //     BodyIndexToGuid = bodyIndexToGuid,
+            //     BodyIndexByGuid = bodyIndexByGuid.AsParallelWriter()
+            // }.Schedule(bodyIndexToGuid.Length, 64);
+            //
+            // var physicsBrickQueries = new NativeParallelMultiHashMap<int, Unity.Mathematics.int3>(
+            //     System.Math.Max(1, brickOverlapSourceBricks.Length), Allocator.TempJob);
+            // JobHandle buildBrickQueriesHandle = new VoxelisXPhysicsInterface.BuildBrickOverlapQueriesJob
+            // {
+            //     SourceBricks = brickOverlapSourceBricks,
+            //     BodyIndexByGuid = bodyIndexByGuid,
+            //     Queries = physicsBrickQueries.AsParallelWriter()
+            // }.Schedule(brickOverlapSourceBricks.Length, 64, buildBodyIndexHandle);
 
             Profiler.BeginSample("Physics BeforeSimulationStart");
             BeforeSimulationStart();
@@ -153,6 +173,11 @@ namespace Voxelis.Simulation
                 DirectSolverSettings = directSettings,
                 HaveStaticBodiesChanged = haveStaticBodiesChanged
             };
+
+            if (synchronizeCollisionWorld == false)
+            {
+                Debug.LogWarning("Synchronize Collision World is disabled, brick overlap may stale");
+            }
             Profiler.EndSample();
 
             Profiler.BeginSample("Physics Debug Pre-Step");
@@ -189,6 +214,14 @@ namespace Voxelis.Simulation
             var handles = simulation.ScheduleStepJobs(stepInput, default, multiThreaded);
             Profiler.EndSample();
 
+            // Schedule now, but depend on both the input producer and the solver's optional
+            // collision-world synchronization. This keeps execution post-solver while allowing
+            // the query to start without another main-thread scheduling gap.
+            // JobHandle brickOverlapDeps = JobHandle.CombineDependencies(
+            //     handles.FinalExecutionHandle, buildBrickQueriesHandle);
+            // JobHandle brickOverlapHandle = physicsWorld.CollisionWorld.ScheduleVoxelBrickOverlaps(
+            //     physicsBrickQueries, out NativeStream rawBrickOverlaps, brickOverlapDeps);
+
             Profiler.BeginSample("Physics Complete Step Jobs");
             handles.FinalExecutionHandle.Complete();
             Profiler.EndSample();
@@ -199,13 +232,16 @@ namespace Voxelis.Simulation
             LogVoxelContactsAfterStep();
             Profiler.EndSample();
 
-            // Build and publish the brick-overlap graph while bodyIndexToGuid is still valid
-            // and before OnSimulationFinished, so post-physics hooks and the rest of Tick()
-            // read this step's graph.
-            Profiler.BeginSample("Physics Brick Overlap Graph");
-            brickOverlapGraphBuilder.serialBuildThreshold = brickOverlapSerialThreshold;
-            brickOverlapGraphBuilder.BuildAndPublish(simulation.VoxelBrickOverlapCandidates, bodyIndexToGuid);
-            Profiler.EndSample();
+            // Query the solver-synchronized BVH outside the regular physics step. Physics emits
+            // one raw stream; VoxelisX owns stable GUID mapping, deduplication, and graph publish.
+            // Profiler.BeginSample("Physics Brick Overlap Graph");
+            // brickOverlapHandle.Complete();
+            // brickOverlapGraphBuilder.serialBuildThreshold = brickOverlapSerialThreshold;
+            // brickOverlapGraphBuilder.BuildAndPublish(rawBrickOverlaps, bodyIndexToGuid);
+            // rawBrickOverlaps.Dispose();
+            // physicsBrickQueries.Dispose();
+            // bodyIndexByGuid.Dispose();
+            // Profiler.EndSample();
 
             Profiler.BeginSample("Physics OnSimulationFinished");
             OnSimulationFinished();

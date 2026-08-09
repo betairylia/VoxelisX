@@ -396,7 +396,11 @@ Profiler.EndSample();
 
 Profiler.BeginSample("Physics Step");
             long physicsStartTicks = Stopwatch.GetTimestamp();
-            physicsWorld.SimulateStep(deltaTime, tickBuf);
+            // RequireUpdate is the current source-brick selection. The physics boundary accepts
+            // a grouped parallel input, so dirty/persistent collectors can extend or replace this
+            // selection without moving graph construction back into the simulation step.
+            physicsWorld.SimulateStep(
+                deltaTime, tickBuf);
             long physicsElapsedTicks = Stopwatch.GetTimestamp() - physicsStartTicks;
 Profiler.EndSample();
 

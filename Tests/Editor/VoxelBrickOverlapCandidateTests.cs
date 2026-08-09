@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using NUnit.Framework;
 using Unity.Collections;
 using Unity.Entities;
+using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Physics;
 using Voxelis;
@@ -11,9 +12,8 @@ using VoxelisX.Tests.TestSupport;
 namespace VoxelisX.Tests
 {
     /// <summary>
-    /// Scheduled-pipeline tests for the raw brick-overlap candidates produced by Unity Physics.
-    /// These deliberately read the candidates after FinalExecutionHandle and before the next
-    /// simulation reset, matching the public stream lifetime contract.
+    /// Tests the explicit post-simulation brick query API. Unlike the former producer, these
+    /// queries are not part of narrowphase or the regular simulation step.
     /// </summary>
     public unsafe class VoxelBrickOverlapCandidateTests
     {
@@ -57,15 +57,15 @@ namespace VoxelisX.Tests
                     throw new InvalidOperationException("The voxel collider fixture was already built.");
                 }
 
-                // Match the production refresh order used by VoxelisXWorld. The overlap marker
-                // consumes the refreshed allocated-brick list; voxel contacts additionally consume
-                // PhysicsInfo and the physics-key bitmap.
+                // Match production: the overlap query consumes allocated bricks, while regular
+                // physics continues to consume refreshed occupancy and physics-key masks.
                 foreach (SectorHandle handle in m_Sectors.Values)
                 {
                     ref Sector sector = ref handle.Get();
                     for (int brick = 0; brick < Sector.BRICKS_IN_SECTOR; brick++)
                     {
-                        sector.MarkBrickRequireUpdate(brick, DirtyFlags.GeometryWithLocalNeighbor);
+                        sector.MarkBrickRequireUpdate(
+                            brick, DirtyFlags.GeometryWithLocalNeighbor);
                     }
                 }
 
@@ -90,8 +90,8 @@ namespace VoxelisX.Tests
             {
                 if (Collider.IsCreated)
                 {
-                    // VoxelCollider owns a persistent hash map stored inside its blob. Blob disposal
-                    // alone cannot invoke the collider's custom Dispose method.
+                    // VoxelCollider owns a persistent hash map stored inside its blob. Blob
+                    // disposal alone cannot invoke the collider's custom Dispose method.
                     var voxel = (VoxelCollider*)Collider.GetUnsafePtr();
                     if (voxel->m_Sectors.IsCreated)
                     {
@@ -102,17 +102,6 @@ namespace VoxelisX.Tests
 
                 m_Scope.Dispose();
             }
-        }
-
-        sealed class StepObservation
-        {
-            public readonly List<VoxelBrickOverlapCandidate> Candidates =
-                new List<VoxelBrickOverlapCandidate>();
-            public int DynamicCandidateCount;
-            public int StaticCandidateCount;
-            public int VoxelContactCount;
-            public bool DynamicStreamCreated;
-            public bool StaticStreamCreated;
         }
 
         sealed class PhysicsWorldFixture : IDisposable
@@ -130,7 +119,19 @@ namespace VoxelisX.Tests
             }
         }
 
-        static RigidBody Body(BlobAssetReference<Collider> collider, RigidTransform worldFromBody,
+        struct AddZeroBrickQueryJob : IJobParallelFor
+        {
+            public NativeParallelMultiHashMap<int, int3>.ParallelWriter Writer;
+
+            public void Execute(int bodyIndex)
+            {
+                Writer.Add(bodyIndex, int3.zero);
+            }
+        }
+
+        static RigidBody Body(
+            BlobAssetReference<Collider> collider,
+            RigidTransform worldFromBody,
             int entityIndex)
         {
             return new RigidBody
@@ -143,7 +144,9 @@ namespace VoxelisX.Tests
             };
         }
 
-        static void SetDynamicMotion(PhysicsWorld world, int bodyIndex,
+        static void SetDynamicMotion(
+            PhysicsWorld world,
+            int bodyIndex,
             RigidTransform worldFromBody)
         {
             NativeArray<MotionData> motionDatas = world.MotionDatas;
@@ -167,255 +170,251 @@ namespace VoxelisX.Tests
             };
         }
 
-        static StepObservation RunScheduledStep(PhysicsWorldFixture fixture,
-            bool multiThreaded)
+        static void BuildBroadphase(PhysicsWorldFixture fixture)
         {
             ref PhysicsWorld world = ref fixture.World;
             world.CollisionWorld.BuildBroadphase(
                 ref world, TimeStep, float3.zero, buildStaticTree: true);
+        }
 
-            using var haveStaticBodiesChanged =
-                new NativeReference<int>(1, Allocator.TempJob);
-            var input = new SimulationStepInput
+        static List<VoxelBrickOverlapCandidate> RunQuery(
+            PhysicsWorldFixture fixture,
+            params (int BodyIndex, int3 Brick)[] queries)
+        {
+            using var queryMap = new NativeParallelMultiHashMap<int, int3>(
+                math.max(1, queries.Length), Allocator.TempJob);
+            for (int i = 0; i < queries.Length; i++)
             {
-                World = world,
-                TimeStep = TimeStep,
-                Gravity = float3.zero,
-                NumSolverIterations = 4,
-                NumSubsteps = 1,
-                DirectSolverSettings = Solver.DirectSolverSettings.Default,
-                HaveStaticBodiesChanged = haveStaticBodiesChanged
-            };
+                queryMap.Add(queries[i].BodyIndex, queries[i].Brick);
+            }
 
-            Unity.Physics.Simulation simulation = Unity.Physics.Simulation.Create();
-            SimulationJobHandles handles = default;
-            bool scheduled = false;
+            return RunQuery(fixture, queryMap, default);
+        }
+
+        static List<VoxelBrickOverlapCandidate> RunQuery(
+            PhysicsWorldFixture fixture,
+            NativeParallelMultiHashMap<int, int3> queryMap,
+            JobHandle inputDeps)
+        {
+            JobHandle handle = fixture.World.CollisionWorld.ScheduleVoxelBrickOverlaps(
+                queryMap, out NativeStream stream, inputDeps);
+            handle.Complete();
+
             try
             {
-                handles = simulation.ScheduleStepJobs(input, default, multiThreaded);
-                scheduled = true;
-                handles.FinalExecutionHandle.Complete();
-
-                VoxelBrickOverlapCandidates candidates =
-                    simulation.VoxelBrickOverlapCandidates;
-                var result = new StepObservation
+                var result = new List<VoxelBrickOverlapCandidate>();
+                NativeStream.Reader reader = stream.AsReader();
+                for (int lane = 0; lane < stream.ForEachCount; lane++)
                 {
-                    DynamicStreamCreated = candidates.DynamicStream.IsCreated,
-                    StaticStreamCreated = candidates.StaticStream.IsCreated,
-                    DynamicCandidateCount = candidates.DynamicStream.IsCreated
-                        ? candidates.DynamicStream.Count()
-                        : 0,
-                    StaticCandidateCount = candidates.StaticStream.IsCreated
-                        ? candidates.StaticStream.Count()
-                        : 0
-                };
-
-                AppendCandidates(candidates.DynamicStream, result.Candidates);
-                AppendCandidates(candidates.StaticStream, result.Candidates);
-
-                // Simulation.Contacts is consumed while the full step builds Jacobians.
-                // VoxelContactEvents is the post-step evidence that contact handling ran.
-                foreach (VoxelContactEvent unused in simulation.VoxelContactEvents)
-                {
-                    result.VoxelContactCount++;
+                    int count = reader.BeginForEachIndex(lane);
+                    for (int i = 0; i < count; i++)
+                    {
+                        result.Add(reader.Read<VoxelBrickOverlapCandidate>());
+                    }
+                    reader.EndForEachIndex();
                 }
-
                 return result;
             }
             finally
             {
-                if (scheduled)
-                {
-                    handles.FinalDisposeHandle.Complete();
-                }
-                simulation.Dispose();
+                stream.Dispose();
             }
         }
 
-        static void AppendCandidates(NativeStream stream,
-            List<VoxelBrickOverlapCandidate> destination)
+        static void AssertCandidate(
+            VoxelBrickOverlapCandidate candidate,
+            int sourceBody,
+            int3 sourceBrick,
+            int targetBody,
+            int3 targetBrick)
         {
-            if (!stream.IsCreated)
-            {
-                return;
-            }
-
-            NativeStream.Reader reader = stream.AsReader();
-            for (int workItem = 0; workItem < stream.ForEachCount; workItem++)
-            {
-                int count = reader.BeginForEachIndex(workItem);
-                for (int i = 0; i < count; i++)
-                {
-                    destination.Add(reader.Read<VoxelBrickOverlapCandidate>());
-                }
-                reader.EndForEachIndex();
-            }
-        }
-
-        static void AssertEndpoint(VoxelBrickOverlapCandidate candidate, int bodyIndex,
-            int3 expectedBrick)
-        {
-            int3 actual;
-            if (candidate.BodyIndexA == bodyIndex)
-            {
-                actual = candidate.BrickCoordsInA;
-            }
-            else if (candidate.BodyIndexB == bodyIndex)
-            {
-                actual = candidate.BrickCoordsInB;
-            }
-            else
-            {
-                Assert.Fail($"Candidate does not reference body {bodyIndex}.");
-                return;
-            }
-
-            Assert.That(actual, Is.EqualTo(expectedBrick),
-                $"Brick coordinate was not kept with body {bodyIndex}.");
-        }
-
-        [TestCase(false)]
-        [TestCase(true)]
-        public void StaticStatic_ZeroDynamicBodies_EmitsAllocatedBrickCandidateWithoutContacts(
-            bool multiThreaded)
-        {
-            using var body0 = new VoxelColliderFixture();
-            using var body1 = new VoxelColliderFixture();
-
-            // Sector -1, local block 120 is global block -8 and therefore global brick -1.
-            body0.SetBlock(new int3(-1, 0, 0), new int3(120, 0, 0), new Block(1));
-
-            // Allocate body1's brick, then empty it. Allocated-but-empty bricks intentionally
-            // participate in the conservative graph.
-            body1.SetBlock(int3.zero, int3.zero, new Block(1));
-            body1.SetBlock(int3.zero, int3.zero, Block.Empty);
-            body0.Build();
-            body1.Build();
-
-            using var world = new PhysicsWorldFixture(2, 0);
-            NativeArray<RigidBody> bodies = world.World.Bodies;
-            bodies[0] = Body(body0.Collider,
-                new RigidTransform(quaternion.identity, new float3(8f, 1f, 0f)), 1);
-            bodies[1] = Body(body1.Collider, RigidTransform.identity, 2);
-
-            StepObservation result = RunScheduledStep(world, multiThreaded);
-
-            Assert.That(result.Candidates, Has.Count.EqualTo(1));
-            Assert.That(result.DynamicStreamCreated, Is.False,
-                "The zero-dynamic path should expose an absent dynamic stream as empty.");
-            Assert.That(result.StaticStreamCreated, Is.True);
-            Assert.That(result.DynamicCandidateCount, Is.Zero);
-            Assert.That(result.StaticCandidateCount, Is.EqualTo(1));
-            Assert.That(result.VoxelContactCount, Is.Zero);
-
-            VoxelBrickOverlapCandidate candidate = result.Candidates[0];
-            Assert.That(new[] { candidate.BodyIndexA, candidate.BodyIndexB },
-                Is.EquivalentTo(new[] { 0, 1 }));
-            AssertEndpoint(candidate, 0, new int3(-1, 0, 0));
-            AssertEndpoint(candidate, 1, int3.zero);
-        }
-
-        [TestCase(false)]
-        [TestCase(true)]
-        public void DynamicPairs_EmitCandidatesAndRetainVoxelContacts(bool secondBodyIsStatic)
-        {
-            using var body0 = new VoxelColliderFixture();
-            using var body1 = new VoxelColliderFixture();
-
-            // Body 0's occupied cell is in global brick 1. Its additional empty sector makes
-            // it larger by the implementation's sector-count heuristic and forces the internal
-            // A/B role swap; the emitted endpoint must still remain attached to body index 0.
-            body0.SetBlock(int3.zero, new int3(8, 0, 0), new Block(1));
-            body0.AddSector(new int3(2, 0, 0));
-            body1.SetBlock(int3.zero, int3.zero, new Block(1));
-            body0.Build();
-            body1.Build();
-
-            int staticBodies = secondBodyIsStatic ? 1 : 0;
-            int dynamicBodies = secondBodyIsStatic ? 1 : 2;
-            using var world = new PhysicsWorldFixture(staticBodies, dynamicBodies);
-
-            var body0Transform = new RigidTransform(
-                quaternion.identity, new float3(-8f, 1f, 0f));
-            NativeArray<RigidBody> bodies = world.World.Bodies;
-            bodies[0] = Body(body0.Collider, body0Transform, 1);
-            bodies[1] = Body(body1.Collider, RigidTransform.identity, 2);
-            SetDynamicMotion(world.World, 0, body0Transform);
-            if (!secondBodyIsStatic)
-            {
-                SetDynamicMotion(world.World, 1, RigidTransform.identity);
-            }
-
-            StepObservation result = RunScheduledStep(world, multiThreaded: false);
-
-            Assert.That(result.Candidates, Has.Count.EqualTo(1));
-            Assert.That(result.DynamicStreamCreated, Is.True);
-            Assert.That(result.DynamicCandidateCount, Is.EqualTo(1));
-            Assert.That(result.StaticCandidateCount, Is.Zero);
-            Assert.That(result.VoxelContactCount, Is.GreaterThan(0),
-                "Candidate emission must not replace the normal voxel contact path.");
-
-            VoxelBrickOverlapCandidate candidate = result.Candidates[0];
-            AssertEndpoint(candidate, 0, new int3(1, 0, 0));
-            AssertEndpoint(candidate, 1, int3.zero);
+            Assert.That(candidate.BodyIndexA, Is.EqualTo(sourceBody));
+            Assert.That(candidate.BrickCoordsInA, Is.EqualTo(sourceBrick));
+            Assert.That(candidate.BodyIndexB, Is.EqualTo(targetBody));
+            Assert.That(candidate.BrickCoordsInB, Is.EqualTo(targetBrick));
         }
 
         [Test]
-        public void StaticStatic_CollisionFiltersSuppressCandidates()
+        public void StaticStatic_ZeroDynamicBodies_QueriesAllocatedEmptyTarget()
+        {
+            using var source = new VoxelColliderFixture();
+            using var target = new VoxelColliderFixture();
+
+            // Sector -1, local block 120 is global block -8 and global brick -1.
+            source.SetBlock(new int3(-1, 0, 0), new int3(120, 0, 0), new Block(1));
+
+            // Allocated-but-empty target bricks intentionally participate.
+            target.SetBlock(int3.zero, int3.zero, new Block(1));
+            target.SetBlock(int3.zero, int3.zero, Block.Empty);
+            source.Build();
+            target.Build();
+
+            using var world = new PhysicsWorldFixture(2, 0);
+            NativeArray<RigidBody> bodies = world.World.Bodies;
+            bodies[0] = Body(source.Collider,
+                new RigidTransform(quaternion.identity, new float3(8f, 1f, 0f)), 1);
+            bodies[1] = Body(target.Collider, RigidTransform.identity, 2);
+            BuildBroadphase(world);
+
+            List<VoxelBrickOverlapCandidate> result =
+                RunQuery(world, (0, new int3(-1, 0, 0)));
+
+            Assert.That(result, Has.Count.EqualTo(1));
+            AssertCandidate(result[0], 0, new int3(-1, 0, 0), 1, int3.zero);
+        }
+
+        [Test]
+        public void QueryOnlyEmitsPairsForSubmittedSourceBricks()
+        {
+            using var source = new VoxelColliderFixture();
+            using var target = new VoxelColliderFixture();
+            source.SetBlock(int3.zero, int3.zero, new Block(1));
+            source.SetBlock(int3.zero, new int3(8, 0, 0), new Block(1));
+            target.SetBlock(int3.zero, int3.zero, new Block(1));
+            target.SetBlock(int3.zero, new int3(8, 0, 0), new Block(1));
+            source.Build();
+            target.Build();
+
+            using var world = new PhysicsWorldFixture(2, 0);
+            NativeArray<RigidBody> bodies = world.World.Bodies;
+            bodies[0] = Body(source.Collider, RigidTransform.identity, 1);
+            bodies[1] = Body(target.Collider, RigidTransform.identity, 2);
+            BuildBroadphase(world);
+
+            List<VoxelBrickOverlapCandidate> result =
+                RunQuery(world, (0, int3.zero));
+
+            Assert.That(result, Is.Not.Empty);
+            for (int i = 0; i < result.Count; i++)
+            {
+                Assert.That(result[i].BodyIndexA, Is.EqualTo(0));
+                Assert.That(result[i].BrickCoordsInA, Is.EqualTo(int3.zero));
+            }
+        }
+
+        [Test]
+        public void ParallelWriterInputMayEmitReversedRawDuplicatesWithoutProducerCompletion()
         {
             using var body0 = new VoxelColliderFixture();
             using var body1 = new VoxelColliderFixture();
             body0.SetBlock(int3.zero, int3.zero, new Block(1));
             body1.SetBlock(int3.zero, int3.zero, new Block(1));
+            body0.Build();
+            body1.Build();
 
-            var filter0 = new CollisionFilter
+            using var world = new PhysicsWorldFixture(2, 0);
+            NativeArray<RigidBody> bodies = world.World.Bodies;
+            bodies[0] = Body(body0.Collider, RigidTransform.identity, 1);
+            bodies[1] = Body(body1.Collider, RigidTransform.identity, 2);
+            BuildBroadphase(world);
+
+            using var queryMap = new NativeParallelMultiHashMap<int, int3>(
+                2, Allocator.TempJob);
+            JobHandle producer = new AddZeroBrickQueryJob
+            {
+                Writer = queryMap.AsParallelWriter()
+            }.Schedule(2, 1);
+
+            // ScheduleVoxelBrickOverlaps consumes the map behind the producer dependency;
+            // no producer.Complete() is required at this boundary.
+            List<VoxelBrickOverlapCandidate> result =
+                RunQuery(world, queryMap, producer);
+
+            Assert.That(result, Has.Count.EqualTo(2));
+            Assert.That(result.Exists(candidate =>
+                candidate.BodyIndexA == 0 && candidate.BodyIndexB == 1), Is.True);
+            Assert.That(result.Exists(candidate =>
+                candidate.BodyIndexA == 1 && candidate.BodyIndexB == 0), Is.True);
+        }
+
+        [Test]
+        public void CollisionFiltersSuppressQueryTargets()
+        {
+            using var source = new VoxelColliderFixture();
+            using var target = new VoxelColliderFixture();
+            source.SetBlock(int3.zero, int3.zero, new Block(1));
+            target.SetBlock(int3.zero, int3.zero, new Block(1));
+
+            source.Build(new CollisionFilter
             {
                 BelongsTo = 1u,
                 CollidesWith = 1u,
                 GroupIndex = 0
-            };
-            var filter1 = new CollisionFilter
+            }, Material.Default);
+            target.Build(new CollisionFilter
             {
                 BelongsTo = 2u,
                 CollidesWith = 2u,
                 GroupIndex = 0
-            };
-            body0.Build(filter0, Material.Default);
-            body1.Build(filter1, Material.Default);
+            }, Material.Default);
 
             using var world = new PhysicsWorldFixture(2, 0);
             NativeArray<RigidBody> bodies = world.World.Bodies;
-            bodies[0] = Body(body0.Collider, RigidTransform.identity, 1);
-            bodies[1] = Body(body1.Collider, RigidTransform.identity, 2);
+            bodies[0] = Body(source.Collider, RigidTransform.identity, 1);
+            bodies[1] = Body(target.Collider, RigidTransform.identity, 2);
+            BuildBroadphase(world);
 
-            StepObservation result = RunScheduledStep(world, multiThreaded: false);
-
-            Assert.That(result.Candidates, Is.Empty);
-            Assert.That(result.StaticCandidateCount, Is.Zero);
+            Assert.That(RunQuery(world, (0, int3.zero)), Is.Empty);
         }
 
         [Test]
-        public void StaticStatic_CollisionResponseNoneSuppressesCandidates()
+        public void CollisionResponseNoneSuppressesQueryTargets()
         {
-            using var body0 = new VoxelColliderFixture();
-            using var body1 = new VoxelColliderFixture();
-            body0.SetBlock(int3.zero, int3.zero, new Block(1));
-            body1.SetBlock(int3.zero, int3.zero, new Block(1));
+            using var source = new VoxelColliderFixture();
+            using var target = new VoxelColliderFixture();
+            source.SetBlock(int3.zero, int3.zero, new Block(1));
+            target.SetBlock(int3.zero, int3.zero, new Block(1));
 
             Material noResponse = Material.Default;
             noResponse.CollisionResponse = CollisionResponsePolicy.None;
-            body0.Build();
-            body1.Build(CollisionFilter.Default, noResponse);
+            source.Build();
+            target.Build(CollisionFilter.Default, noResponse);
 
             using var world = new PhysicsWorldFixture(2, 0);
             NativeArray<RigidBody> bodies = world.World.Bodies;
-            bodies[0] = Body(body0.Collider, RigidTransform.identity, 1);
-            bodies[1] = Body(body1.Collider, RigidTransform.identity, 2);
+            bodies[0] = Body(source.Collider, RigidTransform.identity, 1);
+            bodies[1] = Body(target.Collider, RigidTransform.identity, 2);
+            BuildBroadphase(world);
 
-            StepObservation result = RunScheduledStep(world, multiThreaded: false);
+            Assert.That(RunQuery(world, (0, int3.zero)), Is.Empty);
+        }
 
-            Assert.That(result.Candidates, Is.Empty);
-            Assert.That(result.StaticCandidateCount, Is.Zero);
+        [Test]
+        public void DynamicTreeUpdateMakesPostSolverPoseQueryable()
+        {
+            using var dynamicTarget = new VoxelColliderFixture();
+            using var staticSource = new VoxelColliderFixture();
+            dynamicTarget.SetBlock(int3.zero, int3.zero, new Block(1));
+            staticSource.SetBlock(int3.zero, int3.zero, new Block(1));
+            dynamicTarget.Build();
+            staticSource.Build();
+
+            using var world = new PhysicsWorldFixture(1, 1);
+            var farAway = new RigidTransform(
+                quaternion.identity, new float3(256f, 0f, 0f));
+
+            // Dynamic bodies precede static bodies in PhysicsWorld.Bodies.
+            NativeArray<RigidBody> bodies = world.World.Bodies;
+            bodies[0] = Body(dynamicTarget.Collider, farAway, 1);
+            bodies[1] = Body(staticSource.Collider, RigidTransform.identity, 2);
+            SetDynamicMotion(world.World, 0, farAway);
+            BuildBroadphase(world);
+
+            Assert.That(RunQuery(world, (1, int3.zero)), Is.Empty);
+
+            NativeArray<MotionData> motionDatas = world.World.MotionDatas;
+            MotionData motion = motionDatas[0];
+            motion.WorldFromMotion = RigidTransform.identity;
+            motionDatas[0] = motion;
+
+            ref PhysicsWorld physicsWorld = ref world.World;
+            physicsWorld.CollisionWorld.UpdateDynamicTree(
+                ref physicsWorld, TimeStep, float3.zero);
+
+            List<VoxelBrickOverlapCandidate> result =
+                RunQuery(world, (1, int3.zero));
+            Assert.That(result, Has.Count.EqualTo(1));
+            AssertCandidate(result[0], 1, int3.zero, 0, int3.zero);
         }
     }
 }

@@ -50,6 +50,15 @@ namespace Voxelis.Simulation
             return CompareWithinBucket(a, b);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static bool SameDirectedPair(
+            in DirectedBrickOverlapRecord a,
+            in DirectedBrickOverlapRecord b)
+        {
+            return a.SrcRank == b.SrcRank && math.all(a.SrcBrick == b.SrcBrick) &&
+                a.TgtRank == b.TgtRank && math.all(a.TgtBrick == b.TgtBrick);
+        }
+
         /// <summary>
         /// True when the directed record's source key is strictly smaller than its target
         /// key, which selects exactly one of the two directions of an undirected pair.
@@ -121,10 +130,8 @@ namespace Voxelis.Simulation
     [BurstCompile]
     internal struct SerialBuildJob : IJob
     {
-        public NativeStream.Reader DynamicReader;
-        public NativeStream.Reader StaticReader;
-        public int DynamicForEachCount;
-        public int StaticForEachCount;
+        public NativeStream.Reader CandidateReader;
+        public int CandidateForEachCount;
         public int NumBodies;
         [ReadOnly] public NativeArray<int> RankOfBody;
         [ReadOnly] public NativeArray<Guid128> RankToGuid;
@@ -138,8 +145,7 @@ namespace Voxelis.Simulation
         public void Execute()
         {
             Scratch.Clear();
-            FlattenStream(DynamicReader, DynamicForEachCount);
-            FlattenStream(StaticReader, StaticForEachCount);
+            FlattenStream(CandidateReader, CandidateForEachCount);
 
             Scratch.Sort(new DirectedRecordFullComparer());
 
@@ -152,6 +158,11 @@ namespace Voxelis.Simulation
             for (int i = 0; i < Scratch.Length; i++)
             {
                 var record = Scratch[i];
+                if (hasPrev && DirectedBrickOverlapRecord.SameDirectedPair(record, prev))
+                {
+                    continue;
+                }
+
                 if (!hasPrev || record.SrcRank != prev.SrcRank || math.any(record.SrcBrick != prev.SrcBrick))
                 {
                     if (hasPrev)

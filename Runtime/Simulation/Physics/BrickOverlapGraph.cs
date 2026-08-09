@@ -100,9 +100,9 @@ namespace Voxelis.Simulation
     /// <summary>
     /// Read-only view of the published brick-overlap graph of one physics step.
     ///
-    /// The graph is conservative: a pair means the allocated bricks passed the narrowphase
-    /// brick marking with its configured contact/halo window, not that individual occupied
-    /// blocks intersect. Pair and neighbor ordering is deterministic (sorted by
+    /// The graph is conservative: a pair means a queried brick's alien-neighborhood bound
+    /// reached an allocated brick of another body, not that individual occupied blocks
+    /// intersect. Pair and neighbor ordering is deterministic (sorted by
     /// <see cref="BrickOverlapKey.CompareTo"/>) regardless of raw candidate order.
     ///
     /// The view borrows the builder's double-buffered storage. It stays valid until the
@@ -147,13 +147,13 @@ namespace Voxelis.Simulation
         public int SourceCount => m_IsCreated ? m_Ranges.Length : 0;
 
         /// <summary>
-        /// Indexed access to the sorted canonical pair list. Pair uniqueness is guaranteed by
-        /// the physics producer.
+        /// Indexed access to the sorted canonical pair list. Duplicate raw query hits are
+        /// removed by the graph builder.
         /// </summary>
         public BrickOverlapPair GetPair(int index) => m_Pairs[index];
 
         /// <summary>
-        /// The sorted canonical pair list. Pair uniqueness is guaranteed by the physics producer.
+        /// The sorted canonical pair list after raw-hit deduplication.
         /// </summary>
         public NativeArray<BrickOverlapPair>.ReadOnly Pairs => m_Pairs.AsReadOnly();
 

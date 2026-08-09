@@ -159,9 +159,9 @@ namespace VoxelisX.Tests
             int3 midBrick = new int3(2, 0, 0);
             int3 lowBrick2 = new int3(-2, 0, 0);
 
-            // Unique producer records split across the dynamic and static-static streams and
-            // multiple work items.
-            using var serialDynamic = CreateStream(
+            // Raw query records span multiple work items. The final reversed record repeats
+            // the first undirected pair, as happens when both endpoint bricks are queried.
+            using var serialStream = CreateStream(
                 new[]
                 {
                     Candidate(0, highBrick, 1, lowBrick)
@@ -169,25 +169,27 @@ namespace VoxelisX.Tests
                 new[]
                 {
                     Candidate(0, highBrick, 2, midBrick)
+                },
+                new[]
+                {
+                    Candidate(2, midBrick, 1, lowBrick2)
+                },
+                new[]
+                {
+                    Candidate(1, lowBrick, 0, highBrick)
                 });
-            using var serialStatic = CreateStream(new[]
-            {
-                Candidate(2, midBrick, 1, lowBrick2)
-            });
 
             using var builder = new BrickOverlapGraphBuilder
             {
                 serialBuildThreshold = int.MaxValue
             };
 
-            builder.BuildAndPublish(
-                new VoxelBrickOverlapCandidates(serialDynamic, serialStatic),
-                bodyIndexToGuid);
+            builder.BuildAndPublish(serialStream, bodyIndexToGuid);
             BrickOverlapGraph serialGraph = builder.Graph;
             BrickOverlapGraphStats serialStats = builder.LastBuildStats;
 
             AssertExpectedThreePairGraph(serialGraph, version: 1);
-            Assert.That(serialStats.RawCandidates, Is.EqualTo(3));
+            Assert.That(serialStats.RawCandidates, Is.EqualTo(4));
             Assert.That(serialStats.PublishedPairs, Is.EqualTo(3));
             Assert.That(serialStats.ActiveSourceBricks, Is.EqualTo(4));
             Assert.That(serialStats.NumBodies, Is.EqualTo(3));
@@ -209,9 +211,7 @@ namespace VoxelisX.Tests
             using var builder = new BrickOverlapGraphBuilder();
 
             Assert.That(builder.Graph.IsCreated, Is.False);
-            builder.BuildAndPublish(
-                new VoxelBrickOverlapCandidates(dynamicStream, default),
-                bodyIndexToGuid);
+            builder.BuildAndPublish(dynamicStream, bodyIndexToGuid);
             Assert.That(builder.Graph.Version, Is.EqualTo(1));
             Assert.That(builder.Graph.PairCount, Is.EqualTo(1));
 
