@@ -24,9 +24,10 @@ namespace Voxelis
     public class VoxelisXWorld : VoxelisXCoreWorld
     {
         /// <summary>
-        /// Exclusive CPU timing buckets from the last completed world tick. Physics excludes
-        /// brick-graph construction, and Tick excludes both physics and rendering, so the four
-        /// component times sum to TotalMilliseconds.
+        /// Exclusive CPU timing buckets from the last completed world tick. The brick graph
+        /// bucket covers the whole post-physics alien propagation (query, graph build, and
+        /// marking), and Tick excludes the other three, so the four times sum to
+        /// TotalMilliseconds.
         /// </summary>
         public struct TickTimingStats
         {
@@ -71,11 +72,20 @@ namespace Voxelis
 
         // ---------------- ALIEN DIRTY PROPAGATION ------------------
         [Header("Alien Dirty Propagation")]
+        [Tooltip("Propagate dirtiness between entities through the post-physics brick-overlap graph.")]
         public bool doAlienPropagation = false;
-        [SerializeField] private int alienSpatialCellSize = 64;
+
+        [Tooltip("Flags a moving (non-static) entity's bricks hand to their alien neighbors.")]
         [SerializeField] private DirtyFlags alienMotionDirtyMask = DirtyFlags.GeneralAutomata;
-        [SerializeField] private int alienDirtyHaloVoxels = 1;
-        
+
+        [Tooltip("Query every allocated brick of every non-static entity, not only the dirty ones. " +
+                 "This is the heaviest input the graph can get; keep it on to benchmark motion.")]
+        [SerializeField] private bool alienIncludeMovingBricks = true;
+
+        /// <summary> Counters of the last alien propagation pass. </summary>
+        public BrickOverlapPropagationStats LastBrickOverlapPropagationStats { get; private set; }
+
+
         // ---------------- DEBUG ------------------
         [Header("Debug")]
         public bool freeze = true;
@@ -393,37 +403,14 @@ Profiler.BeginSample("Dirty Propagation");
             handle.Complete();
         Profiler.EndSample();
     Profiler.EndSample();
-    
+
             // TODO: At least make the jobs below Complete() o(1) times by chaining them
             // TODO: Refine the tick to job scheduling best practices
-
-    Profiler.BeginSample("Alien Propagation");
-            // Obsolete path, kept functional until dirty propagation consumes the
-            // post-physics BrickOverlapGraph.
-#pragma warning disable 0618
-            if (doAlienPropagation)
-            {
-                AlienDirtyPropagation.Propagate(tickBuf.VoxelEntities.GetValueArray(Allocator.TempJob), new AlienDirtyPropagationSettings
-                {
-                    FlagsToPropagate = DirtyFlags.All,
-                    AlienMotionDirtyMask = alienMotionDirtyMask,
-                    SpatialCellSize = alienSpatialCellSize,
-                    DirtyHaloVoxels = alienDirtyHaloVoxels,
-                });
-            }
-#pragma warning restore 0618
-    Profiler.EndSample();
-
-    Profiler.BeginSample("Clear Dirty Flags");
-            for (int i = 0; i < entityKeys.Length; i++)
-            {
-                var entity = tickBuf.VoxelEntities[entityKeys[i]];
-                entity.ClearDirtyFlags();
-                tickBuf.VoxelEntities[entityKeys[i]] = entity;
-            }
-            entityKeys.Dispose();
-    Profiler.EndSample();
 Profiler.EndSample();
+
+            // Dirty flags stay set through the physics step: alien propagation runs on the
+            // stepped poses (see below) and selects its source bricks from them. entityKeys
+            // stays alive until that clear.
 
             // Mark non-empty blocks: rebuild the Block slot's occupancy aux from settled voxel data,
             // for every entity, before physics consumes it.
@@ -470,9 +457,6 @@ Profiler.EndSample();
 
 Profiler.BeginSample("Physics Step");
             long physicsStartTicks = Stopwatch.GetTimestamp();
-            // RequireUpdate is the current source-brick selection. The physics boundary accepts
-            // a grouped parallel input, so dirty/persistent collectors can extend or replace this
-            // selection without moving graph construction back into the simulation step.
             physicsWorld.SimulateStep(
                 deltaTime, tickBuf);
             long physicsElapsedTicks = Stopwatch.GetTimestamp() - physicsStartTicks;
@@ -483,6 +467,51 @@ Profiler.EndSample();
             //  Collect key overlapping bricks for alien propagation / reading
             //  Back to managed world
             /////////////////////////////////////////////////////////////////////////
+
+            // Alien dirty propagation over the post-physics brick-overlap graph. The step
+            // synchronized the collision world, so the BVH already describes the stepped poses
+            // and needs no explicit rebuild.
+Profiler.BeginSample("Alien Propagation");
+            long alienStartTicks = Stopwatch.GetTimestamp();
+            LastBrickOverlapPropagationStats = default;
+            if (doAlienPropagation)
+            {
+                var request = BrickOverlapQueryBuilder.Build(ref tickBuf, new BrickOverlapQuerySettings
+                {
+                    FlagsToPropagate = DirtyFlags.All,
+                    MotionDirtyMask = alienMotionDirtyMask,
+                    IncludeMovingBodies = alienIncludeMovingBricks
+                });
+
+                if (request.IsCreated)
+                {
+                    try
+                    {
+                        BrickOverlapGraph graph = physicsWorld.BuildBrickOverlapGraph(
+                            request.Batches, request.Bricks, rebuildBroadphase: false);
+
+                        LastBrickOverlapPropagationStats = BrickOverlapDirtyPropagation.Propagate(
+                            graph, request, ref tickBuf.VoxelEntities);
+                    }
+                    finally
+                    {
+                        request.Dispose();
+                    }
+                }
+            }
+            long alienElapsedTicks = Stopwatch.GetTimestamp() - alienStartTicks;
+Profiler.EndSample();
+
+            // End of the dirty lifetime: every consumer of this tick's dirty flags has run.
+Profiler.BeginSample("Clear Dirty Flags");
+            for (int i = 0; i < entityKeys.Length; i++)
+            {
+                var entity = tickBuf.VoxelEntities[entityKeys[i]];
+                entity.ClearDirtyFlags();
+                tickBuf.VoxelEntities[entityKeys[i]] = entity;
+            }
+            entityKeys.Dispose();
+Profiler.EndSample();
 
             // Copy data back to VoxelEntities
 Profiler.BeginSample("Burst -> Managed Boundary Copy Back");
@@ -514,9 +543,11 @@ Profiler.EndSample();
 
             long totalElapsedTicks = Stopwatch.GetTimestamp() - tickStartTicks;
             double totalMilliseconds = TicksToMilliseconds(totalElapsedTicks);
-            double physicsTotalMilliseconds = TicksToMilliseconds(physicsElapsedTicks);
+            double physicsMilliseconds = TicksToMilliseconds(physicsElapsedTicks);
             double renderingMilliseconds = TicksToMilliseconds(renderingElapsedTicks);
-            double brickGraphMilliseconds = physicsWorld.BrickOverlapGraphStats.BuildMilliseconds;
+            // The brick graph is built outside the physics step now, so its cost is already
+            // excluded from physicsMilliseconds and only has to come out of the tick bucket.
+            double brickGraphMilliseconds = TicksToMilliseconds(alienElapsedTicks);
 
             LastTickTimings = new TickTimingStats
             {
@@ -524,9 +555,10 @@ Profiler.EndSample();
                 UsedRayTracing = usedRayTracing,
                 UsedMeshing = usedMeshing,
                 TickMilliseconds = Math.Max(
-                    0.0, totalMilliseconds - physicsTotalMilliseconds - renderingMilliseconds),
-                PhysicsMilliseconds = Math.Max(
-                    0.0, physicsTotalMilliseconds - brickGraphMilliseconds),
+                    0.0,
+                    totalMilliseconds - physicsMilliseconds - renderingMilliseconds -
+                    brickGraphMilliseconds),
+                PhysicsMilliseconds = physicsMilliseconds,
                 BrickGraphMilliseconds = brickGraphMilliseconds,
                 RenderingMilliseconds = renderingMilliseconds,
                 TotalMilliseconds = totalMilliseconds

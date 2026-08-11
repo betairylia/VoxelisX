@@ -15,44 +15,6 @@ namespace Voxelis.Simulation
 {
     public static class VoxelisXPhysicsInterface
     {
-        [BurstCompile]
-        public struct BuildBodyIndexByGuidJob : IJobParallelFor
-        {
-            [ReadOnly] public NativeArray<Guid128> BodyIndexToGuid;
-            public NativeParallelHashMap<Guid128, int>.ParallelWriter BodyIndexByGuid;
-
-            public void Execute(int bodyIndex)
-            {
-                BodyIndexByGuid.TryAdd(BodyIndexToGuid[bodyIndex], bodyIndex);
-            }
-        }
-
-        /// <summary>
-        /// Maps stable voxel-side brick keys to this step's transient physics body indices.
-        /// The multi-map is intentionally parallel-writable because future dirty/persistent
-        /// collectors can feed it directly without first producing a serial flat list.
-        /// </summary>
-        [BurstCompile]
-        public struct BuildBrickOverlapQueriesJob : IJobParallelFor
-        {
-            [ReadOnly] public NativeArray<VoxelisXWorld.BrickInfo> SourceBricks;
-            [ReadOnly] public NativeParallelHashMap<Guid128, int> BodyIndexByGuid;
-            public NativeParallelMultiHashMap<int, int3>.ParallelWriter Queries;
-
-            public void Execute(int index)
-            {
-                VoxelisXWorld.BrickInfo source = SourceBricks[index];
-                if (!BodyIndexByGuid.TryGetValue(source.EntityId, out int bodyIndex))
-                {
-                    return;
-                }
-
-                int3 brickCoord = source.SectorPos * Sector.SIZE_IN_BRICKS +
-                    (source.BrickOrigin >> Sector.SHIFT_IN_BLOCKS);
-                Queries.Add(bodyIndex, brickCoord);
-            }
-        }
-
         // TODO: Parallelization
         [BurstCompile]
         public struct FillPhysicsWorldJob : IJob
@@ -226,7 +188,10 @@ namespace Voxelis.Simulation
             // Reload sector data into colliders (unsafe, must run on main thread)
             ReloadColliderSectors(ref tickBuf);
 
-            bodyIndexToGuid = new NativeArray<Guid128>(nStatic + nDynamic, Allocator.TempJob);
+            // Persistent, not TempJob: the mapping outlives the step. Post-step brick-overlap
+            // queries translate this step's transient body indices back to stable GUIDs, and a
+            // frozen world can leave the array untouched for many frames. The caller owns it.
+            bodyIndexToGuid = new NativeArray<Guid128>(nStatic + nDynamic, Allocator.Persistent);
 
             var fillWorldJob = new FillPhysicsWorldJob
             {
@@ -257,8 +222,9 @@ namespace Voxelis.Simulation
                 nDynamicBodies = tickBuf.nDynamicBodies
             };
 
-            var handle = exportJob.Schedule(inputDeps);
-            return bodyIndexToGuid.Dispose(handle);
+            // bodyIndexToGuid is deliberately not disposed here: post-step brick-overlap queries
+            // still need it. Its owner releases it before the next world build.
+            return exportJob.Schedule(inputDeps);
         }
     }
 }

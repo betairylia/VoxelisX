@@ -139,6 +139,13 @@ namespace Voxelis
         }
     }
     
+    /// <summary>One dirty brick of a sector: its absolute index and the matched dirty flags.</summary>
+    public struct DirtyBrickInfo
+    {
+        public short BrickIdx;
+        public DirtyFlags Flags;
+    }
+
     // TODO: FIXME: Check
     // TODO: Merge this with above?
     [BurstCompile]

@@ -474,6 +474,15 @@ public class VoxelisXDebugGUI : MonoBehaviour
         GUILayout.Label($"  Published Pairs: {stats.PublishedPairs}", labelStyle);
         GUILayout.Label($"  Active Source Bricks: {stats.ActiveSourceBricks}", labelStyle);
         GUILayout.Label($"  Build Path: {buildPath}", labelStyle);
+
+        if (voxelWorld != null)
+        {
+            BrickOverlapPropagationStats propagation = voxelWorld.LastBrickOverlapPropagationStats;
+            GUILayout.Label(
+                $"  Alien Sources: {propagation.OverlappingSourceBricks} / {propagation.SourceBricks}",
+                labelStyle);
+            GUILayout.Label($"  Alien Marked Bricks: {propagation.MarkedBricks}", labelStyle);
+        }
     }
 
     private RenderingMode DetectRenderingMode()

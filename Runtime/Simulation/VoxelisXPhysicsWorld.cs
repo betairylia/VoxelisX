@@ -90,9 +90,15 @@ namespace Voxelis.Simulation
             
         }
 
+        // This step's transient body index -> stable entity GUID. Lives from the world build
+        // until the next one, so post-step brick-overlap queries can resolve their candidates.
         private NativeArray<Guid128> bodyIndexToGuid;
 
         private BrickOverlapGraphBuilder brickOverlapGraphBuilder;
+
+        // Time step of the last simulated step, reused when a caller asks for a broadphase
+        // rebuild before querying (motion expansion must match the step that produced the pose).
+        private float lastTimeStep;
 
         /// <summary>
         /// Read-only view of the brick-overlap graph published by the last physics step.
@@ -105,10 +111,72 @@ namespace Voxelis.Simulation
         public BrickOverlapGraphStats BrickOverlapGraphStats =>
             brickOverlapGraphBuilder != null ? brickOverlapGraphBuilder.LastBuildStats : default;
 
+        /// <summary>
+        /// Queries the stepped collision world for brick overlaps, then builds and publishes
+        /// the graph. Returns the published graph, or a default (empty) one when no step has
+        /// run yet.
+        /// </summary>
+        /// <param name="queryBatches">
+        /// One batch per source body, addressing the bodies of the step that just ran.
+        /// </param>
+        /// <param name="queryBricksByBatch">
+        /// Source bricks, one stream lane per batch. Neither input is consumed nor disposed
+        /// here; the caller keeps both alive until it has finished reading the graph.
+        /// </param>
+        /// <param name="rebuildBroadphase">
+        /// Rebuilds the dynamic broadphase tree first. Not needed after a step with
+        /// <see cref="synchronizeCollisionWorld"/> set — that step already synchronized the
+        /// solver-integrated transforms and the BVH. Use it when the caller moved bodies since.
+        /// </param>
+        public BrickOverlapGraph BuildBrickOverlapGraph(
+            NativeArray<VoxelBrickOverlapQueryBatch> queryBatches,
+            NativeStream queryBricksByBatch,
+            bool rebuildBroadphase = false,
+            JobHandle inputDeps = default)
+        {
+            if (brickOverlapGraphBuilder == null || !bodyIndexToGuid.IsCreated)
+            {
+                return default;
+            }
+
+            if (rebuildBroadphase)
+            {
+                Profiler.BeginSample("Brick Overlap Rebuild Broadphase");
+                physicsWorld.CollisionWorld.ScheduleBuildBroadphaseJobs(
+                    ref physicsWorld, lastTimeStep, gravity, haveStaticBodiesChanged,
+                    inputDeps, multiThreaded).Complete();
+                inputDeps = default;
+                Profiler.EndSample();
+            }
+
+            Profiler.BeginSample("Brick Overlap Query");
+            JobHandle queryHandle = physicsWorld.CollisionWorld.ScheduleVoxelBrickOverlaps(
+                queryBatches, queryBricksByBatch, out NativeStream rawOverlaps, inputDeps);
+            queryHandle.Complete();
+            Profiler.EndSample();
+
+            Profiler.BeginSample("Brick Overlap Graph Build");
+            brickOverlapGraphBuilder.serialBuildThreshold = brickOverlapSerialThreshold;
+            brickOverlapGraphBuilder.BuildAndPublish(rawOverlaps, bodyIndexToGuid);
+            rawOverlaps.Dispose();
+            Profiler.EndSample();
+
+            return brickOverlapGraphBuilder.Graph;
+        }
+
         public void SimulateStep(
             float dt,
             VoxelisXWorld.WorldStageInputs tickBuf)
         {
+            lastTimeStep = dt;
+
+            // The previous step's mapping stayed alive for that step's post-step queries.
+            // It describes the body layout that is about to be replaced, so release it here.
+            if (bodyIndexToGuid.IsCreated)
+            {
+                bodyIndexToGuid.Dispose();
+            }
+
             Profiler.BeginSample("Physics Build World");
             var buildHandle = VoxelisXPhysicsInterface.SchedulePhysicsWorldBuild(
                 ref tickBuf, ref physicsWorld, out bodyIndexToGuid,
@@ -118,23 +186,8 @@ namespace Voxelis.Simulation
             haveStaticBodiesChanged.Value = 1;
             Profiler.EndSample();
 
-            // args: NativeArray<VoxelisXWorld.BrickInfo> brickOverlapSourceBricks
-            // var bodyIndexByGuid = new NativeParallelHashMap<Guid128, int>(
-            //     System.Math.Max(1, bodyIndexToGuid.Length), Allocator.TempJob);
-            // JobHandle buildBodyIndexHandle = new VoxelisXPhysicsInterface.BuildBodyIndexByGuidJob
-            // {
-            //     BodyIndexToGuid = bodyIndexToGuid,
-            //     BodyIndexByGuid = bodyIndexByGuid.AsParallelWriter()
-            // }.Schedule(bodyIndexToGuid.Length, 64);
-            //
-            // var physicsBrickQueries = new NativeParallelMultiHashMap<int, Unity.Mathematics.int3>(
-            //     System.Math.Max(1, brickOverlapSourceBricks.Length), Allocator.TempJob);
-            // JobHandle buildBrickQueriesHandle = new VoxelisXPhysicsInterface.BuildBrickOverlapQueriesJob
-            // {
-            //     SourceBricks = brickOverlapSourceBricks,
-            //     BodyIndexByGuid = bodyIndexByGuid,
-            //     Queries = physicsBrickQueries.AsParallelWriter()
-            // }.Schedule(brickOverlapSourceBricks.Length, 64, buildBodyIndexHandle);
+            // Brick-overlap queries are not part of the step. The caller issues them against the
+            // stepped, synchronized collision world through BuildBrickOverlapGraph.
 
             Profiler.BeginSample("Physics BeforeSimulationStart");
             BeforeSimulationStart();
@@ -213,14 +266,6 @@ namespace Voxelis.Simulation
             var handles = simulation.ScheduleStepJobs(stepInput, default, multiThreaded);
             Profiler.EndSample();
 
-            // Schedule now, but depend on both the input producer and the solver's optional
-            // collision-world synchronization. This keeps execution post-solver while allowing
-            // the query to start without another main-thread scheduling gap.
-            // JobHandle brickOverlapDeps = JobHandle.CombineDependencies(
-            //     handles.FinalExecutionHandle, buildBrickQueriesHandle);
-            // JobHandle brickOverlapHandle = physicsWorld.CollisionWorld.ScheduleVoxelBrickOverlaps(
-            //     physicsBrickQueries, out NativeStream rawBrickOverlaps, brickOverlapDeps);
-
             Profiler.BeginSample("Physics Complete Step Jobs");
             handles.FinalExecutionHandle.Complete();
             Profiler.EndSample();
@@ -230,17 +275,6 @@ namespace Voxelis.Simulation
             Profiler.BeginSample("Physics Contact Debug Logging");
             LogVoxelContactsAfterStep(tickBuf.nDynamicBodies);
             Profiler.EndSample();
-
-            // Query the solver-synchronized BVH outside the regular physics step. Physics emits
-            // one raw stream; VoxelisX owns stable GUID mapping, deduplication, and graph publish.
-            // Profiler.BeginSample("Physics Brick Overlap Graph");
-            // brickOverlapHandle.Complete();
-            // brickOverlapGraphBuilder.serialBuildThreshold = brickOverlapSerialThreshold;
-            // brickOverlapGraphBuilder.BuildAndPublish(rawBrickOverlaps, bodyIndexToGuid);
-            // rawBrickOverlaps.Dispose();
-            // physicsBrickQueries.Dispose();
-            // bodyIndexByGuid.Dispose();
-            // Profiler.EndSample();
 
             Profiler.BeginSample("Physics OnSimulationFinished");
             OnSimulationFinished();
@@ -273,6 +307,10 @@ namespace Voxelis.Simulation
             simulation.Dispose();
             physicsWorld.Dispose();
             haveStaticBodiesChanged.Dispose();
+            if (bodyIndexToGuid.IsCreated)
+            {
+                bodyIndexToGuid.Dispose();
+            }
             brickOverlapGraphBuilder?.Dispose();
             brickOverlapGraphBuilder = null;
 
