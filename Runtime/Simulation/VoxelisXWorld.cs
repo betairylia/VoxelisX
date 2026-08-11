@@ -219,7 +219,7 @@ Profiler.EndSample();
             /////////////////////////////////////////////////////////////////////////
             // T-V Boundary
             //  Fix entity ordering
-            //  Handover to unmanaged world
+            //  Handover to unmanaged world / tickBuf
             //
             // DO NOT modify entity topology after here
             /////////////////////////////////////////////////////////////////////////
@@ -289,7 +289,7 @@ Profiler.EndSample();
             // VOXEL STAGE
             //  automata stage
             //  DO
-            //   - Modify voxel data within 1-voxel information propagation speed
+            //   - Modify voxel data within 1-voxel/t information propagation limit
             //   - Add forces to body
             //  DON'T
             //   - Add / remove / toggle `IsStatic` of VoxelEntities
