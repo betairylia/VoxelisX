@@ -329,24 +329,10 @@ namespace VoxelisX.Tests
                 m_Entities.Add(SourceGuid, Source.Data);
                 m_Entities.Add(TargetGuid, Target.Data);
 
-                using var bodyIndexToGuid = new NativeArray<Guid128>(2, Allocator.Persistent);
-                bodyIndexToGuid[0] = SourceGuid;
-                bodyIndexToGuid[1] = TargetGuid;
-
-                using var candidates = new NativeStream(1, Allocator.TempJob);
-                NativeStream.Writer writer = candidates.AsWriter();
-                writer.BeginForEachIndex(0);
-                writer.Write(new VoxelBrickOverlapCandidate
-                {
-                    BodyIndexA = 0,
-                    BrickCoordsInA = source.Brick,
-                    BodyIndexB = 1,
-                    BrickCoordsInB = targetBrick
-                });
-                writer.EndForEachIndex();
-
-                m_Builder.BuildAndPublish(candidates, bodyIndexToGuid);
-
+                // Plain locals, not `using` ones: a using variable is readonly, so the
+                // NativeArray indexer setter is rejected on it.
+                var bodyIndexToGuid = new NativeArray<Guid128>(2, Allocator.Persistent);
+                var candidates = new NativeStream(1, Allocator.TempJob);
                 var request = new BrickOverlapQueryRequest
                 {
                     Batches = new NativeArray<VoxelBrickOverlapQueryBatch>(1, Allocator.TempJob),
@@ -357,6 +343,22 @@ namespace VoxelisX.Tests
 
                 try
                 {
+                    bodyIndexToGuid[0] = SourceGuid;
+                    bodyIndexToGuid[1] = TargetGuid;
+
+                    NativeStream.Writer writer = candidates.AsWriter();
+                    writer.BeginForEachIndex(0);
+                    writer.Write(new VoxelBrickOverlapCandidate
+                    {
+                        BodyIndexA = 0,
+                        BrickCoordsInA = source.Brick,
+                        BodyIndexB = 1,
+                        BrickCoordsInB = targetBrick
+                    });
+                    writer.EndForEachIndex();
+
+                    m_Builder.BuildAndPublish(candidates, bodyIndexToGuid);
+
                     request.Batches[0] = new VoxelBrickOverlapQueryBatch { SourceBodyIndex = 0 };
                     request.BatchEntityIds[0] = SourceGuid;
                     NativeStream.Writer sourceWriter = request.Bricks.AsWriter();
@@ -370,6 +372,8 @@ namespace VoxelisX.Tests
                 finally
                 {
                     request.Dispose();
+                    candidates.Dispose();
+                    bodyIndexToGuid.Dispose();
                 }
             }
 
