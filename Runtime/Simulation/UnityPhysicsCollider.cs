@@ -10,8 +10,6 @@ namespace Voxelis.Simulation
 {
     public class UnityPhysicsCollider : MonoBehaviour
     {
-        public bool isStatic;
-
         public struct Box
         {
             public float lifespan;

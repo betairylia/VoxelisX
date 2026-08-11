@@ -94,6 +94,7 @@ namespace Voxelis
         {
             public NativeHashMap<Guid128, VoxelEntityData> VoxelEntities;
             public NativeHashMap<Guid128, VoxelBodyData> VoxelBodies;
+            public int nDynamicBodies;
         }
         
         public struct AutomataStageInputs
@@ -201,6 +202,22 @@ Profiler.EndSample();
 Profiler.BeginSample("Fill TickBuffer");
             tickBuf.VoxelEntities.Clear();
             tickBuf.VoxelBodies.Clear();
+
+            // Count dynamic body count
+            // TODO: Arrange this to manage body indices properly with persistence
+            tickBuf.nDynamicBodies = 0;
+            foreach (var kvp in entities)
+            {
+                if (bodies.TryGetValue(kvp.Key, out var b))
+                {
+                    if (!b.entity.IsStatic)
+                    {
+                        tickBuf.nDynamicBodies++;
+                    }
+                }
+            }
+
+            int nDynamic = 0, nStatic = 0;
             foreach(var kvp in entities)
             {
                 var e = kvp.Value;
@@ -209,7 +226,18 @@ Profiler.BeginSample("Fill TickBuffer");
 
                 if (bodies.TryGetValue(kvp.Key, out var b))
                 {
-                    tickBuf.VoxelBodies.Add(b.entity.PersistentGuid, b.GetDataCopy());
+                    var bodyData = b.GetDataCopy();
+                    if (e.IsStatic)
+                    {
+                        bodyData._cached_body_index = tickBuf.nDynamicBodies + nStatic;
+                        nStatic++;
+                    }
+                    else
+                    {
+                        bodyData._cached_body_index = nDynamic;
+                        nDynamic++;
+                    }
+                    tickBuf.VoxelBodies.Add(kvp.Key, bodyData);
                 }
             }
 Profiler.EndSample();
@@ -374,7 +402,7 @@ Profiler.BeginSample("Recompute body mass properties");
             {
                 var body = tickBuf.VoxelBodies[b];
                 var entityData = tickBuf.VoxelEntities[b];
-                body.ComputePhysicsProperties(entityData.sectors, entityData.sectorNeighbors);
+                body.ComputePhysicsProperties(entityData);
                 tickBuf.VoxelBodies[b] = body;
             }
 Profiler.EndSample();
@@ -523,45 +551,47 @@ Profiler.EndSample();
         /// </summary>
         public void Save(string path)
         {
-            var list = new List<(Guid128, VoxelEntity, VoxelBodyState, float3, float3)>(entities.Count);
+            var list = new List<(Guid128, VoxelEntity, bool, float3, float3)>(entities.Count);
             foreach(var e in entities.Values)
             {
                 // TODO: FIXME: Subtle bug -- will this break tick continuity? (this overwrites prevTransform)
                 e.SyncTransformToData();
-                var (bodyState, linearVelocity, angularVelocity) = CaptureBodyState(e);
-                list.Add((e.PersistentGuid, e, bodyState, linearVelocity, angularVelocity));
+                var (hasBody, linearVelocity, angularVelocity) = CaptureBodyState(e);
+                list.Add((e.PersistentGuid, e, hasBody, linearVelocity, angularVelocity));
             }
             WorldSaver.Save(path, list);
         }
 
         /// <summary>
-        /// Maps an entity's <see cref="VoxelBody"/> component to its three-state serialized form:
-        /// Off (no component or component disabled), Static, or Dynamic.
+        /// Captures the part of an entity's physics state that lives on <see cref="VoxelBody"/>:
+        /// whether an enabled component is present, and (for a moving entity) its velocity.
+        /// Staticness is not captured here — it belongs to the entity and <see cref="WorldSaver"/>
+        /// reads it from <see cref="VoxelEntityData.isStatic"/>.
         /// physicsEnabled is deliberately NOT consulted: it only controls Unity Rigidbody
         /// creation in VoxelBody.Awake — participation in the voxel physics world is purely
-        /// registration (enabled component) + isStatic, and static colliders are typically
-        /// authored with physicsEnabled = false.
+        /// registration (enabled component) + the entity's isStatic, and static colliders are
+        /// typically authored with physicsEnabled = false.
         /// Uses GetComponent rather than the <see cref="bodies"/> dictionary so bodies on
         /// entities that are not currently registered are still captured.
         /// </summary>
-        private static (VoxelBodyState State, float3 LinearVelocity, float3 AngularVelocity) CaptureBodyState(VoxelEntity e)
+        private static (bool HasBody, float3 LinearVelocity, float3 AngularVelocity) CaptureBodyState(VoxelEntity e)
         {
             if (!e.TryGetComponent<VoxelBody>(out var body) || !body.enabled)
             {
-                Debug.LogWarning($"Captured VoxelBodyState.Off for {e.name}");
-                return (VoxelBodyState.Off, float3.zero, float3.zero);
+                Debug.LogWarning($"Captured no VoxelBody for {e.name}");
+                return (false, float3.zero, float3.zero);
             }
 
-            if (body.isStatic)
+            if (e.IsStatic)
             {
-                // Static bodies never move; velocity is meaningless, so persist zero.
-                return (VoxelBodyState.Static, float3.zero, float3.zero);
+                // Static entities never move; velocity is meaningless, so persist zero.
+                return (true, float3.zero, float3.zero);
             }
 
             // Persist the current physics velocity so the body resumes its motion on load rather
             // than restarting from rest. GetDataCopy reflects the latest tick's exported velocity.
             var motionVelocity = body.GetDataCopy().motionVelocity;
-            return (VoxelBodyState.Dynamic, motionVelocity.LinearVelocity, motionVelocity.AngularVelocity);
+            return (true, motionVelocity.LinearVelocity, motionVelocity.AngularVelocity);
         }
 
         /// <summary>
@@ -604,24 +634,24 @@ Profiler.EndSample();
                     // Restore the protected designation so interaction tools keep refusing to
                     // unfreeze/drag this entity after load (keyed by GUID, not a stale scene ref).
                     e.IsProtected = rec.Protected;
+                    e.IsStatic = rec.IsStatic;
                 }
 
-                Debug.Log($"{rec.Guid}: {rec.Body}");
+                Debug.Log($"{rec.Guid}: {rec.Flags}");
 
-                if (rec.Body != VoxelBodyState.Off)
+                if (rec.HasBody)
                 {
                     // Fields must be assigned while the GameObject is still inactive:
-                    // VoxelBody.Awake consumes physicsEnabled (Rigidbody creation) and isStatic.
+                    // VoxelBody.Awake consumes physicsEnabled (Rigidbody creation).
                     // physicsEnabled must stay OFF: it only makes VoxelBody.Awake spawn a Unity
                     // Rigidbody, which the voxel physics never reads (participation is registration
-                    // + isStatic). Authoring (e.g. CreateAlignedDetachedEntity) leaves it false and
-                    // lets the voxel sim drive the body. Deriving it as `Dynamic -> true` here spawned
-                    // a rogue PhysX Rigidbody that free-fell under gravity and fought the sim's
+                    // + the entity's isStatic). Authoring (e.g. CreateAlignedDetachedEntity) leaves it
+                    // false and lets the voxel sim drive the body. Deriving it as `Dynamic -> true` here
+                    // spawned a rogue PhysX Rigidbody that free-fell under gravity and fought the sim's
                     // per-frame transform writes, so loaded dynamic bodies drifted off and looked
                     // like they "failed to load" while static bodies (no Rigidbody) stayed put.
                     var body = go.AddComponent<VoxelBody>();
                     body.physicsEnabled = false;
-                    body.isStatic = rec.Body == VoxelBodyState.Static;
 
                     // Leave this to ON regardless of the save file (it does not exist in vxw so far).
                     // TODO: Maybe decide if we should always do accuratePhysics or save to vxw.
@@ -633,7 +663,7 @@ Profiler.EndSample();
                 // Restore physics velocity AFTER activation — VoxelBody.Awake reinitializes its data
                 // (motionVelocity back to zero), so this must run once the component is live. Only
                 // dynamic bodies carry meaningful velocity; the solver ignores a static body's.
-                if (rec.Body == VoxelBodyState.Dynamic && go.TryGetComponent<VoxelBody>(out var loadedBody))
+                if (rec.HasBody && !rec.IsStatic && go.TryGetComponent<VoxelBody>(out var loadedBody))
                 {
                     loadedBody.SetVelocity(rec.LinearVelocity, rec.AngularVelocity);
                 }

@@ -20,6 +20,7 @@ namespace Voxelis
         /// Path to the .vox file to load.
         /// </summary>
         [SerializeField] private string voxFilePath;
+        [SerializeField] private bool LoadAsStone = false;
 
         private VoxelEntity entity;
 
@@ -46,7 +47,9 @@ namespace Voxelis
                             voxel.GlobalPosition.X,
                             voxel.GlobalPosition.Z,
                             voxel.GlobalPosition.Y),
-                        new Block(voxel.Color.R >> 3, voxel.Color.G >> 3, voxel.Color.B >> 3, false));
+                        LoadAsStone ?
+                        new Block(voxel.Color.R >> 3, voxel.Color.G >> 3, voxel.Color.B >> 3, false) :
+                        new Block(0x8000));
                 }
             }
         }

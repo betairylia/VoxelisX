@@ -24,26 +24,37 @@ namespace Voxelis.IO
 
         public static void Save(
             string path,
-            IReadOnlyList<(Guid128 Guid, VoxelEntity Entity, VoxelBodyState Body, float3 LinearVelocity, float3 AngularVelocity)> entities)
+            IReadOnlyList<(Guid128 Guid, VoxelEntity Entity, bool HasBody, float3 LinearVelocity, float3 AngularVelocity)> entities)
         {
             using var writer = SingleFileSaveStorage.OpenWrite(path);
             for (int i = 0; i < entities.Count; i++)
             {
-                var (guid, entity, body, linearVelocity, angularVelocity) = entities[i];
-                SaveEntity(writer, guid, entity, body, linearVelocity, angularVelocity);
+                var (guid, entity, hasBody, linearVelocity, angularVelocity) = entities[i];
+                SaveEntity(writer, guid, entity, hasBody, linearVelocity, angularVelocity);
             }
             writer.Commit();
         }
 
+        /// <summary>
+        /// Writes one entity. Staticness is read straight off the entity's own data
+        /// (<see cref="VoxelEntityData.isStatic"/>) rather than passed in, so a caller cannot persist a
+        /// value that disagrees with the running entity; only body presence and velocity come from
+        /// the caller, since those live on <c>VoxelBody</c>.
+        /// </summary>
         public static unsafe void SaveEntity(
-            IWorldSaveWriter writer, Guid128 guid, VoxelEntity entity, VoxelBodyState body = VoxelBodyState.Off,
+            IWorldSaveWriter writer, Guid128 guid, VoxelEntity entity, bool hasBody = false,
             float3 linearVelocity = default, float3 angularVelocity = default)
         {
             var data = entity.GetDataCopy();
             var transformRec = new EntityTransformRecord(data.transform.pos, data.transform.rot);
             bool isProtected = entity != null && entity.IsProtected;
+
+            EntityFlags flags = EntityFlags.None;
+            if (hasBody) flags |= EntityFlags.HasBody;
+            if (data.isStatic) flags |= EntityFlags.Static;
+
             var entityRecord = new EntityRecord(
-                guid, transformRec, data.entityRequireUpdateFlags, body, linearVelocity, angularVelocity, isProtected);
+                guid, transformRec, data.entityRequireUpdateFlags, flags, linearVelocity, angularVelocity, isProtected);
             writer.WriteEntity(in entityRecord, EnumerateSectors(data));
         }
 

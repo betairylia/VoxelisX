@@ -30,7 +30,9 @@ namespace Voxelis.IO
     ///     16 B guid
     ///     7  × f32 transform (pos.xyz + rot.xyzw)
     ///     u16 entityRequireUpdateFlags
-    ///     u8  bodyState              (v3+; 0 = off/none, 1 = static, 2 = dynamic)
+    ///     u8  entityFlags            (v6+; bit0 = has VoxelBody, bit1 = entity is static)
+    ///                                (v3..v5: bodyState — 0 = off/none, 1 = static, 2 = dynamic;
+    ///                                 migrated on read, see EntityFlagsFromLegacyBodyState)
     ///     6  × f32 velocity          (v4+; linear.xyz + angular.xyz — the dynamic body's physics
     ///                                 velocity so motion resumes on load; zero for pre-v4 saves)
     ///     u8  protected             (v5+; 0 = normal, 1 = protected-from-interaction; 0 for pre-v5 saves)
@@ -43,7 +45,7 @@ namespace Voxelis.IO
         /// <summary>Magic value for the file header: "VXLS" interpreted as little-endian u32.</summary>
         public const uint FileMagic = 0x534C5856u;
 
-        public const ushort CurrentVersion = 5;
+        public const ushort CurrentVersion = 6;
         public const int HeaderBytes = 64;
 
         /// <summary>Size in bytes of the uncompressed per-sector preview blob (u32 per brick).</summary>
@@ -52,8 +54,47 @@ namespace Voxelis.IO
         /// <summary>Byte size of one entry in a per-entity sector index: int3 coord (12) + u64 offset (8) + u32 size (4).</summary>
         public const int SectorIndexEntryBytes = 12 + 8 + 4;
 
-        /// <summary>Byte size of one entity record in the entity table (v3: +1 body-flags byte; v4: +24 velocity bytes; v5: +1 protected byte).</summary>
+        /// <summary>Byte size of one entity record in the entity table (v3: +1 body/entity-flags byte; v4: +24 velocity bytes; v5: +1 protected byte).</summary>
         public const int EntityRecordBytes = 16 + 28 + 2 + 1 + 24 + 1 + 8 + 4;
+
+        /// <summary>
+        /// Migrates a pre-v6 <c>bodyState</c> byte to <see cref="EntityFlags"/>. Staticness used to live
+        /// on the body, so "no body" implied a static entity — which is what <c>VoxelEntity.Awake</c>
+        /// forced back then, and what keeps old saves loading unchanged.
+        /// </summary>
+        public static EntityFlags EntityFlagsFromLegacyBodyState(byte bodyState)
+        {
+            return bodyState switch
+            {
+                1 => EntityFlags.HasBody | EntityFlags.Static, // legacy Static
+                2 => EntityFlags.HasBody,                      // legacy Dynamic
+                _ => EntityFlags.Static,                       // legacy Off (or unknown)
+            };
+        }
+    }
+
+    /// <summary>
+    /// Per-entity boolean state stored on disk as one byte (v6+). Replaces the pre-v6
+    /// <c>VoxelBodyState</c> byte: staticness is a property of the entity
+    /// (<see cref="VoxelEntityData.isStatic"/>), not of its <c>VoxelBody</c>, so presence of a body
+    /// and staticness are now two independent bits.
+    /// </summary>
+    /// <remarks>
+    /// The component's <c>physicsEnabled</c> flag is still not persisted — it only controls Unity
+    /// Rigidbody creation, which the voxel physics never reads.
+    /// </remarks>
+    [Flags]
+    public enum EntityFlags : byte
+    {
+        None = 0,
+
+        /// <summary>The entity carried an enabled <c>VoxelBody</c> component at save time.</summary>
+        HasBody = 1 << 0,
+
+        /// <summary>The entity never moves — see <see cref="VoxelEntityData.isStatic"/>.</summary>
+        Static = 1 << 1,
+
+        All = HasBody | Static,
     }
 
     [Flags]
@@ -87,25 +128,18 @@ namespace Voxelis.IO
         }
     }
 
-    /// <summary>
-    /// Serialized physics state of an entity's <c>VoxelBody</c> component, stored on disk as one byte.
-    /// <see cref="Off"/> covers "no component" and "component disabled" alike; pre-v3 saves read as
-    /// <see cref="Off"/>. Unknown byte values are treated as <see cref="Off"/>. The component's
-    /// <c>physicsEnabled</c> flag is not persisted — loaders derive it (Dynamic → true).
-    /// </summary>
-    public enum VoxelBodyState : byte
-    {
-        Off = 0,
-        Static = 1,
-        Dynamic = 2,
-    }
-
     public readonly struct EntityRecord
     {
         public readonly Guid128 Guid;
         public readonly EntityTransformRecord Transform;
         public readonly ushort EntityRequireUpdateFlags;
-        public readonly VoxelBodyState Body;
+        public readonly EntityFlags Flags;
+
+        /// <summary>Whether the entity carried an enabled <c>VoxelBody</c> at save time.</summary>
+        public bool HasBody => (Flags & EntityFlags.HasBody) != 0;
+
+        /// <summary>The persisted <see cref="VoxelEntityData.isStatic"/> value.</summary>
+        public bool IsStatic => (Flags & EntityFlags.Static) != 0;
 
         /// <summary>
         /// The body's physics velocity at save time (v4+). Persisted so a dynamic body resumes its
@@ -121,7 +155,7 @@ namespace Voxelis.IO
         public readonly bool Protected;
 
         public EntityRecord(Guid128 guid, EntityTransformRecord transform, ushort entityRequireUpdateFlags)
-            : this(guid, transform, entityRequireUpdateFlags, VoxelBodyState.Off)
+            : this(guid, transform, entityRequireUpdateFlags, EntityFlags.Static)
         {
         }
 
@@ -129,8 +163,8 @@ namespace Voxelis.IO
             Guid128 guid,
             EntityTransformRecord transform,
             ushort entityRequireUpdateFlags,
-            VoxelBodyState body)
-            : this(guid, transform, entityRequireUpdateFlags, body, float3.zero, float3.zero)
+            EntityFlags flags)
+            : this(guid, transform, entityRequireUpdateFlags, flags, float3.zero, float3.zero)
         {
         }
 
@@ -138,10 +172,10 @@ namespace Voxelis.IO
             Guid128 guid,
             EntityTransformRecord transform,
             ushort entityRequireUpdateFlags,
-            VoxelBodyState body,
+            EntityFlags flags,
             float3 linearVelocity,
             float3 angularVelocity)
-            : this(guid, transform, entityRequireUpdateFlags, body, linearVelocity, angularVelocity, false)
+            : this(guid, transform, entityRequireUpdateFlags, flags, linearVelocity, angularVelocity, false)
         {
         }
 
@@ -149,7 +183,7 @@ namespace Voxelis.IO
             Guid128 guid,
             EntityTransformRecord transform,
             ushort entityRequireUpdateFlags,
-            VoxelBodyState body,
+            EntityFlags flags,
             float3 linearVelocity,
             float3 angularVelocity,
             bool isProtected)
@@ -157,7 +191,7 @@ namespace Voxelis.IO
             Guid = guid;
             Transform = transform;
             EntityRequireUpdateFlags = entityRequireUpdateFlags;
-            Body = body;
+            Flags = flags;
             LinearVelocity = linearVelocity;
             AngularVelocity = angularVelocity;
             Protected = isProtected;

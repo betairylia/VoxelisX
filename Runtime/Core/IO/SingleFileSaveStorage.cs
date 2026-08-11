@@ -147,7 +147,7 @@ namespace Voxelis.IO
                 _writer.Write(rec.Transform.Rotation.value.z);
                 _writer.Write(rec.Transform.Rotation.value.w);
                 _writer.Write(rec.EntityRequireUpdateFlags);
-                _writer.Write((byte)rec.Body);
+                _writer.Write((byte)rec.Flags);
                 _writer.Write(rec.LinearVelocity.x);
                 _writer.Write(rec.LinearVelocity.y);
                 _writer.Write(rec.LinearVelocity.z);
@@ -219,9 +219,22 @@ namespace Voxelis.IO
                     _reader.ReadSingle());
                 var rot = new quaternion(rotV);
                 ushort entFlags = _reader.ReadUInt16();
-                // Body-state byte exists from format v3 onward; older saves have no body info.
-                var body = version >= 3 ? (VoxelBodyState)_reader.ReadByte() : VoxelBodyState.Off;
-                if (body > VoxelBodyState.Dynamic) body = VoxelBodyState.Off;
+                // One byte from format v3 onward: entity flags in v6+, the legacy body-state enum in
+                // v3..v5 (migrated here). Pre-v3 saves have no such byte — those entities predate
+                // VoxelBody persistence entirely, so they load body-less and static.
+                EntityFlags entityFlags;
+                if (version >= 6)
+                {
+                    entityFlags = (EntityFlags)_reader.ReadByte() & EntityFlags.All;
+                }
+                else if (version >= 3)
+                {
+                    entityFlags = WorldSaveFormat.EntityFlagsFromLegacyBodyState(_reader.ReadByte());
+                }
+                else
+                {
+                    entityFlags = EntityFlags.Static;
+                }
                 // Body physics velocity exists from format v4 onward; older saves read as zero (rest).
                 float3 linearVelocity = float3.zero;
                 float3 angularVelocity = float3.zero;
@@ -236,7 +249,7 @@ namespace Voxelis.IO
                 uint sectCount = _reader.ReadUInt32();
 
                 _readEntities.Add(new EntityRecord(
-                    guid, new EntityTransformRecord(pos, rot), entFlags, body, linearVelocity, angularVelocity, isProtected));
+                    guid, new EntityTransformRecord(pos, rot), entFlags, entityFlags, linearVelocity, angularVelocity, isProtected));
                 indexLocations[i] = ((long)idxOff, (int)sectCount);
             }
 

@@ -91,7 +91,7 @@ namespace Voxelis.Simulation
             };
 
             // If dynamic, create motion data and velocity
-            if (!vb.isStatic)
+            if (!vb.entity.IsStatic)
             {
                 int motionIndex = bodyIndex; // Dynamic bodies come first
                 var motionDatas = physicsWorld.MotionDatas;
@@ -135,7 +135,7 @@ namespace Voxelis.Simulation
                 vc->ReloadSectors(sectors);
                 Profiler.EndSample();
 
-                if (vb.isStatic) return;
+                if (vb.entity.IsStatic) return;
 
                 // Compute mass properties using VoxelBody API
                 Profiler.BeginSample("TestPhysics Compute Mass Properties");
@@ -223,7 +223,7 @@ namespace Voxelis.Simulation
             for (int i = 0; i < dynamicbodies.Count; i++)
             {
                 VoxelBody vb = dynamicbodies[i];
-                vb.isStatic = false;
+                vb.entity.IsStatic = false;
                 Debug.Log($"[Dynamic {i}] Position: {vb.transform.position}, Rotation: {vb.transform.rotation}");
                 AddBodyToPhysicsWorld(vb, bodyIndex);
                 bodyIndex++;
@@ -233,7 +233,7 @@ namespace Voxelis.Simulation
             for (int i = 0; i < staticBodies.Count; i++)
             {
                 VoxelBody vb = staticBodies[i];
-                vb.isStatic = true;
+                vb.entity.IsStatic = true;
                 Debug.Log($"[Static {i}] Position: {vb.transform.position}, Rotation: {vb.transform.rotation}");
                 AddBodyToPhysicsWorld(vb, bodyIndex);
                 bodyIndex++;

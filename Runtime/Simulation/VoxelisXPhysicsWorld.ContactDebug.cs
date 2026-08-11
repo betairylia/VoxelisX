@@ -46,7 +46,7 @@ namespace Voxelis.Simulation
         /// thread after <c>handles.FinalExecutionHandle.Complete()</c> and before the next
         /// <c>ResetSimulationContext</c> (the contact event stream is only valid in that window).
         /// </summary>
-        void LogVoxelContactsAfterStep()
+        void LogVoxelContactsAfterStep(int nDynamic)
         {
             if (!enableContactDebugLogging)
             {

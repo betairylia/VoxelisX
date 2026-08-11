@@ -37,6 +37,15 @@ namespace Voxelis
         public ushort entityDirtyFlags;
         public ushort entityRequireUpdateFlags;
 
+        /// <summary>
+        /// The single source of truth for "this entity never moves".
+        /// Physics splits the world's bodies into static/dynamic on this flag, mass properties are
+        /// only computed for dynamic entities, and the renderer skips re-tracking static instances.
+        /// Authored on <see cref="VoxelEntity"/> (its serialized field seeds this on Awake) and
+        /// persisted in <c>.vxw</c>;
+        /// </summary>
+        public bool isStatic;
+
         // Persistence and Identity
         public Guid128 Guid;
 
@@ -50,6 +59,7 @@ namespace Voxelis
             angularVelocity = float3.zero;
             entityDirtyFlags = 0;
             entityRequireUpdateFlags = 0;
+            isStatic = true;
             Guid = Guid128.Zero;
         }
 
@@ -69,6 +79,7 @@ namespace Voxelis
             angularVelocity = float3.zero;
             entityDirtyFlags = 0;
             entityRequireUpdateFlags = 0;
+            isStatic = true;
             Guid = Guid128.Zero;
         }
 
@@ -496,19 +507,28 @@ namespace Voxelis
         public VoxelEntityData GetDataCopy() => data;
         private static Unity.Mathematics.Random globalEntityRandomState = new Unity.Mathematics.Random(0x6E624EB7u);
 
+        [Tooltip("Marks this entity as never moving.")]
+        [SerializeField] private bool isStatic = true;
+
+        /// <summary>
+        /// Whether this entity never moves. The runtime value lives in <see cref="VoxelEntityData.isStatic"/>.
+        /// </summary>
+        /// <remarks>
+        /// Picked up by Awake, exactly like <see cref="PersistentGuid"/>.
+        /// </remarks>
         public bool IsStatic
         {
-            get => _isStatic;
+            get => data.sectors.IsCreated ? data.isStatic : isStatic;
             set
             {
-                if(_isStatic == false && value == true)
+                if (IsStatic == false && value == true)
                 {
                     _shouldResetMotionVectors = true;
                 }
-                _isStatic = value;
+                isStatic = value;
+                data.isStatic = value;
             }
         }
-        [SerializeField] private bool _isStatic;
         public bool _shouldResetMotionVectors;
 
         // TODO: Wire me to SectorRenderer
@@ -540,8 +560,6 @@ namespace Voxelis
 
         private void Awake()
         {
-            IsStatic = true;
-
             // A loader (e.g. WorldLoader) may assign PersistentGuid while the GameObject is still
             // inactive — that write lands on the default `data` struct BEFORE this Awake runs.
             // Capture it first so the fresh allocation below doesn't clobber the restored identity
@@ -552,7 +570,22 @@ namespace Voxelis
             {
                 data.Guid = preAssignedGuid;
             }
+
+            data.isStatic = isStatic;
         }
+
+#if UNITY_EDITOR
+        /// <summary>
+        /// Pushes inspector edits of the authoring field into the live native data during play mode —
+        /// the inspector writes the serialized field directly, bypassing <see cref="IsStatic"/>.
+        /// </summary>
+        private void OnValidate()
+        {
+            if (!Application.isPlaying || !data.sectors.IsCreated) return;
+            if (data.isStatic == isStatic) return;
+            IsStatic = isStatic;
+        }
+#endif
 
         public void CopyDataFrom(VoxelEntityData srcData)
         {

@@ -100,7 +100,7 @@ namespace VoxelisX.Tests
             try
             {
                 VoxelBodyData.MassProperties massProperties =
-                    bodyData.ComputePhysicsProperties(scope.Data.sectors, scope.Data.sectorNeighbors);
+                    bodyData.ComputePhysicsProperties(scope.Data);
 
                 Assert.That(massProperties.mass, Is.EqualTo(1f));
                 Assert.That(massProperties.centerOfMass, Is.EqualTo(new float3(0.5f, 0.5f, 0.5f)));
@@ -123,11 +123,11 @@ namespace VoxelisX.Tests
             var bodyData = new VoxelBodyData(Allocator.Persistent);
             try
             {
-                Assert.That(bodyData.ComputePhysicsProperties(scope.Data.sectors, scope.Data.sectorNeighbors).mass, Is.EqualTo(1f));
+                Assert.That(bodyData.ComputePhysicsProperties(scope.Data).mass, Is.EqualTo(1f));
 
-                bodyData.isStatic = true;
+                scope.Data.isStatic = true;
                 VoxelBodyData.MassProperties massProperties =
-                    bodyData.ComputePhysicsProperties(scope.Data.sectors, scope.Data.sectorNeighbors);
+                    bodyData.ComputePhysicsProperties(scope.Data);
 
                 Assert.That(massProperties.mass, Is.EqualTo(0f));
                 Assert.That(massProperties.centerOfMass, Is.EqualTo(float3.zero));
@@ -165,7 +165,7 @@ namespace VoxelisX.Tests
             var bodyData = new VoxelBodyData(Allocator.Persistent);
             try
             {
-                bodyData.ComputePhysicsProperties(scope.Data.sectors, scope.Data.sectorNeighbors);
+                bodyData.ComputePhysicsProperties(scope.Data);
 
                 // Interior center: all 6 neighbors solid -> no exposed faces, 3 axes surrounded (None).
                 Assert.That(PhysicsData(sector, 1, 1, 1), Is.EqualTo(0));
@@ -210,7 +210,7 @@ namespace VoxelisX.Tests
             var bodyData = new VoxelBodyData(Allocator.Persistent);
             try
             {
-                bodyData.ComputePhysicsProperties(scope.Data.sectors, scope.Data.sectorNeighbors);
+                bodyData.ComputePhysicsProperties(scope.Data);
                 bodyData.RefreshPhysicsKeyMask(scope.Data.sectors);
 
                 ref Sector source = ref sector.Get();
@@ -279,13 +279,15 @@ namespace VoxelisX.Tests
             var tickBuf = new VoxelisXWorld.WorldStageInputs
             {
                 VoxelEntities = new NativeHashMap<Guid128, VoxelEntityData>(1, Allocator.Persistent),
-                VoxelBodies = new NativeHashMap<Guid128, VoxelBodyData>(1, Allocator.Persistent)
+                VoxelBodies = new NativeHashMap<Guid128, VoxelBodyData>(1, Allocator.Persistent),
+                nDynamicBodies = 1
             };
             NativeArray<Guid128> bodyIndexToGuid = default;
 
             try
             {
-                bodyData.ComputePhysicsProperties(scope.Data.sectors, scope.Data.sectorNeighbors);
+                bodyData.ComputePhysicsProperties(scope.Data);
+                bodyData._cached_body_index = 0;
                 bodyData.motionData = new Unity.Physics.MotionData
                 {
                     WorldFromMotion = RigidTransform.identity,
@@ -312,13 +314,11 @@ namespace VoxelisX.Tests
                     ref tickBuf,
                     ref world,
                     out bodyIndexToGuid,
-                    out int nDynamic,
                     0.05f,
                     0.08f,
                     default);
                 buildHandle.Complete();
 
-                Assert.That(nDynamic, Is.EqualTo(1));
                 Assert.That(bodyIndexToGuid[0], Is.EqualTo(guid));
                 Assert.That(world.MotionDatas[0].LinearDamping, Is.EqualTo(0.05f),
                     "Global linear air friction must override the body's persisted LinearDamping");
@@ -343,35 +343,107 @@ namespace VoxelisX.Tests
         }
 
         [Test]
-        public void PhysicsWorldExportPersistsMotionBackToVoxelBodyData()
+        public void PhysicsWorldBuildUsesAbsoluteCachedIndicesForDynamicAndStaticBodies()
         {
-            using var scope = new EntityDataTestScope();
-            SectorHandle sector = scope.AddSector(int3.zero);
-            sector.SetBlock(0, 0, 0, new Block(1));
-            scope.Data.RefreshNonEmptyMask();
+            using var dynamicScope = new EntityDataTestScope();
+            using var staticScope = new EntityDataTestScope();
+            dynamicScope.AddSector(int3.zero).SetBlock(0, 0, 0, new Block(1));
+            staticScope.AddSector(int3.zero).SetBlock(0, 0, 0, new Block(1));
+            dynamicScope.Data.RefreshNonEmptyMask();
+            staticScope.Data.RefreshNonEmptyMask();
+            staticScope.Data.isStatic = true;
 
-            Guid128 guid = new Guid128(5, 6, 7, 8);
-            var bodyData = new VoxelBodyData(Allocator.Persistent);
+            Guid128 dynamicGuid = new Guid128(20, 21, 22, 23);
+            Guid128 staticGuid = new Guid128(24, 25, 26, 27);
+            var dynamicBody = new VoxelBodyData(Allocator.Persistent);
+            var staticBody = new VoxelBodyData(Allocator.Persistent);
             var world = new PhysicsWorld(0, 0, 0);
             var tickBuf = new VoxelisXWorld.WorldStageInputs
             {
-                VoxelEntities = new NativeHashMap<Guid128, VoxelEntityData>(1, Allocator.Persistent),
-                VoxelBodies = new NativeHashMap<Guid128, VoxelBodyData>(1, Allocator.Persistent)
+                VoxelEntities = new NativeHashMap<Guid128, VoxelEntityData>(2, Allocator.Persistent),
+                VoxelBodies = new NativeHashMap<Guid128, VoxelBodyData>(2, Allocator.Persistent),
+                nDynamicBodies = 1
+            };
+            NativeArray<Guid128> bodyIndexToGuid = default;
+
+            try
+            {
+                dynamicBody.ComputePhysicsProperties(dynamicScope.Data);
+                dynamicBody._cached_body_index = 0;
+                staticBody.ComputePhysicsProperties(staticScope.Data);
+                staticBody._cached_body_index = 1;
+
+                tickBuf.VoxelEntities.Add(dynamicGuid, dynamicScope.Data);
+                tickBuf.VoxelEntities.Add(staticGuid, staticScope.Data);
+                tickBuf.VoxelBodies.Add(dynamicGuid, dynamicBody);
+                tickBuf.VoxelBodies.Add(staticGuid, staticBody);
+
+                JobHandle buildHandle = VoxelisXPhysicsInterface.SchedulePhysicsWorldBuild(
+                    ref tickBuf,
+                    ref world,
+                    out bodyIndexToGuid,
+                    0f,
+                    0f,
+                    default);
+                buildHandle.Complete();
+
+                Assert.That(bodyIndexToGuid[0], Is.EqualTo(dynamicGuid));
+                Assert.That(bodyIndexToGuid[1], Is.EqualTo(staticGuid));
+            }
+            finally
+            {
+                if (bodyIndexToGuid.IsCreated)
+                {
+                    bodyIndexToGuid.Dispose();
+                }
+
+                world.Dispose();
+                tickBuf.VoxelEntities.Dispose();
+                tickBuf.VoxelBodies.Dispose();
+                dynamicBody.Dispose();
+                staticBody.Dispose();
+            }
+        }
+
+        [Test]
+        public void PhysicsWorldExportPersistsMotionForMultipleDynamicBodies()
+        {
+            using var firstScope = new EntityDataTestScope();
+            using var secondScope = new EntityDataTestScope();
+            firstScope.AddSector(int3.zero).SetBlock(0, 0, 0, new Block(1));
+            secondScope.AddSector(int3.zero).SetBlock(0, 0, 0, new Block(1));
+            firstScope.Data.RefreshNonEmptyMask();
+            secondScope.Data.RefreshNonEmptyMask();
+
+            Guid128 firstGuid = new Guid128(5, 6, 7, 8);
+            Guid128 secondGuid = new Guid128(9, 10, 11, 12);
+            var firstBody = new VoxelBodyData(Allocator.Persistent);
+            var secondBody = new VoxelBodyData(Allocator.Persistent);
+            var world = new PhysicsWorld(0, 0, 0);
+            var tickBuf = new VoxelisXWorld.WorldStageInputs
+            {
+                VoxelEntities = new NativeHashMap<Guid128, VoxelEntityData>(2, Allocator.Persistent),
+                VoxelBodies = new NativeHashMap<Guid128, VoxelBodyData>(2, Allocator.Persistent),
+                nDynamicBodies = 2
             };
             NativeArray<Guid128> bodyIndexToGuid = default;
             bool exportScheduled = false;
 
             try
             {
-                bodyData.ComputePhysicsProperties(scope.Data.sectors, scope.Data.sectorNeighbors);
-                tickBuf.VoxelEntities.Add(guid, scope.Data);
-                tickBuf.VoxelBodies.Add(guid, bodyData);
+                firstBody.ComputePhysicsProperties(firstScope.Data);
+                firstBody._cached_body_index = 0;
+                secondBody.ComputePhysicsProperties(secondScope.Data);
+                secondBody._cached_body_index = 1;
+                tickBuf.VoxelEntities.Add(firstGuid, firstScope.Data);
+                tickBuf.VoxelEntities.Add(secondGuid, secondScope.Data);
+                tickBuf.VoxelBodies.Add(firstGuid, firstBody);
+                tickBuf.VoxelBodies.Add(secondGuid, secondBody);
 
                 JobHandle buildHandle = VoxelisXPhysicsInterface.SchedulePhysicsWorldBuild(
                     ref tickBuf,
                     ref world,
                     out bodyIndexToGuid,
-                    out int nDynamic,
                     0f,
                     0f,
                     default);
@@ -381,6 +453,10 @@ namespace VoxelisX.Tests
                 Unity.Physics.MotionData exportedMotionData = motionDatas[0];
                 exportedMotionData.WorldFromMotion = new RigidTransform(quaternion.identity, new float3(10f, 20f, 30f));
                 motionDatas[0] = exportedMotionData;
+                Unity.Physics.MotionData secondExportedMotionData = motionDatas[1];
+                secondExportedMotionData.WorldFromMotion =
+                    new RigidTransform(quaternion.identity, new float3(40f, 50f, 60f));
+                motionDatas[1] = secondExportedMotionData;
 
                 NativeArray<Unity.Physics.MotionVelocity> motionVelocities = world.MotionVelocities;
                 Unity.Physics.MotionVelocity exportedMotionVelocity = motionVelocities[0];
@@ -388,21 +464,33 @@ namespace VoxelisX.Tests
                 exportedMotionVelocity.AngularVelocity = new float3(1f, 3f, 5f);
                 exportedMotionVelocity.GravityFactor = 0.75f;
                 motionVelocities[0] = exportedMotionVelocity;
+                Unity.Physics.MotionVelocity secondExportedMotionVelocity = motionVelocities[1];
+                secondExportedMotionVelocity.LinearVelocity = new float3(8f, 10f, 12f);
+                secondExportedMotionVelocity.AngularVelocity = new float3(7f, 9f, 11f);
+                secondExportedMotionVelocity.GravityFactor = 0.5f;
+                motionVelocities[1] = secondExportedMotionVelocity;
 
                 JobHandle exportHandle = VoxelisXPhysicsInterface.SchedulePhysicsWorldExport(
                     ref tickBuf,
                     ref world,
                     bodyIndexToGuid,
-                    nDynamic,
                     default);
                 exportScheduled = true;
                 exportHandle.Complete();
 
-                VoxelBodyData exportedBody = tickBuf.VoxelBodies[guid];
-                Assert.That(exportedBody.motionData.WorldFromMotion.pos, Is.EqualTo(new float3(10f, 20f, 30f)));
-                Assert.That(exportedBody.motionVelocity.LinearVelocity, Is.EqualTo(new float3(2f, 4f, 6f)));
-                Assert.That(exportedBody.motionVelocity.AngularVelocity, Is.EqualTo(new float3(1f, 3f, 5f)));
-                Assert.That(exportedBody.motionVelocity.GravityFactor, Is.EqualTo(0.75f));
+                VoxelBodyData exportedFirstBody = tickBuf.VoxelBodies[firstGuid];
+                Assert.That(exportedFirstBody.motionData.WorldFromMotion.pos,
+                    Is.EqualTo(new float3(10f, 20f, 30f)));
+                Assert.That(exportedFirstBody.motionVelocity.LinearVelocity, Is.EqualTo(new float3(2f, 4f, 6f)));
+                Assert.That(exportedFirstBody.motionVelocity.AngularVelocity, Is.EqualTo(new float3(1f, 3f, 5f)));
+                Assert.That(exportedFirstBody.motionVelocity.GravityFactor, Is.EqualTo(0.75f));
+
+                VoxelBodyData exportedSecondBody = tickBuf.VoxelBodies[secondGuid];
+                Assert.That(exportedSecondBody.motionData.WorldFromMotion.pos,
+                    Is.EqualTo(new float3(40f, 50f, 60f)));
+                Assert.That(exportedSecondBody.motionVelocity.LinearVelocity, Is.EqualTo(new float3(8f, 10f, 12f)));
+                Assert.That(exportedSecondBody.motionVelocity.AngularVelocity, Is.EqualTo(new float3(7f, 9f, 11f)));
+                Assert.That(exportedSecondBody.motionVelocity.GravityFactor, Is.EqualTo(0.5f));
             }
             finally
             {
@@ -414,7 +502,8 @@ namespace VoxelisX.Tests
                 world.Dispose();
                 tickBuf.VoxelEntities.Dispose();
                 tickBuf.VoxelBodies.Dispose();
-                bodyData.Dispose();
+                firstBody.Dispose();
+                secondBody.Dispose();
             }
         }
 
@@ -437,7 +526,7 @@ namespace VoxelisX.Tests
 
             try
             {
-                bodyData.ComputePhysicsProperties(scope.Data.sectors, scope.Data.sectorNeighbors);
+                bodyData.ComputePhysicsProperties(scope.Data);
                 tickBuf.VoxelEntities.Add(guid, scope.Data);
                 tickBuf.VoxelBodies.Add(guid, bodyData);
 
@@ -476,7 +565,7 @@ namespace VoxelisX.Tests
 
             try
             {
-                bodyData.ComputePhysicsProperties(scope.Data.sectors, scope.Data.sectorNeighbors);
+                bodyData.ComputePhysicsProperties(scope.Data);
                 tickBuf.VoxelEntities.Add(guid, scope.Data);
                 tickBuf.VoxelBodies.Add(guid, bodyData);
 

@@ -12,6 +12,10 @@ namespace VoxelisX.Tests.TestSupport
         public EntityDataTestScope()
         {
             Data = new VoxelEntityData(Allocator.Persistent);
+            // VoxelEntityData defaults to static (the safe authoring default). Physics tests exercise
+            // mass properties and contacts, which only exist for moving entities, so scoped test data
+            // is dynamic; a test that wants the static path sets Data.isStatic itself.
+            Data.isStatic = false;
         }
 
         public SectorHandle AddSector(int3 sectorPos)

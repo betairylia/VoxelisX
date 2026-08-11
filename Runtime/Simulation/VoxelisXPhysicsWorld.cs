@@ -91,7 +91,6 @@ namespace Voxelis.Simulation
         }
 
         private NativeArray<Guid128> bodyIndexToGuid;
-        private int nDynamic;
 
         private BrickOverlapGraphBuilder brickOverlapGraphBuilder;
 
@@ -112,7 +111,7 @@ namespace Voxelis.Simulation
         {
             Profiler.BeginSample("Physics Build World");
             var buildHandle = VoxelisXPhysicsInterface.SchedulePhysicsWorldBuild(
-                ref tickBuf, ref physicsWorld, out bodyIndexToGuid, out nDynamic,
+                ref tickBuf, ref physicsWorld, out bodyIndexToGuid,
                 linearAirFriction, angularAirFriction, default,
                 enableDirectSolver);
             buildHandle.Complete();
@@ -229,7 +228,7 @@ namespace Voxelis.Simulation
             // Read-only contact diagnostics: must run after Complete() and before the next
             // ResetSimulationContext, while this frame's voxel contact event stream is valid.
             Profiler.BeginSample("Physics Contact Debug Logging");
-            LogVoxelContactsAfterStep();
+            LogVoxelContactsAfterStep(tickBuf.nDynamicBodies);
             Profiler.EndSample();
 
             // Query the solver-synchronized BVH outside the regular physics step. Physics emits
@@ -249,7 +248,7 @@ namespace Voxelis.Simulation
 
             Profiler.BeginSample("Physics Export World");
             var exportHandle = VoxelisXPhysicsInterface.SchedulePhysicsWorldExport(
-                ref tickBuf, ref physicsWorld, bodyIndexToGuid, nDynamic, default);
+                ref tickBuf, ref physicsWorld, bodyIndexToGuid, default);
             exportHandle.Complete();
             Profiler.EndSample();
 

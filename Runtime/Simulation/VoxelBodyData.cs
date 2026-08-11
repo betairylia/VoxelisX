@@ -23,8 +23,6 @@ namespace Voxelis
         private VoxelEntityPhysics.SectorMassMoments cachedMassMoments;
         private bool massCacheInitialized;
 
-        public bool isStatic;
-
         /// <summary>
         /// Mirrors <see cref="VoxelBody.accuratePhysics"/>. Selects the Unity Physics solver used for
         /// contacts involving this body: <see cref="SolverType.Direct"/> when true, otherwise
@@ -37,18 +35,20 @@ namespace Voxelis
         public Unity.Physics.MotionVelocity motionVelocity;
         public MassProperties massProperties { get; private set; }
 
+        public int _cached_body_index;
+
         public VoxelBodyData(Allocator allocator)
         {
             this.allocator = allocator;
             sectorMassCache = default;
             cachedMassMoments = default;
             massCacheInitialized = false;
-            isStatic = false;
             accuratePhysics = true;
             collider = default;
             motionData = DefaultMotionData();
             motionVelocity = DefaultMotionVelocity();
             massProperties = default;
+            _cached_body_index = -1;
         }
 
         private static Unity.Physics.MotionData DefaultMotionData()
@@ -75,17 +75,19 @@ namespace Voxelis
             };
         }
 
-        public MassProperties ComputePhysicsProperties(
-            LockableUnsafeHashMap<int3, SectorHandle> sectors,
-            LockableUnsafeHashMap<int3, SectorNeighborHandles> sectorNeighbors)
+        /// <summary>
+        /// Refreshes mass properties and the physics slot from the owning entity's voxel data.
+        /// </summary>
+        public MassProperties ComputePhysicsProperties(in VoxelEntityData entity)
         {
-            RefreshMassPropertiesCache(sectors);
-            RefreshPhysicsSlot(sectors, sectorNeighbors);
+            RefreshMassPropertiesCache(entity.sectors, entity.isStatic);
+            RefreshPhysicsSlot(entity.sectors, entity.sectorNeighbors);
             return massProperties;
         }
 
         private void RefreshMassPropertiesCache(
             LockableUnsafeHashMap<int3, SectorHandle> sectors,
+            bool isStatic,
             DirtyFlags dirtyMask = DirtyFlags.Geometry)
         {
             if (isStatic)

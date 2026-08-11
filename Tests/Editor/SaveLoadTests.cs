@@ -396,8 +396,8 @@ namespace VoxelisX.Tests
             Assert.That(rec.Transform.Rotation.value.x, Is.EqualTo(transform.Rotation.value.x).Within(1e-6f));
             Assert.That(rec.Transform.Rotation.value.w, Is.EqualTo(transform.Rotation.value.w).Within(1e-6f));
             Assert.That(rec.EntityRequireUpdateFlags, Is.EqualTo(entityFlags));
-            Assert.That(rec.Body, Is.EqualTo(VoxelBodyState.Off),
-                "Records written without a body state must read back as Off");
+            Assert.That(rec.Flags, Is.EqualTo(EntityFlags.Static),
+                "Records written without entity flags must read back as body-less and static");
 
             var index = reader.ReadSectorIndex(0);
             Assert.That(index.Count, Is.EqualTo(2));
@@ -511,7 +511,7 @@ namespace VoxelisX.Tests
         }
 
         [Test]
-        public void WriteRead_RoundTripsVoxelBodyState()
+        public void WriteRead_RoundTripsEntityFlags()
         {
             uint[] preview = new uint[Sector.BRICKS_IN_SECTOR];
             byte[] payload = new byte[] { 1, 2, 3 };
@@ -522,9 +522,10 @@ namespace VoxelisX.Tests
 
             using (var writer = SingleFileSaveStorage.OpenWrite(_tempPath))
             {
-                var recOff = new EntityRecord(guidOff, default, 0, VoxelBodyState.Off);
-                var recStatic = new EntityRecord(guidStatic, default, 0, VoxelBodyState.Static);
-                var recDynamic = new EntityRecord(guidDynamic, default, 0, VoxelBodyState.Dynamic);
+                var recOff = new EntityRecord(guidOff, default, 0, EntityFlags.Static);
+                var recStatic = new EntityRecord(
+                    guidStatic, default, 0, EntityFlags.HasBody | EntityFlags.Static);
+                var recDynamic = new EntityRecord(guidDynamic, default, 0, EntityFlags.HasBody);
 
                 writer.WriteEntity(in recOff, new[]
                 {
@@ -540,9 +541,12 @@ namespace VoxelisX.Tests
 
             using var reader = SingleFileSaveStorage.OpenRead(_tempPath);
             Assert.That(reader.EntityCount, Is.EqualTo(3));
-            Assert.That(reader.ReadEntityRecord(0).Body, Is.EqualTo(VoxelBodyState.Off));
-            Assert.That(reader.ReadEntityRecord(1).Body, Is.EqualTo(VoxelBodyState.Static));
-            Assert.That(reader.ReadEntityRecord(2).Body, Is.EqualTo(VoxelBodyState.Dynamic));
+            Assert.That(reader.ReadEntityRecord(0).Flags, Is.EqualTo(EntityFlags.Static));
+            Assert.That(reader.ReadEntityRecord(0).HasBody, Is.False);
+            Assert.That(reader.ReadEntityRecord(1).Flags,
+                Is.EqualTo(EntityFlags.HasBody | EntityFlags.Static));
+            Assert.That(reader.ReadEntityRecord(2).Flags, Is.EqualTo(EntityFlags.HasBody));
+            Assert.That(reader.ReadEntityRecord(2).IsStatic, Is.False);
             Assert.That(reader.ReadEntityRecord(1).Guid, Is.EqualTo(guidStatic));
         }
 
@@ -558,7 +562,7 @@ namespace VoxelisX.Tests
 
             using (var writer = SingleFileSaveStorage.OpenWrite(_tempPath))
             {
-                var rec = new EntityRecord(guid, default, 0, VoxelBodyState.Dynamic, linearVelocity, angularVelocity);
+                var rec = new EntityRecord(guid, default, 0, EntityFlags.HasBody, linearVelocity, angularVelocity);
                 writer.WriteEntity(in rec, new[]
                 {
                     new SectorWriteRecord(new int3(0, 0, 0), preview, payload),
@@ -570,7 +574,7 @@ namespace VoxelisX.Tests
             Assert.That(reader.Header.Version, Is.EqualTo(WorldSaveFormat.CurrentVersion));
 
             var read = reader.ReadEntityRecord(0);
-            Assert.That(read.Body, Is.EqualTo(VoxelBodyState.Dynamic));
+            Assert.That(read.Flags, Is.EqualTo(EntityFlags.HasBody));
             Assert.That(read.LinearVelocity.x, Is.EqualTo(linearVelocity.x).Within(1e-6f));
             Assert.That(read.LinearVelocity.y, Is.EqualTo(linearVelocity.y).Within(1e-6f));
             Assert.That(read.LinearVelocity.z, Is.EqualTo(linearVelocity.z).Within(1e-6f));
@@ -591,9 +595,9 @@ namespace VoxelisX.Tests
             using (var writer = SingleFileSaveStorage.OpenWrite(_tempPath))
             {
                 var recProtected = new EntityRecord(
-                    guidProtected, default, 0, VoxelBodyState.Static, float3.zero, float3.zero, true);
+                    guidProtected, default, 0, EntityFlags.HasBody | EntityFlags.Static, float3.zero, float3.zero, true);
                 var recNormal = new EntityRecord(
-                    guidNormal, default, 0, VoxelBodyState.Static, float3.zero, float3.zero, false);
+                    guidNormal, default, 0, EntityFlags.HasBody | EntityFlags.Static, float3.zero, float3.zero, false);
 
                 writer.WriteEntity(in recProtected, new[]
                 {
@@ -613,7 +617,8 @@ namespace VoxelisX.Tests
             Assert.That(reader.ReadEntityRecord(0).Guid, Is.EqualTo(guidProtected));
             Assert.That(reader.ReadEntityRecord(1).Protected, Is.False);
             // Existing fields must still round-trip alongside the new v5 byte.
-            Assert.That(reader.ReadEntityRecord(0).Body, Is.EqualTo(VoxelBodyState.Static));
+            Assert.That(reader.ReadEntityRecord(0).Flags,
+                Is.EqualTo(EntityFlags.HasBody | EntityFlags.Static));
         }
 
         [Test]
@@ -635,7 +640,7 @@ namespace VoxelisX.Tests
                 bw.Write(g.w);
                 for (int i = 0; i < 7; i++) bw.Write(0f); // pos.xyz + rot.xyzw
                 bw.Write((ushort)0x0042); // entityRequireUpdateFlags
-                bw.Write((byte)VoxelBodyState.Dynamic); // v3 body state
+                bw.Write((byte)2); // v3 body state: legacy Dynamic
                 for (int i = 0; i < 6; i++) bw.Write(0f); // v4 velocity (linear.xyz + angular.xyz) — no v5 protected byte
                 bw.Write((ulong)tableOffset); // sectorIndexOffset (no sectors, never dereferenced)
                 bw.Write(0u); // sectorCount
@@ -653,12 +658,71 @@ namespace VoxelisX.Tests
 
             var rec = reader.ReadEntityRecord(0);
             Assert.That(rec.Guid, Is.EqualTo(guid));
-            Assert.That(rec.Body, Is.EqualTo(VoxelBodyState.Dynamic));
+            Assert.That(rec.Flags, Is.EqualTo(EntityFlags.HasBody),
+                "Legacy Dynamic must migrate to a body-carrying, non-static entity");
             Assert.That(rec.Protected, Is.False, "Pre-v5 saves must read as not-protected");
         }
 
         [Test]
-        public void OpenRead_Version2Save_ReadsBodyStateAsOff()
+        public void OpenRead_Version5Save_MigratesBodyStateToEntityFlags()
+        {
+            // Hand-write a v5 file holding one entity per legacy body state. Staticness used to live on
+            // VoxelBody, so the migration must fan the single byte out into (has body, is static):
+            // Off -> body-less + static (what VoxelEntity.Awake forced back then), Static -> body +
+            // static, Dynamic -> body + moving.
+            Guid128[] guids = { NewGuid128(), NewGuid128(), NewGuid128() };
+            byte[] legacyBodyStates = { 0, 1, 2 }; // Off, Static, Dynamic
+
+            using (var fs = new FileStream(_tempPath, FileMode.Create, FileAccess.Write))
+            using (var bw = new BinaryWriter(fs))
+            {
+                bw.Write(new byte[WorldSaveFormat.HeaderBytes]);
+                long tableOffset = fs.Position;
+
+                bw.Write((uint)guids.Length); // entityCount
+                for (int i = 0; i < guids.Length; i++)
+                {
+                    uint4 g = guids[i].Value;
+                    bw.Write(g.x);
+                    bw.Write(g.y);
+                    bw.Write(g.z);
+                    bw.Write(g.w);
+                    for (int f = 0; f < 7; f++) bw.Write(0f); // pos.xyz + rot.xyzw
+                    bw.Write((ushort)0); // entityRequireUpdateFlags
+                    bw.Write(legacyBodyStates[i]); // v3 body state
+                    for (int f = 0; f < 6; f++) bw.Write(0f); // v4 velocity
+                    bw.Write((byte)0); // v5 protected
+                    bw.Write((ulong)tableOffset); // sectorIndexOffset (no sectors, never dereferenced)
+                    bw.Write(0u); // sectorCount
+                }
+
+                fs.Position = 0;
+                bw.Write(WorldSaveFormat.FileMagic);
+                bw.Write((ushort)5); // version 5
+                bw.Write((ushort)SaveFlags.Deflate);
+                bw.Write((ulong)tableOffset);
+            }
+
+            using var reader = SingleFileSaveStorage.OpenRead(_tempPath);
+            Assert.That(reader.Header.Version, Is.EqualTo(5));
+            Assert.That(reader.EntityCount, Is.EqualTo(3));
+
+            var off = reader.ReadEntityRecord(0);
+            Assert.That(off.Guid, Is.EqualTo(guids[0]));
+            Assert.That(off.HasBody, Is.False);
+            Assert.That(off.IsStatic, Is.True, "A pre-v6 body-less entity was always static");
+
+            var stat = reader.ReadEntityRecord(1);
+            Assert.That(stat.HasBody, Is.True);
+            Assert.That(stat.IsStatic, Is.True);
+
+            var dyn = reader.ReadEntityRecord(2);
+            Assert.That(dyn.HasBody, Is.True);
+            Assert.That(dyn.IsStatic, Is.False);
+        }
+
+        [Test]
+        public void OpenRead_Version2Save_ReadsEntityAsBodylessStatic()
         {
             // Hand-write a v2 file: its entity records have no body-state byte.
             Guid128 guid = NewGuid128();
@@ -693,7 +757,8 @@ namespace VoxelisX.Tests
             var rec = reader.ReadEntityRecord(0);
             Assert.That(rec.Guid, Is.EqualTo(guid));
             Assert.That(rec.EntityRequireUpdateFlags, Is.EqualTo((ushort)0x0042));
-            Assert.That(rec.Body, Is.EqualTo(VoxelBodyState.Off));
+            Assert.That(rec.Flags, Is.EqualTo(EntityFlags.Static));
+            Assert.That(rec.HasBody, Is.False);
         }
 
         private void WriteMinimalSave()

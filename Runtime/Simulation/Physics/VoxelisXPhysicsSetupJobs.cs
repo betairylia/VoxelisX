@@ -68,8 +68,6 @@ namespace Voxelis.Simulation
 
             [WriteOnly] public NativeArray<Guid128> bodyIndexToGuid;
 
-            public int nDynamic;
-
             // Global air friction (velocity damping) applied uniformly to every dynamic body this step.
             // Overrides each body's persisted MotionData damping so the value is a single live-tunable knob.
             public float linearDamping;
@@ -77,9 +75,6 @@ namespace Voxelis.Simulation
 
             public void Execute()
             {
-                int dynamicIdx = 0;
-                int staticIdx = nDynamic;
-
                 var keys = tickBuf.VoxelBodies.GetKeyArray(Allocator.Temp);
 
                 for (int i = 0; i < keys.Length; i++)
@@ -88,7 +83,8 @@ namespace Voxelis.Simulation
                     VoxelBodyData body = tickBuf.VoxelBodies[guid];
                     VoxelEntityData entity = tickBuf.VoxelEntities[guid];
 
-                    int bodyIndex = body.isStatic ? staticIdx++ : dynamicIdx++;
+                    // Use pre-computed indices at the beginning of the tick.
+                    int bodyIndex = body._cached_body_index;
 
                     bodyIndexToGuid[bodyIndex] = guid;
 
@@ -106,7 +102,7 @@ namespace Voxelis.Simulation
                             : Unity.Physics.SolverType.Iterative
                     };
 
-                    if (!body.isStatic)
+                    if (!entity.isStatic)
                     {
                         var massProps = body.massProperties;
 
@@ -155,15 +151,19 @@ namespace Voxelis.Simulation
         {
             public VoxelisXWorld.WorldStageInputs tickBuf;
 
-            [ReadOnly] public NativeArray<Unity.Physics.MotionData> motionDatas;
-            [ReadOnly] public NativeArray<Unity.Physics.MotionVelocity> motionVelocities;
+            // Export walks every dynamic element from one IJob invocation. Disable the scheduler's
+            // per-job-index range patching for these read-only views so indices after zero remain
+            // accessible when more than one dynamic body exists.
+            [ReadOnly, NativeDisableParallelForRestriction]
+            public NativeArray<Unity.Physics.MotionData> motionDatas;
+            [ReadOnly, NativeDisableParallelForRestriction]
+            public NativeArray<Unity.Physics.MotionVelocity> motionVelocities;
             [ReadOnly] public NativeArray<Guid128> bodyIndexToGuid;
-
-            public int nDynamic;
+            public int nDynamicBodies;
 
             public void Execute()
             {
-                for (int i = 0; i < nDynamic; i++)
+                for (int i = 0; i < nDynamicBodies; i++)
                 {
                     Unity.Physics.MotionData md = motionDatas[i];
                     Unity.Physics.MotionVelocity mv = motionVelocities[i];
@@ -211,20 +211,13 @@ namespace Voxelis.Simulation
             ref VoxelisXWorld.WorldStageInputs tickBuf,
             ref PhysicsWorld world,
             out NativeArray<Guid128> bodyIndexToGuid,
-            out int nDynamic,
             float linearDamping,
             float angularDamping,
             JobHandle inputDeps,
             bool enableDirectSolver = false)
         {
-            // Count number of static and dynamic bodies
-            int nStatic = 0;
-            nDynamic = 0;
-            foreach (var b in tickBuf.VoxelBodies.GetValueArray(Allocator.Temp))
-            {
-                if (b.isStatic) nStatic++;
-                else nDynamic++;
-            }
+            int nDynamic = tickBuf.nDynamicBodies;
+            int nStatic = tickBuf.VoxelBodies.Count - nDynamic;
 
             // Reset world for rebuilding
             world.Reset(nStatic, nDynamic, 0);
@@ -242,7 +235,6 @@ namespace Voxelis.Simulation
                 motionDatas = world.MotionDatas,
                 motionVelocities = world.MotionVelocities,
                 bodyIndexToGuid = bodyIndexToGuid,
-                nDynamic = nDynamic,
                 linearDamping = linearDamping,
                 angularDamping = angularDamping
             };
@@ -254,7 +246,6 @@ namespace Voxelis.Simulation
             ref VoxelisXWorld.WorldStageInputs tickBuf,
             ref PhysicsWorld world,
             NativeArray<Guid128> bodyIndexToGuid,
-            int nDynamic,
             JobHandle inputDeps)
         {
             var exportJob = new ExportPhysicsWorldJob
@@ -263,12 +254,11 @@ namespace Voxelis.Simulation
                 motionDatas = world.MotionDatas,
                 motionVelocities = world.MotionVelocities,
                 bodyIndexToGuid = bodyIndexToGuid,
-                nDynamic = nDynamic
+                nDynamicBodies = tickBuf.nDynamicBodies
             };
 
             var handle = exportJob.Schedule(inputDeps);
-            bodyIndexToGuid.Dispose(handle);
-            return handle;
+            return bodyIndexToGuid.Dispose(handle);
         }
     }
 }

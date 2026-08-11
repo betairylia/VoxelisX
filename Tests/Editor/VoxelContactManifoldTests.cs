@@ -63,7 +63,7 @@ namespace VoxelisX.Tests
                 var bodyData = new VoxelBodyData(Allocator.Persistent);
                 try
                 {
-                    bodyData.ComputePhysicsProperties(Scope.Data.sectors, Scope.Data.sectorNeighbors);
+                    bodyData.ComputePhysicsProperties(Scope.Data);
                     bodyData.RefreshPhysicsKeyMask(Scope.Data.sectors);
                 }
                 finally

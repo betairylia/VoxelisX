@@ -16,19 +16,6 @@ namespace Voxelis
         /// </summary>
         [FormerlySerializedAs("collisionEnabled")] public bool physicsEnabled = false;
 
-        [FormerlySerializedAs("isStatic"), SerializeField] private bool _isStatic = false;
-
-        public bool isStatic
-        {
-            get => _isStatic;
-            set
-            {
-                _isStatic = value;
-                data.isStatic = value;
-                entity.IsStatic = value;
-            }
-        }
-
         /// <summary>
         /// Selects which Unity Physics solver resolves contacts involving this body.
         /// On (default) uses the Direct solver, which is more accurate but more expensive;
@@ -65,7 +52,6 @@ namespace Voxelis
         public void CopyDataFrom(VoxelBodyData srcData)
         {
             data = srcData;
-            data.isStatic = _isStatic;
             // Re-assert from the component so inspector edits (which write the backing field
             // directly, bypassing the property setter) take effect on the next tick.
             data.accuratePhysics = _accuratePhysics;
@@ -98,12 +84,10 @@ namespace Voxelis
         private void Awake()
         {
             data = new VoxelBodyData(Allocator.Persistent);
-            data.isStatic = _isStatic;
             data.accuratePhysics = _accuratePhysics;
             CreateCollider();
             InitializeBody();
             _entity = GetComponent<VoxelEntity>();
-            _entity.IsStatic = data.isStatic;
         }
 
         private void CreateCollider()
@@ -167,9 +151,8 @@ namespace Voxelis
         /// </summary>
         public void ComputeMassProperties()
         {
-            data.isStatic = _isStatic;
             data.accuratePhysics = _accuratePhysics;
-            data.ComputePhysicsProperties(entity.Sectors, entity.Neighbors);
+            data.ComputePhysicsProperties(entity.GetDataCopy());
         }
 
         private void OnDestroy()
@@ -180,12 +163,10 @@ namespace Voxelis
         private void OnEnable()
         {
             (VoxelisXCoreWorld.instance as VoxelisXWorld)?.AddBody(this);
-            _entity.IsStatic = data.isStatic;
         }
 
         private void OnDisable()
         {
-            _entity.IsStatic = true;
             (VoxelisXCoreWorld.instance as VoxelisXWorld)?.RemoveBody(this);
         }
 

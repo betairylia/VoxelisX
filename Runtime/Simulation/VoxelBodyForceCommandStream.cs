@@ -207,7 +207,7 @@ namespace Voxelis
         {
             if (!tickBuf.VoxelBodies.TryGetValue(command.BodyId, out VoxelBodyData body) ||
                 !tickBuf.VoxelEntities.TryGetValue(command.BodyId, out VoxelEntityData entity) ||
-                body.isStatic)
+                entity.isStatic)
             {
                 return;
             }
