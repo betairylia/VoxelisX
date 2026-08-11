@@ -193,9 +193,25 @@ namespace Voxelis
             // TODO: FIXME: Currently inf loaders will not work due to no proper sector loading transition
             // TickWorldLoaders();
             
+            /////////////////////////////////////////////////////////////////////////
+            // TOPOLOGY STAGE
+            //  DO
+            //   - Add / Remove VoxelEntities
+            //   - Switch entities' `IsStatic`
+            //   - Can communicate with the managed world (1 entity = 1 GameObj)
+            /////////////////////////////////////////////////////////////////////////
+            
 Profiler.BeginSample("Player Ray Cast");
             rayCaster?.Tick();
 Profiler.EndSample();
+
+            /////////////////////////////////////////////////////////////////////////
+            // T-V Boundary
+            //  Fix entity ordering
+            //  Handover to unmanaged world
+            //
+            // DO NOT modify entity topology after here
+            /////////////////////////////////////////////////////////////////////////
 
             // Fill native list by copying
             // TODO: Keep the unique instance in world and let VoxelEntity ref it?
@@ -242,6 +258,12 @@ Profiler.BeginSample("Fill TickBuffer");
             }
 Profiler.EndSample();
 
+            /////////////////////////////////////////////////////////////////////////
+            // VOXEL STAGE
+            //  random access voxel stage
+            //  TODO
+            /////////////////////////////////////////////////////////////////////////
+
 Profiler.BeginSample("WorldStage");
             DoTick(tickBuf);
 Profiler.EndSample();
@@ -251,6 +273,17 @@ Profiler.EndSample();
 
             /////// Voxel update stage
             // Random tick stage
+            
+            /////////////////////////////////////////////////////////////////////////
+            // VOXEL STAGE
+            //  automata stage
+            //  DO
+            //   - Modify voxel data within 1-voxel information propagation speed
+            //   - Add forces to body
+            //  DON'T
+            //   - Add / remove / toggle `IsStatic` of VoxelEntities
+            //   - Move entities transform
+            /////////////////////////////////////////////////////////////////////////
 
             // Automata stage
             // TODO: Wrap this up and handle this properly
@@ -308,6 +341,11 @@ Profiler.BeginSample("Apply Sector Snapshots");
                 }
             }
 Profiler.EndSample();
+
+            /////////////////////////////////////////////////////////////////////////
+            // V-P Boundary
+            //  Dirty propagation
+            /////////////////////////////////////////////////////////////////////////
  
             // Dirty propagation — operates on tickBuf to preserve physics-exported transforms
 Profiler.BeginSample("Dirty Propagation");
@@ -422,6 +460,14 @@ Profiler.BeginSample("Apply Body Force Commands");
             bodyForceCommands?.ApplyTo(ref tickBuf, deltaTime);
 Profiler.EndSample();
 
+            /////////////////////////////////////////////////////////////////////////
+            // PHYSICS STAGE
+            //  DO
+            //   - Move entities
+            //  DON'T
+            //   - Modify voxel data
+            /////////////////////////////////////////////////////////////////////////
+
 Profiler.BeginSample("Physics Step");
             long physicsStartTicks = Stopwatch.GetTimestamp();
             // RequireUpdate is the current source-brick selection. The physics boundary accepts
@@ -431,6 +477,12 @@ Profiler.BeginSample("Physics Step");
                 deltaTime, tickBuf);
             long physicsElapsedTicks = Stopwatch.GetTimestamp() - physicsStartTicks;
 Profiler.EndSample();
+
+            /////////////////////////////////////////////////////////////////////////
+            // P-T Boundary
+            //  Collect key overlapping bricks for alien propagation / reading
+            //  Back to managed world
+            /////////////////////////////////////////////////////////////////////////
 
             // Copy data back to VoxelEntities
 Profiler.BeginSample("Burst -> Managed Boundary Copy Back");
@@ -445,6 +497,10 @@ Profiler.BeginSample("Burst -> Managed Boundary Copy Back");
                 }
             }
 Profiler.EndSample();
+
+            /////////////////////////////////////////////////////////////////////////
+            // Renderer (client) work
+            /////////////////////////////////////////////////////////////////////////
             
             // Tick renderer
 Profiler.BeginSample("Renderer Tick");
