@@ -55,9 +55,10 @@ namespace Voxelis
         [SerializeField] protected VoxelMeshRendererComponent meshingRenderer;
 
         /// <summary>
-        /// Read-only view of the brick-overlap graph published by the preceding physics step.
-        /// Earlier Tick stages of the next tick see the graph of the previous step. Empty
-        /// (IsCreated false) before the first step.
+        /// Read-only view of the brick-overlap graph published by the alien propagation stage,
+        /// which runs right after the physics step. Earlier Tick stages therefore see the graph
+        /// of the previous tick. Empty (IsCreated false) until the first publish, which needs
+        /// <see cref="doAlienPropagation"/>.
         /// </summary>
         public BrickOverlapGraph BrickOverlapGraph =>
             physicsWorld != null ? physicsWorld.BrickOverlapGraph : default;
