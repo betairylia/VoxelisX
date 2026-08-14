@@ -113,6 +113,9 @@ namespace Voxelis
         public override void Init()
         {
             base.Init();
+
+            // TODO: Persist random state to fix worldgen etc. by save/load it
+            VoxelEntity.InitializeRandomState((uint)System.DateTime.Now.Ticks);
         }
 
         // TODO: FIXME: Put me in FixedUpdate or something similar

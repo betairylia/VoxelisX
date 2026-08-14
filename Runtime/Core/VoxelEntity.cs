@@ -505,7 +505,7 @@ namespace Voxelis
     {
         private VoxelEntityData data;
         public VoxelEntityData GetDataCopy() => data;
-        private static Unity.Mathematics.Random globalEntityRandomState = new Unity.Mathematics.Random(0x6E624EB7u);
+        private static Unity.Mathematics.Random globalEntityRandomState;
 
         [Tooltip("Marks this entity as never moving.")]
         [SerializeField] private bool isStatic = true;
@@ -556,6 +556,11 @@ namespace Voxelis
         {
             get => isProtected;
             set => isProtected = value;
+        }
+
+        public static void InitializeRandomState(uint seed)
+        {
+            globalEntityRandomState = new Unity.Mathematics.Random(seed);
         }
 
         private void Awake()
