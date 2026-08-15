@@ -11,9 +11,10 @@ namespace Voxelis
         /// <summary>
         /// Recomputes the per-block <see cref="PhysicsInfo"/> slot for every sector that has pending
         /// require-update flags matching <paramref name="dirtyMask"/>. The slot encodes, for each
-        /// solid block, which Von Neumann faces are exposed (low 6 bits) and how surrounded the block
-        /// is (bits 6-7: 0 None / 1 Face / 2 Edge / 3 Corner), so collision detection can skip fully
-        /// interior blocks. Cross-sector faces are resolved through the entity's neighbor handles.
+        /// solid block, which Von Neumann faces are exposed (low 6 bits), how surrounded the block
+        /// is (bits 6-7: 0 None / 1 Face / 2 Edge / 3 Corner), and the occupied positive 2x2x2
+        /// octet (high 7 bits). The octet defines finite cubical-complex features without storing
+        /// a sampled distance field. Cross-sector topology is resolved through neighbor handles.
         /// </summary>
         /// <remarks>
         /// Gating uses the require-update (read) buffers populated by dirty propagation, mirroring the
@@ -150,7 +151,7 @@ namespace Voxelis
                             int voxelIdx = Sector.ToBlockIdx(x, y, z);
 
                             // Empty (air) blocks are not solid: clear so a freed block leaves no
-                            // stale exposure data. data == 0 means "interior / ignore" downstream.
+                            // stale topology data.
                             if (brick[voxelIdx].isEmpty)
                             {
                                 physBrick[voxelIdx] = default;
@@ -165,18 +166,20 @@ namespace Voxelis
             }
 
             /// <summary>
-            /// Computes the <see cref="PhysicsInfo"/> for a single solid block from the solidity of its
-            /// 6 Von Neumann neighbors. Bit i of the connectivity mask follows
+            /// Computes the <see cref="PhysicsInfo"/> for a single solid block. The low byte comes
+            /// from the 6 Von Neumann neighbors. Bit i of the connectivity mask follows
             /// <see cref="NeighborhoodSettings.Directions"/> order (0:+X 1:-X 2:+Y 3:-Y 4:+Z 5:-Z) and
             /// is set when that neighbor is NOT solid (an exposed face). An axis counts as "surrounded"
             /// when both of its neighbors are solid; the physics-flag is <c>3 - surroundedAxes</c>.
-            /// For now every non-air block (id != 0) is treated as solid.
+            /// The high byte records the seven other corners of the positive 2x2x2 octet in this
+            /// order: +X, +Y, +Z, +XY, +XZ, +YZ, +XYZ. For now every non-air block is solid.
             /// </summary>
             private unsafe PhysicsInfo ComputeBlockPhysicsInfo(
                 ref SectorNeighborhoodReaderHelper helper,
                 int3 sectorBlockPos)
             {
                 byte faceMask = 0;
+                byte forwardOccupancy = 0;
                 int surroundedAxes = 0;
 
                 for (int axis = 0; axis < 3; axis++)
@@ -189,11 +192,21 @@ namespace Voxelis
 
                     if (!solidPos) { faceMask |= (byte)(1 << dirPos); }
                     if (!solidNeg) { faceMask |= (byte)(1 << dirNeg); }
+                    if (solidPos) { forwardOccupancy |= (byte)(1 << axis); }
                     if (solidPos && solidNeg) { surroundedAxes++; }
                 }
 
                 int physicsFlag = 3 - surroundedAxes;
-                return new PhysicsInfo { data = (byte)((physicsFlag << 6) | faceMask) };
+
+                if (helper.BlockTest(sectorBlockPos + new int3(1, 1, 0))) { forwardOccupancy |= 1 << 3; }
+                if (helper.BlockTest(sectorBlockPos + new int3(1, 0, 1))) { forwardOccupancy |= 1 << 4; }
+                if (helper.BlockTest(sectorBlockPos + new int3(0, 1, 1))) { forwardOccupancy |= 1 << 5; }
+                if (helper.BlockTest(sectorBlockPos + new int3(1, 1, 1))) { forwardOccupancy |= 1 << 6; }
+
+                return new PhysicsInfo
+                {
+                    data = (ushort)((forwardOccupancy << 8) | (physicsFlag << 6) | faceMask)
+                };
             }
         }
     }

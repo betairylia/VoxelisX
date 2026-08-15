@@ -8,6 +8,7 @@ namespace Voxelis
     public partial struct VoxelBodyData
     {
         // PhysicsInfo flag lives in data bits 6-7: 3 = Corner, 2 = Edge, 1 = Face, 0 = None.
+        // The high byte contains cubical-complex topology and must not take part in this test.
         // A "physics-key" block is a Corner or Edge — see PhysicsInfo.IsPhysicsKey.
 
         /// <summary>

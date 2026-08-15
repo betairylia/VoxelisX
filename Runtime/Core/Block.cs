@@ -120,6 +120,7 @@ namespace Voxelis
     {
         // Packed data for physics info.
         // Data layout:
+        // Low byte:
         // (data & 0b11000000) >> 6: Physics flags.
         //   - 0 = None (Have 3 axes surrounded by solid blocks, i.e., interior)
         //   - 1 = Face (Have 2 axes surrounded by solid blocks)
@@ -129,8 +130,17 @@ namespace Voxelis
         // (data & 0x00111111) : Connectivity flags.
         //   - Similar to SectorRenderer.GenerateSectorRenderDataJob.GetRendererBlockData's faceMask layout
         //   - a "1" means the block does NOT have neighbor in that direction.
-        // Therefore, data == 0 (default) means an interior block with no exposed faces (thus can be ignored during collision detection).
-        public byte data;
+        // High byte: occupancy of the seven positive neighbors in the 2x2x2 octet rooted at
+        // this block. Bits are +X, +Y, +Z, +XY, +XZ, +YZ and +XYZ. Collision generation uses
+        // these bits to construct finite point/edge/square/cube core features. The current block
+        // is known to be solid when PhysicsInfo is consumed, so it needs no bit of its own.
+        //
+        // Therefore, data == 0 (default) means an interior block with no forward topology data,
+        // or an empty block whose PhysicsInfo was cleared.
+        public ushort data;
+
+        public byte FaceData => (byte)data;
+        public byte ForwardOccupancy => (byte)(data >> 8);
 
         /// <summary>
         /// True for Corner and Edge blocks — the sparse "physics-key" subset that narrowphase
@@ -138,7 +148,7 @@ namespace Voxelis
         /// Must match the mask built by <c>VoxelBodyData.RefreshPhysicsKeyMask</c>, which uses
         /// this property.
         /// </summary>
-        public bool IsPhysicsKey => (data >> 6) >= 2;
+        public bool IsPhysicsKey => ((data >> 6) & 0b11) >= 2;
 
         public bool Equals(PhysicsInfo other)
         {

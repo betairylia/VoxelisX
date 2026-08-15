@@ -1,6 +1,7 @@
 using NUnit.Framework;
 using Unity.Burst;
 using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Physics;
@@ -25,7 +26,7 @@ namespace VoxelisX.Tests
                 foreach (SectorBitmaskSlotIterator<PhysicsInfo> item in
                          Sector.Get().EnumeratePhysicsKeyBlocks())
                 {
-                    count += item.value.data >> 6 >= 2 ? 1 : 0;
+                    count += item.value.IsPhysicsKey ? 1 : 0;
                 }
 
                 Result[0] = count;
@@ -177,6 +178,12 @@ namespace VoxelisX.Tests
                 Assert.That(PhysicsData(sector, 0, 0, 0), Is.EqualTo((3 << 6) | (1 << 1) | (1 << 3) | (1 << 5)));
                 // Air block inside the allocated brick is cleared, not stale.
                 Assert.That(PhysicsData(sector, 5, 5, 5), Is.EqualTo(0));
+
+                Assert.That(UnsafeUtility.SizeOf<PhysicsInfo>(), Is.EqualTo(2));
+                Assert.That(ForwardOccupancy(sector, 0, 0, 0), Is.EqualTo(0x7f),
+                    "The minimum corner roots a complete positive 2x2x2 cubical cell");
+                Assert.That(ForwardOccupancy(sector, 2, 2, 2), Is.EqualTo(0),
+                    "The maximum corner has no positive occupied neighbor");
             }
             finally
             {
@@ -233,7 +240,7 @@ namespace VoxelisX.Tests
 
                             Assert.That(enumerator.MoveNext(), Is.True);
                             Assert.That(enumerator.Current.position, Is.EqualTo(new int3(x, y, z)));
-                            Assert.That(enumerator.Current.value.data >> 6, Is.EqualTo(boundaryAxes));
+                            Assert.That((enumerator.Current.value.data >> 6) & 0b11, Is.EqualTo(boundaryAxes));
                             selected++;
                         }
                     }
@@ -262,7 +269,12 @@ namespace VoxelisX.Tests
 
         private static int PhysicsData(SectorHandle sector, int x, int y, int z)
         {
-            return sector.GetSlot<PhysicsInfo>(SectorSlotId.PhysicsInfo, x, y, z).data;
+            return sector.GetSlot<PhysicsInfo>(SectorSlotId.PhysicsInfo, x, y, z).FaceData;
+        }
+
+        private static int ForwardOccupancy(SectorHandle sector, int x, int y, int z)
+        {
+            return sector.GetSlot<PhysicsInfo>(SectorSlotId.PhysicsInfo, x, y, z).ForwardOccupancy;
         }
 
         [Test]

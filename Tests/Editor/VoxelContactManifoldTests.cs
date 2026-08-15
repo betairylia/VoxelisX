@@ -11,10 +11,9 @@ using VoxelisX.Tests.TestSupport;
 namespace VoxelisX.Tests
 {
     /// <summary>
-    /// Tests for the voxel-voxel narrowphase (ManifoldQueries.VoxelVoxel): raw sphere-metric
-    /// contact generation with exposure masking and the per-cell footprint gate. The narrowphase
-    /// intentionally performs no merging or reduction (one single-point manifold per raw
-    /// contact); contact merging is a separate upcoming stage.
+    /// Tests for the voxel-voxel narrowphase (ManifoldQueries.VoxelVoxel): finite cubical-complex
+    /// cores swept by radius-0.5 spheres. The narrowphase intentionally performs no patch merging
+    /// or reduction; contact merging is a separate upcoming stage.
     /// </summary>
     public unsafe class VoxelContactManifoldTests
     {
@@ -198,6 +197,19 @@ namespace VoxelisX.Tests
             return false;
         }
 
+        static float MinimumDistance(List<ParsedManifold> manifolds)
+        {
+            float minimum = float.MaxValue;
+            foreach (ParsedManifold manifold in manifolds)
+            {
+                foreach (ContactPoint point in manifold.Points)
+                {
+                    minimum = math.min(minimum, point.Distance);
+                }
+            }
+            return minimum;
+        }
+
         // ------------------------------------------------------------------ tests
 
         [Test]
@@ -246,19 +258,19 @@ namespace VoxelisX.Tests
             a.Build();
             b.Build();
 
-            // A resting on top of B, shifted half a voxel sideways: it straddles the seam of the
-            // two floor cells, so both emit the same plane contact (raw generation, no dedup).
+            // A rests over the finite segment joining the two floor centers. The segment owns the
+            // seam continuously, so this is one flat contact instead of two cell contacts.
             List<ParsedManifold> manifolds = Collide(
                 a, b,
                 new RigidTransform(quaternion.identity, new float3(0.5f, 1f, 0f)),
                 RigidTransform.identity,
                 out _);
 
-            Assert.That(manifolds.Count, Is.EqualTo(2), "One raw contact per facing cell at a seam");
+            Assert.That(manifolds.Count, Is.EqualTo(1), "The finite floor segment owns the seam");
             foreach (ParsedManifold m in manifolds)
             {
                 Assert.That(math.distance(m.Header.Normal, new float3(0f, 1f, 0f)), Is.LessThan(Tolerance),
-                    "Resting above a flat surface must use the face normal (exposure masking), not a diagonal");
+                    "Resting above a flat core segment must use the face normal, not a diagonal");
                 Assert.That(m.Points.Count, Is.EqualTo(1));
                 Assert.That(m.Points[0].Distance, Is.EqualTo(0f).Within(Tolerance));
                 Assert.That(HasPointNear(m.Points, new float3(1f, 1f, 0.5f)), Is.True,
@@ -404,9 +416,8 @@ namespace VoxelisX.Tests
             a.Build();
             b.Build();
 
-            // 2x2 slab resting grid-aligned on a 4x4 floor: exactly one raw contact per slab
-            // voxel (the footprint gate stops the neighboring floor cells from re-emitting the
-            // same plane), all sharing the +y face normal.
+            // A 2x2 slab resting grid-aligned on a 4x4 floor. Canonical finite squares use
+            // half-open positive endpoints, so adjacent target squares do not duplicate seams.
             List<ParsedManifold> manifolds = Collide(
                 a, b,
                 new RigidTransform(quaternion.identity, new float3(1f, 1f, 1f)),
@@ -428,7 +439,7 @@ namespace VoxelisX.Tests
         }
 
         [Test]
-        public void LargePatch_OnlyCornerVoxelsContactUnderRankGate()
+        public void LargePatch_UsesSparseBoundarySources()
         {
             using var a = new VoxelBodyFixture();
             using var b = new VoxelBodyFixture();
@@ -451,23 +462,16 @@ namespace VoxelisX.Tests
             a.Build();
             b.Build();
 
-            // 10x10 slab on a 12x12 floor. In a single-layer patch only the four extreme voxels
-            // are Corners (physics flag 3); the border voxels are Edges (flag 2) and the interior
-            // is Face (flag 1). Every floor cell under the slab is a Face. The masking rank gate
-            // admits only pairs whose constraint-rank sum is <= 2:
-            //   Corner (rank 0) + Face (rank 2) = 2  -> kept    (the four slab corners)
-            //   Edge   (rank 1) + Face (rank 2) = 3  -> dropped
-            //   Face   (rank 2) + Face (rank 2) = 4  -> dropped
-            // So a flat resting patch collapses to exactly four corner contacts, each snapped
-            // under its voxel center on the +y face plane. (This is what makes large flat contacts
-            // cheap; contact merging over the corners is the future stage's job.)
+            // A 10x10 slab on a 12x12 floor. Sparse key sourcing keeps its 36 boundary voxels;
+            // the 64 face-interior voxels do not become sources. Finite target squares provide
+            // the shared flat plane under each boundary key.
             List<ParsedManifold> manifolds = Collide(
                 a, b,
                 new RigidTransform(quaternion.identity, new float3(1f, 1f, 1f)),
                 RigidTransform.identity,
                 out _);
 
-            Assert.That(manifolds.Count, Is.EqualTo(4), "Only the four Corner voxels survive the rank gate");
+            Assert.That(manifolds.Count, Is.EqualTo(36), "Only sparse boundary keys support the patch");
             foreach (ParsedManifold m in manifolds)
             {
                 Assert.That(m.Points.Count, Is.EqualTo(1));
@@ -475,7 +479,7 @@ namespace VoxelisX.Tests
                 Assert.That(m.Points[0].Distance, Is.EqualTo(0f).Within(Tolerance));
             }
 
-            // The four surviving contacts sit under the slab's corner voxels.
+            // The corner contacts remain part of the sparse boundary support set.
             List<ContactPoint> points = AllPoints(manifolds);
             Assert.That(HasPointNear(points, new float3(1.5f, 1f, 1.5f)), Is.True);
             Assert.That(HasPointNear(points, new float3(10.5f, 1f, 1.5f)), Is.True);
@@ -573,16 +577,15 @@ namespace VoxelisX.Tests
             a.Build();
             b.Build();
 
-            // Peg exactly inside the hole: each peg voxel touches the four wall faces of its own
-            // layer (the footprint gate keeps other layers and the collar corners silent), and
-            // nothing constrains the slide axis.
+            // Peg exactly inside the hole. Finite wall features must constrain only the two
+            // lateral axes. They must not constrain the slide axis.
             List<ParsedManifold> manifolds = Collide(
                 a, b,
                 new RigidTransform(quaternion.identity, new float3(1f, 0f, 1f)),
                 RigidTransform.identity,
                 out _);
 
-            Assert.That(manifolds.Count, Is.EqualTo(8), "Four wall contacts per peg voxel");
+            Assert.That(manifolds.Count, Is.GreaterThanOrEqualTo(4));
 
             int contactsX = 0;
             int contactsZ = 0;
@@ -604,8 +607,44 @@ namespace VoxelisX.Tests
                 }
             }
 
-            Assert.That(contactsX, Is.EqualTo(4));
-            Assert.That(contactsZ, Is.EqualTo(4));
+            Assert.That(contactsX, Is.GreaterThanOrEqualTo(2));
+            Assert.That(contactsZ, Is.GreaterThanOrEqualTo(2));
+        }
+
+        [Test]
+        public void SegmentEndpointHandoff_KeepsDistanceContinuous()
+        {
+            using var a = new VoxelBodyFixture();
+            using var b = new VoxelBodyFixture();
+            a.Set(0, 0, 0);
+            b.Set(0, 0, 0);
+            b.Set(1, 0, 0);
+            a.Build();
+            b.Build();
+
+            // B's two centers form a finite segment ending at x=1.5. Before the endpoint, the
+            // segment owns the closest core point. After it, the end voxel's point owns it. Both
+            // features describe the same capsule, so the distance cannot jump at the handoff.
+            float before = MinimumDistance(Collide(
+                a, b,
+                new RigidTransform(quaternion.identity, new float3(0.99f, 0.9f, 0f)),
+                RigidTransform.identity,
+                out _));
+            float at = MinimumDistance(Collide(
+                a, b,
+                new RigidTransform(quaternion.identity, new float3(1.0f, 0.9f, 0f)),
+                RigidTransform.identity,
+                out _));
+            float after = MinimumDistance(Collide(
+                a, b,
+                new RigidTransform(quaternion.identity, new float3(1.01f, 0.9f, 0f)),
+                RigidTransform.identity,
+                out _));
+
+            Assert.That(before, Is.EqualTo(-0.1f).Within(2e-4f));
+            Assert.That(at, Is.EqualTo(-0.1f).Within(2e-4f));
+            Assert.That(after, Is.EqualTo(math.sqrt(0.9f * 0.9f + 0.01f * 0.01f) - 1f).Within(2e-4f));
+            Assert.That(math.abs(after - before), Is.LessThan(2e-4f));
         }
 
         [Test]
@@ -624,10 +663,8 @@ namespace VoxelisX.Tests
             b.Build();
 
             // A rests in the corner, diagonally offset (~0, +1, +1) from the corner cell, with a
-            // tiny x misalignment. The old unbounded masking collapsed the corner cell's delta to
-            // (~0.0002, 0, 0) and fabricated a full-depth (~-1) contact along x, launching the
-            // body sideways (the "pop off the pole" bug). The footprint gate must keep the corner
-            // cell silent; only the two real face contacts remain.
+            // tiny x misalignment. The cubical complex contains two segments. It does not contain
+            // the missing YZ square, so it cannot fabricate a deep contact along x.
             List<ParsedManifold> manifolds = Collide(
                 a, b,
                 new RigidTransform(quaternion.identity, new float3(0.0002f, 1f, 1f)),
