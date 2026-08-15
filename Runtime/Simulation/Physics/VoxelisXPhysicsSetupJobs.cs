@@ -98,7 +98,8 @@ namespace Voxelis.Simulation
                             AngularVelocity = persistedMotionVelocity.AngularVelocity,
                             InverseInertia = inverseInertia,
                             InverseMass = inverseMass,
-                            AngularExpansionFactor = persistedMotionVelocity.AngularExpansionFactor,
+                            // AngularExpansionFactor = persistedMotionVelocity.AngularExpansionFactor,
+                            AngularExpansionFactor = 1.0f,
                             GravityFactor = persistedMotionVelocity.GravityFactor
                         };
                     }

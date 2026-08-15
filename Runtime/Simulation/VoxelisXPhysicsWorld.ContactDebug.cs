@@ -123,7 +123,8 @@ namespace Voxelis.Simulation
 
                 // Detail the newsworthy contacts: penetrating ones and binned (constrained) ones.
                 // if ((e.NormalBin != 0 || e.Distance < 0f) && details.Length < k_ContactDebugDetailCharCap)
-                if ((e.Distance < 0f) && details.Length < k_ContactDebugDetailCharCap)
+                // if ((e.Distance < 0f) && details.Length < k_ContactDebugDetailCharCap)
+                if (details.Length < k_ContactDebugDetailCharCap)
                 {
                     details.Append(
                         // $"\n  ! {(e.NormalBin == 0 ? "free  " : $"bin{e.NormalBin,3} ")}" +
