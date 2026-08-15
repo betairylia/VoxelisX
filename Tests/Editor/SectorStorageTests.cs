@@ -261,7 +261,7 @@ namespace VoxelisX.Tests
 
             Assert.Throws<System.InvalidOperationException>(() =>
             {
-                _ = source.EnumerateBitmaskSlot<PhysicsInfo>(SectorSlotId.Block);
+                _ = source.EnumerateBitmaskSlot<byte>(SectorSlotId.Block);
             });
         }
 #endif

@@ -304,6 +304,36 @@ namespace VoxelisX.Tests
         }
 
         [Test]
+        public void Unpack_DiscardsLegacyOneBytePhysicsInfo()
+        {
+            var handle = SectorHandle.AllocEmpty();
+            try
+            {
+                Block block = MakeBlock(10, 20, 5, false);
+                handle.SetBlock(0, 0, 0, block);
+
+                ref Sector source = ref handle.Get();
+                source.SetVoxelSlot(SectorSlotId.PhysicsInfo, 0, 0, 0, (byte)0xFF);
+                Assert.That(source.slots[(int)SectorSlotId.PhysicsInfo].stride, Is.EqualTo(1));
+
+                byte[] packed = SectorSerializer.Pack(in source);
+                var loaded = SectorSerializer.Unpack(packed, Allocator.Persistent);
+                try
+                {
+                    Assert.That(loaded.GetBlock(0, 0, 0), Is.EqualTo(block));
+                    Assert.That(loaded.slots[(int)SectorSlotId.PhysicsInfo].IsCreated, Is.False,
+                        "Legacy derived data must not survive with its obsolete stride");
+
+                    loaded.EnsureSlotAllocated<PhysicsInfo>(SectorSlotId.PhysicsInfo);
+                    Assert.That(loaded.slots[(int)SectorSlotId.PhysicsInfo].stride,
+                        Is.EqualTo(sizeof(PhysicsInfo)));
+                }
+                finally { loaded.Dispose(Allocator.Persistent); }
+            }
+            finally { handle.Dispose(Allocator.Persistent); }
+        }
+
+        [Test]
         public void Pack_AchievesReasonableCompressionOnDenseData()
         {
             var handle = SectorHandle.AllocEmpty();

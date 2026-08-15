@@ -30,7 +30,9 @@ namespace Voxelis.IO
     /// optional <see cref="SectorSlotStorage.aux"/> buffer holds data derived from the voxels
     /// (occupancy bitmaps and the like); it is cheaper to recompute than to store, so it is left out
     /// of the payload and an unpacked sector comes back with every slot's aux uncreated, to be
-    /// rebuilt for dirty bricks after load.
+    /// rebuilt for dirty bricks after load. PhysicsInfo voxel data is also derived. Old payloads can
+    /// contain it, but unpacking discards that record so a changed runtime stride cannot corrupt
+    /// memory. The first dirty physics tick rebuilds it from the authoritative Block slot.
     /// </summary>
     public static class SectorSerializer
     {
@@ -161,6 +163,16 @@ namespace Voxelis.IO
                     if (stride <= 0 || slotBytes > int.MaxValue)
                         throw new InvalidDataException($"Invalid slot stride {stride} for capacity {capacity}.");
 
+                    // PhysicsInfo is a runtime cache derived from Block occupancy. Its stride changed
+                    // from one byte to two bytes when cubical-complex topology was added. Consume and
+                    // discard both old and new records; the load dirty flags cause the current format
+                    // to be allocated and rebuilt before narrowphase uses it.
+                    if (slotId == (int)SectorSlotId.PhysicsInfo)
+                    {
+                        SkipRawBytes(br, (int)slotBytes);
+                        continue;
+                    }
+
                     var slot = SectorSlotStorage.New(stride, capacity, allocator);
                     SectorSlotStorage* slotPtr = sector.slots + slotId;
                     *slotPtr = slot;
@@ -206,6 +218,19 @@ namespace Voxelis.IO
                     $"Sector payload truncated: expected {byteCount} bytes, got {buffer.Length}.");
             }
             fixed (byte* p = buffer) UnsafeUtility.MemCpy(dst, p, byteCount);
+        }
+
+        private static void SkipRawBytes(BinaryReader br, int byteCount)
+        {
+            if (byteCount <= 0) return;
+
+            long nextPosition = br.BaseStream.Position + byteCount;
+            if (nextPosition > br.BaseStream.Length)
+            {
+                throw new EndOfStreamException(
+                    $"Sector payload truncated while skipping {byteCount} derived-slot bytes.");
+            }
+            br.BaseStream.Position = nextPosition;
         }
     }
 }
