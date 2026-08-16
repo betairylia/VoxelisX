@@ -11,10 +11,10 @@ namespace Voxelis
         /// <summary>
         /// Recomputes the per-block <see cref="PhysicsInfo"/> slot for every sector that has pending
         /// require-update flags matching <paramref name="dirtyMask"/>. The slot encodes, for each
-        /// solid block, which Von Neumann faces are exposed (low 6 bits), how surrounded the block
-        /// is (bits 6-7: 0 None / 1 Face / 2 Edge / 3 Corner), and the occupied positive 2x2x2
-        /// octet (high 7 bits). The octet defines finite cubical-complex features without storing
-        /// a sampled distance field. Cross-sector topology is resolved through neighbor handles.
+        /// solid block, the occupied positive 2x2x2 octet (bits 0-6) and whether all six face
+        /// neighbors are solid (bit 7). The slot's aux bitmap is rebuilt in the same pass and marks
+        /// sparse Corner/Edge physics-key voxels. Cross-sector topology is resolved through neighbor
+        /// handles.
         /// </summary>
         /// <remarks>
         /// Gating uses the require-update (read) buffers populated by dirty propagation, mirroring the
@@ -37,7 +37,11 @@ namespace Voxelis
                 foreach (var kvp in sectors)
                 {
                     ref Sector sector = ref kvp.Value.Get();
-                    if ((sector.sectorRequireUpdateFlags & (ushort)dirtyMask) == 0)
+                    SectorSlotStorage* physSlot = sector.slots + (int)SectorSlotId.PhysicsInfo;
+                    bool fullRebuild = !physSlot->IsCreated ||
+                                       physSlot->stride != sizeof(PhysicsInfo) ||
+                                       !physSlot->HasAux;
+                    if (!fullRebuild && (sector.sectorRequireUpdateFlags & (ushort)dirtyMask) == 0)
                     {
                         continue;
                     }
@@ -52,12 +56,21 @@ namespace Voxelis
 
                     // The slot writes happen inside the parallel job; allocate the backing storage
                     // here on the main thread so the job only ever writes into existing memory.
-                    sector.EnsureSlotAllocated<PhysicsInfo>(SectorSlotId.PhysicsInfo);
+                    if (physSlot->IsCreated && physSlot->stride != sizeof(PhysicsInfo))
+                    {
+                        // PhysicsInfo is derived from Block occupancy. A saved or hot-reloaded cache
+                        // with an older layout must be replaced before typed writes begin.
+                        physSlot->Dispose();
+                        *physSlot = default;
+                    }
+                    sector.EnsureSlotAllocated<PhysicsInfo>(
+                        SectorSlotId.PhysicsInfo, BrickBitmask.Bytes);
 
                     inputs.Add(new PhysicsSlotInput
                     {
                         Sector = kvp.Value,
-                        Neighbors = neighbors
+                        Neighbors = neighbors,
+                        FullRebuild = fullRebuild
                     });
                 }
 
@@ -86,6 +99,7 @@ namespace Voxelis
         {
             public SectorHandle Sector;
             public SectorNeighborHandles Neighbors;
+            public bool FullRebuild;
         }
 
         /// <summary>
@@ -106,7 +120,7 @@ namespace Voxelis
                 ref Sector sector = ref handle.Get();
 
                 SectorSlotStorage* physSlot = sector.slots + (int)SectorSlotId.PhysicsInfo;
-                if (!physSlot->IsCreated)
+                if (!physSlot->IsCreated || !physSlot->HasAux)
                 {
                     return;
                 }
@@ -116,7 +130,8 @@ namespace Voxelis
                 foreach (SectorNonEmptyBrickEnumerator.BrickRef brickRef in sector.EnumerateNonEmptyBricks())
                 {
                     int brickIdxAbs = brickRef.BrickAbs;
-                    if ((sector.brickRequireUpdateFlags[brickIdxAbs] & dirtyMask) == 0)
+                    if (!input.FullRebuild &&
+                        (sector.brickRequireUpdateFlags[brickIdxAbs] & dirtyMask) == 0)
                     {
                         continue;
                     }
@@ -130,9 +145,10 @@ namespace Voxelis
                     }
 
                     var physBrick = (PhysicsInfo*)physSlot->GetBrickPtr(bid);
+                    var physicsKeyMask = (ulong*)physSlot->GetBrickAuxPtr(bid);
                     int3 brickBlockPos = Sector.ToBrickPos((short)brickIdxAbs) * Sector.SIZE_IN_BLOCKS;
 
-                    ProcessBrick(ref helper, brick, physBrick, brickBlockPos);
+                    ProcessBrick(ref helper, brick, physBrick, physicsKeyMask, brickBlockPos);
                 }
             }
 
@@ -140,10 +156,12 @@ namespace Voxelis
                 ref SectorNeighborhoodReaderHelper helper,
                 Block* brick,
                 PhysicsInfo* physBrick,
+                ulong* physicsKeyMask,
                 int3 brickBlockPos)
             {
                 for (int z = 0; z < Sector.SIZE_IN_BLOCKS; z++)
                 {
+                    ulong physicsKeyWord = 0ul;
                     for (int y = 0; y < Sector.SIZE_IN_BLOCKS; y++)
                     {
                         for (int x = 0; x < Sector.SIZE_IN_BLOCKS; x++)
@@ -159,26 +177,28 @@ namespace Voxelis
                             }
 
                             physBrick[voxelIdx] = ComputeBlockPhysicsInfo(
-                                ref helper, brickBlockPos + new int3(x, y, z));
+                                ref helper, brickBlockPos + new int3(x, y, z),
+                                out bool isPhysicsKey);
+                            if (isPhysicsKey)
+                            {
+                                physicsKeyWord |= 1ul << (voxelIdx & 63);
+                            }
                         }
                     }
+                    physicsKeyMask[z] = physicsKeyWord;
                 }
             }
 
             /// <summary>
-            /// Computes the <see cref="PhysicsInfo"/> for a single solid block. The low byte comes
-            /// from the 6 Von Neumann neighbors. Bit i of the connectivity mask follows
-            /// <see cref="NeighborhoodSettings.Directions"/> order (0:+X 1:-X 2:+Y 3:-Y 4:+Z 5:-Z) and
-            /// is set when that neighbor is NOT solid (an exposed face). An axis counts as "surrounded"
-            /// when both of its neighbors are solid; the physics-flag is <c>3 - surroundedAxes</c>.
-            /// The high byte records the seven other corners of the positive 2x2x2 octet in this
-            /// order: +X, +Y, +Z, +XY, +XZ, +YZ, +XYZ. For now every non-air block is solid.
+            /// Computes the seven positive-neighbor bits and the six-face interior bit. The
+            /// Corner/Edge classification is returned separately for the aux physics-key bitmap.
+            /// For now every non-air block is solid.
             /// </summary>
             private unsafe PhysicsInfo ComputeBlockPhysicsInfo(
                 ref SectorNeighborhoodReaderHelper helper,
-                int3 sectorBlockPos)
+                int3 sectorBlockPos,
+                out bool isPhysicsKey)
             {
-                byte faceMask = 0;
                 byte forwardOccupancy = 0;
                 int surroundedAxes = 0;
 
@@ -190,23 +210,18 @@ namespace Voxelis
                     bool solidPos = helper.BlockTest(sectorBlockPos + NeighborhoodSettings.Directions[dirPos]);
                     bool solidNeg = helper.BlockTest(sectorBlockPos + NeighborhoodSettings.Directions[dirNeg]);
 
-                    if (!solidPos) { faceMask |= (byte)(1 << dirPos); }
-                    if (!solidNeg) { faceMask |= (byte)(1 << dirNeg); }
                     if (solidPos) { forwardOccupancy |= (byte)(1 << axis); }
                     if (solidPos && solidNeg) { surroundedAxes++; }
                 }
-
-                int physicsFlag = 3 - surroundedAxes;
 
                 if (helper.BlockTest(sectorBlockPos + new int3(1, 1, 0))) { forwardOccupancy |= 1 << 3; }
                 if (helper.BlockTest(sectorBlockPos + new int3(1, 0, 1))) { forwardOccupancy |= 1 << 4; }
                 if (helper.BlockTest(sectorBlockPos + new int3(0, 1, 1))) { forwardOccupancy |= 1 << 5; }
                 if (helper.BlockTest(sectorBlockPos + new int3(1, 1, 1))) { forwardOccupancy |= 1 << 6; }
 
-                return new PhysicsInfo
-                {
-                    data = (ushort)((forwardOccupancy << 8) | (physicsFlag << 6) | faceMask)
-                };
+                isPhysicsKey = surroundedAxes <= 1;
+                if (surroundedAxes == 3) { forwardOccupancy |= 0x80; }
+                return new PhysicsInfo { data = forwardOccupancy };
             }
         }
     }

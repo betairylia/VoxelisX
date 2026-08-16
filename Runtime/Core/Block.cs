@@ -118,37 +118,13 @@ namespace Voxelis
 
     public struct PhysicsInfo : IEquatable<PhysicsInfo>
     {
-        // Packed data for physics info.
-        // Data layout:
-        // Low byte:
-        // (data & 0b11000000) >> 6: Physics flags.
-        //   - 0 = None (Have 3 axes surrounded by solid blocks, i.e., interior)
-        //   - 1 = Face (Have 2 axes surrounded by solid blocks)
-        //   - 2 = Edge (Have 1 axis surrounded by solid blocks)
-        //   - 3 = Corner (Have 0 axis surrounded by solid blocks; maximum 3 solid Von Neumann neighbors)
-        // 
-        // (data & 0x00111111) : Connectivity flags.
-        //   - Similar to SectorRenderer.GenerateSectorRenderDataJob.GetRendererBlockData's faceMask layout
-        //   - a "1" means the block does NOT have neighbor in that direction.
-        // High byte: occupancy of the seven positive neighbors in the 2x2x2 octet rooted at
-        // this block. Bits are +X, +Y, +Z, +XY, +XZ, +YZ and +XYZ. Collision generation uses
-        // these bits to construct finite point/edge/square/cube core features. The current block
-        // is known to be solid when PhysicsInfo is consumed, so it needs no bit of its own.
-        //
-        // Therefore, data == 0 (default) means an interior block with no forward topology data,
-        // or an empty block whose PhysicsInfo was cleared.
-        public ushort data;
+        // Bits 0-6 contain occupancy of the seven positive neighbors in the 2x2x2 octet rooted
+        // at this block: +X, +Y, +Z, +XY, +XZ, +YZ and +XYZ. Bit 7 marks a block whose six face
+        // neighbors are solid. Physics-key state is stored only in this slot's one-bit aux mask.
+        public byte data;
 
-        public byte FaceData => (byte)data;
-        public byte ForwardOccupancy => (byte)(data >> 8);
-
-        /// <summary>
-        /// True for Corner and Edge blocks — the sparse "physics-key" subset that narrowphase
-        /// iterates as contact sources (every surviving contact pair has at least one key side).
-        /// Must match the mask built by <c>VoxelBodyData.RefreshPhysicsKeyMask</c>, which uses
-        /// this property.
-        /// </summary>
-        public bool IsPhysicsKey => ((data >> 6) & 0b11) >= 2;
+        public byte ForwardOccupancy => (byte)(data & 0x7f);
+        public bool IsInterior => (data & 0x80) != 0;
 
         public bool Equals(PhysicsInfo other)
         {

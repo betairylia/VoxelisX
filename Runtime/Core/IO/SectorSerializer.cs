@@ -163,10 +163,9 @@ namespace Voxelis.IO
                     if (stride <= 0 || slotBytes > int.MaxValue)
                         throw new InvalidDataException($"Invalid slot stride {stride} for capacity {capacity}.");
 
-                    // PhysicsInfo is a runtime cache derived from Block occupancy. Its stride changed
-                    // from one byte to two bytes when cubical-complex topology was added. Consume and
-                    // discard both old and new records; the load dirty flags cause the current format
-                    // to be allocated and rebuilt before narrowphase uses it.
+                    // PhysicsInfo is a runtime cache derived from Block occupancy. Its byte layout can
+                    // change without a save-format marker. Consume and discard every persisted record;
+                    // load dirty flags rebuild the current format before narrowphase uses it.
                     if (slotId == (int)SectorSlotId.PhysicsInfo)
                     {
                         SkipRawBytes(br, (int)slotBytes);

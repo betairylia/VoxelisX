@@ -26,7 +26,7 @@ namespace VoxelisX.Tests
                 foreach (SectorBitmaskSlotIterator<PhysicsInfo> item in
                          Sector.Get().EnumeratePhysicsKeyBlocks())
                 {
-                    count += item.value.IsPhysicsKey ? 1 : 0;
+                    count++;
                 }
 
                 Result[0] = count;
@@ -141,7 +141,7 @@ namespace VoxelisX.Tests
         }
 
         [Test]
-        public void RefreshPhysicsSlotClassifiesBlockExposure()
+        public void RefreshPhysicsSlotBuildsCompactTopologyAndInteriorBit()
         {
             using var scope = new EntityDataTestScope();
             SectorHandle sector = scope.AddSector(int3.zero);
@@ -168,18 +168,17 @@ namespace VoxelisX.Tests
             {
                 bodyData.ComputePhysicsProperties(scope.Data);
 
-                // Interior center: all 6 neighbors solid -> no exposed faces, 3 axes surrounded (None).
-                Assert.That(PhysicsData(sector, 1, 1, 1), Is.EqualTo(0));
-                // Face block (only -Z exposed): bit 5 set, 2 axes surrounded -> flag 1 (Face).
-                Assert.That(PhysicsData(sector, 1, 1, 0), Is.EqualTo((1 << 6) | (1 << 5)));
-                // Edge block (-Y and -Z exposed): bits 3,5 set, 1 axis surrounded -> flag 2 (Edge).
-                Assert.That(PhysicsData(sector, 1, 0, 0), Is.EqualTo((2 << 6) | (1 << 3) | (1 << 5)));
-                // Corner block (-X,-Y,-Z exposed): bits 1,3,5 set, 0 axes surrounded -> flag 3 (Corner).
-                Assert.That(PhysicsData(sector, 0, 0, 0), Is.EqualTo((3 << 6) | (1 << 1) | (1 << 3) | (1 << 5)));
+                // Interior center: all six face neighbors are solid.
+                Assert.That(PhysicsData(sector, 1, 1, 1).IsInterior, Is.True);
+                // Face, edge and corner blocks are not interior. Their selection as physics keys
+                // is stored only in the slot's aux bitmap.
+                Assert.That(PhysicsData(sector, 1, 1, 0).IsInterior, Is.False);
+                Assert.That(PhysicsData(sector, 1, 0, 0).IsInterior, Is.False);
+                Assert.That(PhysicsData(sector, 0, 0, 0).IsInterior, Is.False);
                 // Air block inside the allocated brick is cleared, not stale.
-                Assert.That(PhysicsData(sector, 5, 5, 5), Is.EqualTo(0));
+                Assert.That(PhysicsData(sector, 5, 5, 5).data, Is.EqualTo(0));
 
-                Assert.That(UnsafeUtility.SizeOf<PhysicsInfo>(), Is.EqualTo(2));
+                Assert.That(UnsafeUtility.SizeOf<PhysicsInfo>(), Is.EqualTo(1));
                 Assert.That(ForwardOccupancy(sector, 0, 0, 0), Is.EqualTo(0x7f),
                     "The minimum corner roots a complete positive 2x2x2 cubical cell");
                 Assert.That(ForwardOccupancy(sector, 2, 2, 2), Is.EqualTo(0),
@@ -218,8 +217,6 @@ namespace VoxelisX.Tests
             try
             {
                 bodyData.ComputePhysicsProperties(scope.Data);
-                bodyData.RefreshPhysicsKeyMask(scope.Data.sectors);
-
                 ref Sector source = ref sector.Get();
                 Assert.That(source.slots[(int)SectorSlotId.PhysicsInfo].HasAux, Is.True);
 
@@ -240,7 +237,7 @@ namespace VoxelisX.Tests
 
                             Assert.That(enumerator.MoveNext(), Is.True);
                             Assert.That(enumerator.Current.position, Is.EqualTo(new int3(x, y, z)));
-                            Assert.That((enumerator.Current.value.data >> 6) & 0b11, Is.EqualTo(boundaryAxes));
+                            Assert.That(enumerator.Current.value.IsInterior, Is.False);
                             selected++;
                         }
                     }
@@ -267,9 +264,9 @@ namespace VoxelisX.Tests
             }
         }
 
-        private static int PhysicsData(SectorHandle sector, int x, int y, int z)
+        private static PhysicsInfo PhysicsData(SectorHandle sector, int x, int y, int z)
         {
-            return sector.GetSlot<PhysicsInfo>(SectorSlotId.PhysicsInfo, x, y, z).FaceData;
+            return sector.GetSlot<PhysicsInfo>(SectorSlotId.PhysicsInfo, x, y, z);
         }
 
         private static int ForwardOccupancy(SectorHandle sector, int x, int y, int z)

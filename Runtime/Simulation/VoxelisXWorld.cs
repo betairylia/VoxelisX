@@ -433,17 +433,6 @@ Profiler.BeginSample("Recompute body mass properties");
             }
 Profiler.EndSample();
 
-            // Mark physics-key blocks: rebuild the PhysicsInfo slot's Corner/Edge aux from the
-            // PhysicsInfo data just written above, before the physics step consumes it.
-Profiler.BeginSample("Mark Physics-key Blocks");
-            foreach (var b in tickBuf.VoxelBodies.GetKeyArray(Allocator.Temp))
-            {
-                var body = tickBuf.VoxelBodies[b];
-                var entityData = tickBuf.VoxelEntities[b];
-                body.RefreshPhysicsKeyMask(entityData.sectors);
-            }
-Profiler.EndSample();
-
 Profiler.BeginSample("Apply Body Force Commands");
             bodyForceCommands?.ApplyTo(ref tickBuf, deltaTime);
 Profiler.EndSample();

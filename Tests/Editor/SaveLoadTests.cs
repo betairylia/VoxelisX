@@ -304,7 +304,7 @@ namespace VoxelisX.Tests
         }
 
         [Test]
-        public void Unpack_DiscardsLegacyOneBytePhysicsInfo()
+        public void Unpack_DiscardsPersistedPhysicsInfoEvenWhenStrideMatches()
         {
             var handle = SectorHandle.AllocEmpty();
             try

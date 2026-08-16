@@ -22,39 +22,47 @@ namespace VoxelisX.Tests
         // ------------------------------------------------------------------ harness
 
         /// <summary>
-        /// One voxel body: an entity-data scope holding a single sector at (0,0,0) plus the
-        /// sector map a VoxelCollider needs. Block coordinates must stay within one sector.
+        /// One voxel body: an entity-data scope plus the sector map a VoxelCollider needs.
+        /// Set accepts global block coordinates and creates sectors on demand.
         /// </summary>
         sealed class VoxelBodyFixture : IDisposable
         {
             public EntityDataTestScope Scope;
             public UnsafeHashMap<int3, SectorHandle> Sectors;
 
-            readonly SectorHandle m_Sector;
-
             public VoxelBodyFixture()
             {
                 Scope = new EntityDataTestScope();
-                m_Sector = Scope.AddSector(int3.zero);
-                Sectors = new UnsafeHashMap<int3, SectorHandle>(1, Allocator.Persistent);
-                Sectors.Add(int3.zero, m_Sector);
+                Sectors = new UnsafeHashMap<int3, SectorHandle>(4, Allocator.Persistent);
             }
 
             public void Set(int x, int y, int z)
             {
-                m_Sector.SetBlock(x, y, z, new Block(1));
+                int3 global = new int3(x, y, z);
+                int3 sectorCoord = global >> (Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS);
+                if (!Scope.Data.sectors.TryGetValue(sectorCoord, out SectorHandle sector))
+                {
+                    sector = Scope.AddSector(sectorCoord);
+                    Sectors.Add(sectorCoord, sector);
+                }
+
+                int3 local = global & (Sector.SECTOR_SIZE_IN_BLOCKS - 1);
+                sector.SetBlock(local.x, local.y, local.z, new Block(1));
             }
 
             /// <summary>
-            /// Recomputes block occupancy, PhysicsInfo exposure data and the physics-key mask,
-            /// in the same order as the VoxelisXWorld tick — narrowphase consumes all three.
+            /// Recomputes block occupancy, PhysicsInfo topology and its physics-key aux mask,
+            /// in the same order as the VoxelisXWorld tick.
             /// </summary>
             public void Build()
             {
-                ref Sector sector = ref m_Sector.Get();
-                for (int i = 0; i < Sector.BRICKS_IN_SECTOR; i++)
+                foreach (var kvp in Scope.Data.sectors)
                 {
-                    sector.MarkBrickRequireUpdate(i, DirtyFlags.GeometryWithLocalNeighbor);
+                    ref Sector sector = ref kvp.Value.Get();
+                    for (int i = 0; i < Sector.BRICKS_IN_SECTOR; i++)
+                    {
+                        sector.MarkBrickRequireUpdate(i, DirtyFlags.GeometryWithLocalNeighbor);
+                    }
                 }
 
                 Scope.Data.RefreshNonEmptyMask(DirtyFlags.GeometryWithLocalNeighbor);
@@ -63,7 +71,6 @@ namespace VoxelisX.Tests
                 try
                 {
                     bodyData.ComputePhysicsProperties(Scope.Data);
-                    bodyData.RefreshPhysicsKeyMask(Scope.Data.sectors);
                 }
                 finally
                 {
@@ -211,6 +218,28 @@ namespace VoxelisX.Tests
         }
 
         // ------------------------------------------------------------------ tests
+
+        [TestCase(127, 128)]
+        [TestCase(-1, 0)]
+        public void CandidateProbeCrossesSectorBoundary(int voxelA, int voxelB)
+        {
+            using var a = new VoxelBodyFixture();
+            using var b = new VoxelBodyFixture();
+            a.Set(voxelA, 0, 0);
+            b.Set(voxelB, 0, 0);
+            a.Build();
+            b.Build();
+
+            List<ParsedManifold> manifolds = Collide(
+                a, b, RigidTransform.identity, RigidTransform.identity,
+                out List<ParsedEvent> events);
+
+            Assert.That(manifolds.Count, Is.EqualTo(1));
+            Assert.That(manifolds[0].Points[0].Distance, Is.EqualTo(0f).Within(Tolerance));
+            Assert.That(events.Count, Is.EqualTo(1));
+            Assert.That(events[0].VoxelInA, Is.EqualTo(new int3(voxelA, 0, 0)));
+            Assert.That(events[0].VoxelInB, Is.EqualTo(new int3(voxelB, 0, 0)));
+        }
 
         [Test]
         public void StackedCube_ProducesOneFaceContactUnderVoxelCenter()

@@ -76,7 +76,6 @@ namespace VoxelisX.Tests
                 try
                 {
                     bodyData.ComputePhysicsProperties(m_Scope.Data);
-                    bodyData.RefreshPhysicsKeyMask(m_Scope.Data.sectors);
                 }
                 finally
                 {
