@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Unity.Collections;
 using Unity.Mathematics;
@@ -20,6 +21,7 @@ namespace Voxelis.Authoring
         [SerializeField] private VoxelEntity bakeTarget;
         [SerializeField, HideInInspector] private int generatedVoxelCount;
 
+        private readonly HashSet<Vector3Int> voxelScratch = new();
         private bool rebuildRequested = true;
 
         public VoxelEntity OwnedEntity => GetComponent<VoxelEntity>();
@@ -64,6 +66,25 @@ namespace Voxelis.Authoring
             }
         }
 
+        /// <summary>
+        /// Whether the working entity can accept generated voxels right now.
+        /// </summary>
+        /// <remarks>
+        /// <see cref="VoxelEntity"/> allocates its native storage in Awake and releases it in
+        /// OnDisable, so the component can be alive while its sectors are gone — a destroyed or
+        /// disabled entity, an undo in Play Mode, or a rebuild scheduled before Awake ran. Writing
+        /// then reaches a disposed UnsafeHashMap and throws a NullReferenceException from inside
+        /// Unity.Collections, which is why every entry point checks this first.
+        /// </remarks>
+        public bool CanWriteVoxels
+        {
+            get
+            {
+                VoxelEntity entity = OwnedEntity;
+                return entity != null && entity.Sectors.IsCreated;
+            }
+        }
+
 #if UNITY_EDITOR
         protected virtual void OnValidate()
         {
@@ -87,29 +108,44 @@ namespace Voxelis.Authoring
             rebuildRequested = false;
             ConfigureOwnedComponents();
 
-            if (!Application.isPlaying)
+            if (!Application.isPlaying || !CanWriteVoxels)
             {
                 return false;
             }
 
-            var voxels = new HashSet<Vector3Int>();
-            BuildVoxelSet(voxels);
-
             VoxelEntity entity = OwnedEntity;
-            ClearBlocks(entity);
 
-            Block block = MaterialBlock;
-            if (!block.isEmpty)
+            try
             {
-                foreach (Vector3Int position in voxels)
-                {
-                    entity.SetBlock(new int3(position.x, position.y, position.z), block);
-                }
-            }
+                voxelScratch.Clear();
+                BuildVoxelSet(voxelScratch);
 
-            entity.RefreshAllocatedBrickLists();
-            generatedVoxelCount = block.isEmpty ? 0 : voxels.Count;
-            return true;
+                ClearBlocks(entity);
+
+                Block block = MaterialBlock;
+                if (!block.isEmpty)
+                {
+                    foreach (Vector3Int position in voxelScratch)
+                    {
+                        entity.SetBlock(new int3(position.x, position.y, position.z), block);
+                    }
+                }
+
+                entity.RefreshAllocatedBrickLists();
+                generatedVoxelCount = block.isEmpty ? 0 : voxelScratch.Count;
+                return true;
+            }
+            catch (Exception exception)
+            {
+                // One malformed spline must not take down the frame loop; the tool keeps working
+                // and the next edit tries again.
+                Debug.LogException(exception, this);
+                return false;
+            }
+            finally
+            {
+                voxelScratch.Clear();
+            }
         }
 
         /// <summary>Creates a regular, saveable entity with a copy of the generated voxels.</summary>
@@ -118,6 +154,12 @@ namespace Voxelis.Authoring
             if (!Application.isPlaying)
             {
                 Debug.LogWarning("Voxel authoring tools can bake only in Play Mode.", this);
+                return null;
+            }
+
+            if (!CanWriteVoxels)
+            {
+                Debug.LogWarning("This tool's voxel entity is not available; nothing to bake.", this);
                 return null;
             }
 
@@ -176,6 +218,18 @@ namespace Voxelis.Authoring
                 return false;
             }
 
+            if (!CanWriteVoxels)
+            {
+                error = "This tool's voxel entity is not available. Re-enter Play Mode and try again.";
+                return false;
+            }
+
+            if (!bakeTarget.Sectors.IsCreated)
+            {
+                error = "The Bake Target entity has no voxel storage. Make sure it is active and enabled.";
+                return false;
+            }
+
             if (!TryGetGridAlignedMapping(transform, bakeTarget.transform, out Matrix4x4 mapping, out error))
             {
                 return false;
@@ -218,6 +272,11 @@ namespace Voxelis.Authoring
 
         private static unsafe void ClearBlocks(VoxelEntity entity)
         {
+            if (entity == null || !entity.Sectors.IsCreated)
+            {
+                return;
+            }
+
             NativeArray<int3> sectorPositions = entity.Sectors.GetKeyArray(Allocator.Temp);
             try
             {
@@ -262,6 +321,12 @@ namespace Voxelis.Authoring
             Matrix4x4? sourceToDestination)
         {
             int copied = 0;
+            if (source == null || destination == null ||
+                !source.Sectors.IsCreated || !destination.Sectors.IsCreated)
+            {
+                return 0;
+            }
+
             NativeArray<int3> sectorPositions = source.Sectors.GetKeyArray(Allocator.Temp);
             try
             {

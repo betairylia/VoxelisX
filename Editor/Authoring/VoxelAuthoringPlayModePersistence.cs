@@ -55,6 +55,7 @@ namespace Voxelis.Authoring.EditorTools
             return collection.tools.Exists(snapshot => snapshot.toolId == id);
         }
 
+        /// <summary>Arms a tool so its Play Mode state is carried back into the scene.</summary>
         public static void Capture(VoxelEntityAuthoringTool tool)
         {
             if (tool == null || !EditorApplication.isPlaying)
@@ -62,23 +63,54 @@ namespace Voxelis.Authoring.EditorTools
                 return;
             }
 
-            var components = new List<Component>();
-            tool.CollectAuthoringStateComponents(components);
+            ToolSnapshot snapshot = CaptureSnapshot(tool);
+            if (snapshot == null)
+            {
+                return;
+            }
+
+            SnapshotCollection collection = Load();
+            collection.tools.RemoveAll(existing => existing.toolId == snapshot.toolId);
+            collection.tools.Add(snapshot);
+            Save(collection);
+
+            Debug.Log(
+                $"'{tool.name}' will keep its Play Mode changes. VoxelisX re-reads the live values when Play Mode " +
+                "exits, so later edits are included automatically.",
+                tool);
+        }
+
+        /// <summary>Disarms a tool that was previously captured.</summary>
+        public static void Cancel(VoxelEntityAuthoringTool tool)
+        {
+            if (tool == null)
+            {
+                return;
+            }
 
             string toolId = GetId(tool);
             SnapshotCollection collection = Load();
-            collection.tools.RemoveAll(snapshot => snapshot.toolId == toolId);
+            if (collection.tools.RemoveAll(snapshot => snapshot.toolId == toolId) > 0)
+            {
+                Save(collection);
+            }
+        }
+
+        private static ToolSnapshot CaptureSnapshot(VoxelEntityAuthoringTool tool)
+        {
+            var components = new List<Component>();
+            tool.CollectAuthoringStateComponents(components);
 
             var toolSnapshot = new ToolSnapshot
             {
-                toolId = toolId,
+                toolId = GetId(tool),
                 displayName = tool.name,
             };
 
             for (int i = 0; i < components.Count; i++)
             {
                 Component component = components[i];
-                if (component == null)
+                if (component == null || component.gameObject == null)
                 {
                     continue;
                 }
@@ -94,19 +126,64 @@ namespace Voxelis.Authoring.EditorTools
                 });
             }
 
-            collection.tools.Add(toolSnapshot);
-            Save(collection);
-            ResumePendingSnapshotsWhenReady();
-            Debug.Log(
-                $"Captured current Play Mode changes for '{tool.name}'. They will be applied and saved after Play Mode exits.",
-                tool);
+            return toolSnapshot.components.Count > 0 ? toolSnapshot : null;
         }
 
         private static void OnPlayModeStateChanged(PlayModeStateChange state)
         {
-            if (state == PlayModeStateChange.EnteredEditMode)
+            switch (state)
             {
-                EditorApplication.delayCall += ApplyPendingSnapshots;
+                // Re-read every armed tool while its Play Mode objects are still alive. This is the
+                // moment Cinemachine's SaveDuringPlay uses, and it means the snapshot always holds
+                // the final values instead of whatever they were when the button was pressed.
+                case PlayModeStateChange.ExitingPlayMode:
+                    RecaptureArmedTools();
+                    break;
+
+                case PlayModeStateChange.EnteredEditMode:
+                    ApplyPendingSnapshots();
+                    break;
+            }
+        }
+
+        private static void RecaptureArmedTools()
+        {
+            SnapshotCollection collection = Load();
+            if (collection.tools.Count == 0)
+            {
+                return;
+            }
+
+            VoxelEntityAuthoringTool[] tools =
+                UnityEngine.Object.FindObjectsByType<VoxelEntityAuthoringTool>(FindObjectsInactive.Include);
+
+            bool changed = false;
+            for (int i = 0; i < tools.Length; i++)
+            {
+                VoxelEntityAuthoringTool tool = tools[i];
+                if (tool == null)
+                {
+                    continue;
+                }
+
+                string toolId = GetId(tool);
+                int index = collection.tools.FindIndex(snapshot => snapshot.toolId == toolId);
+                if (index < 0)
+                {
+                    continue;
+                }
+
+                ToolSnapshot fresh = CaptureSnapshot(tool);
+                if (fresh != null)
+                {
+                    collection.tools[index] = fresh;
+                    changed = true;
+                }
+            }
+
+            if (changed)
+            {
+                Save(collection);
             }
         }
 
@@ -126,7 +203,7 @@ namespace Voxelis.Authoring.EditorTools
 
         private static void TryApplyPendingSnapshots()
         {
-            if (EditorApplication.isPlayingOrWillChangePlaymode)
+            if (!CanEditScenes())
             {
                 return;
             }
@@ -135,11 +212,35 @@ namespace Voxelis.Authoring.EditorTools
             ApplyPendingSnapshots();
         }
 
+        /// <summary>
+        /// Whether the editor can be asked to modify and save scenes right now.
+        /// </summary>
+        /// <remarks>
+        /// <see cref="EditorApplication.isPlayingOrWillChangePlaymode"/> alone is not enough: it
+        /// clears before the Play Mode scene has been torn down, and writing in that window applies
+        /// the snapshot to objects that are about to be discarded (so nothing persists) and then
+        /// throws "This cannot be used during play mode" out of MarkSceneDirty.
+        /// </remarks>
+        private static bool CanEditScenes()
+        {
+            return !EditorApplication.isPlaying &&
+                   !EditorApplication.isPlayingOrWillChangePlaymode &&
+                   !EditorApplication.isCompiling &&
+                   !EditorApplication.isUpdating;
+        }
+
         private static void ApplyPendingSnapshots()
         {
             SnapshotCollection collection = Load();
             if (collection.tools.Count == 0)
             {
+                return;
+            }
+
+            if (!CanEditScenes())
+            {
+                // Keep the snapshot and try again once the editor has finished the transition.
+                ResumePendingSnapshotsWhenReady();
                 return;
             }
 
@@ -169,21 +270,29 @@ namespace Voxelis.Authoring.EditorTools
                     restoredAny = true;
                 }
 
-                if (restoredAny)
+                if (restoredAny && toolSnapshot.components.Count > 0)
                 {
                     Component first = Resolve(toolSnapshot.components[0]);
                     if (first is VoxelEntityAuthoringTool tool)
                     {
                         tool.ConfigureOwnedComponents();
                         tool.RequestRebuild();
-                        EditorUtility.SetDirty(tool.OwnedEntity);
+
+                        VoxelEntity entity = tool.OwnedEntity;
+                        if (entity != null)
+                        {
+                            EditorUtility.SetDirty(entity);
+                        }
                     }
                     restoredTools++;
                 }
             }
 
+            // The snapshot has now been applied to the edit mode objects, or its objects are gone
+            // for good. Either way it must not be replayed onto the next Play Mode session.
             SessionState.EraseString(SessionKey);
 
+            int savedScenes = 0;
             foreach (string scenePath in changedScenes)
             {
                 Scene scene = SceneManager.GetSceneByPath(scenePath);
@@ -193,16 +302,31 @@ namespace Voxelis.Authoring.EditorTools
                     continue;
                 }
 
-                EditorSceneManager.MarkSceneDirty(scene);
-                if (!string.IsNullOrEmpty(scene.path))
+                // SetDirty above already carried the values into the scene, so a failure here costs
+                // the automatic save, not the restored state.
+                try
                 {
-                    EditorSceneManager.SaveScene(scene);
+                    EditorSceneManager.MarkSceneDirty(scene);
+                    if (!string.IsNullOrEmpty(scene.path))
+                    {
+                        EditorSceneManager.SaveScene(scene);
+                        savedScenes++;
+                    }
+                }
+                catch (InvalidOperationException exception)
+                {
+                    Debug.LogWarning(
+                        $"Restored authoring changes in '{scenePath}' but could not save it automatically: {exception.Message} " +
+                        "Save the scene manually to keep them.");
                 }
             }
 
             if (restoredTools > 0)
             {
-                Debug.Log($"Restored and saved Play Mode changes for {restoredTools} voxel authoring tool(s).");
+                Debug.Log(
+                    savedScenes > 0
+                        ? $"Restored and saved Play Mode changes for {restoredTools} voxel authoring tool(s)."
+                        : $"Restored Play Mode changes for {restoredTools} voxel authoring tool(s). Save the scene to keep them.");
                 SceneView.RepaintAll();
             }
         }

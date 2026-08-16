@@ -6,11 +6,15 @@ namespace Voxelis.Authoring.EditorTools
 {
     internal abstract class VoxelEntityAuthoringToolEditor : UnityEditor.Editor
     {
-        protected VoxelEntityAuthoringTool AuthoringTool => (VoxelEntityAuthoringTool)target;
+        protected VoxelEntityAuthoringTool AuthoringTool => target as VoxelEntityAuthoringTool;
 
         protected void DrawAuthoringStatusAndActions()
         {
             VoxelEntityAuthoringTool tool = AuthoringTool;
+            if (tool == null)
+            {
+                return;
+            }
 
             EditorGUILayout.Space();
             EditorGUILayout.LabelField("Play Mode Authoring", EditorStyles.boldLabel);
@@ -18,6 +22,14 @@ namespace Voxelis.Authoring.EditorTools
             if (Application.isPlaying)
             {
                 EditorGUILayout.LabelField("Generated Voxels", tool.GeneratedVoxelCount.ToString());
+
+                if (!tool.CanWriteVoxels)
+                {
+                    EditorGUILayout.HelpBox(
+                        "This tool's Voxel Entity has no live voxel storage, so generating and baking are disabled. " +
+                        "Make sure the Voxel Entity component is enabled, then exit and re-enter Play Mode.",
+                        MessageType.Warning);
+                }
 
                 using (new EditorGUILayout.HorizontalScope())
                 {
@@ -27,17 +39,23 @@ namespace Voxelis.Authoring.EditorTools
                         SceneView.RepaintAll();
                     }
 
-                    string keepLabel = VoxelAuthoringPlayModePersistence.HasPendingSnapshot(tool)
-                        ? "Update Saved Snapshot"
-                        : "Keep Changes After Play";
-                    if (GUILayout.Button(keepLabel))
+                    bool armed = VoxelAuthoringPlayModePersistence.HasPendingSnapshot(tool);
+                    if (GUILayout.Button(armed ? "Cancel Keep Changes" : "Keep Changes After Play"))
                     {
-                        VoxelAuthoringPlayModePersistence.Capture(tool);
+                        if (armed)
+                        {
+                            VoxelAuthoringPlayModePersistence.Cancel(tool);
+                        }
+                        else
+                        {
+                            VoxelAuthoringPlayModePersistence.Capture(tool);
+                        }
                     }
                 }
 
                 EditorGUILayout.HelpBox(
-                    "Keep Changes After Play captures the current controls. The tool restores them and saves the scene after Play Mode exits. Click it again after later edits.",
+                    "Keep Changes After Play marks this tool. VoxelisX reads its live values as Play Mode exits, " +
+                    "applies them to the scene object, and saves the scene, so later edits are included automatically.",
                     MessageType.Info);
             }
             else
@@ -50,7 +68,7 @@ namespace Voxelis.Authoring.EditorTools
             EditorGUILayout.Space();
             EditorGUILayout.LabelField("Bake", EditorStyles.boldLabel);
 
-            using (new EditorGUI.DisabledScope(!Application.isPlaying))
+            using (new EditorGUI.DisabledScope(!Application.isPlaying || !tool.CanWriteVoxels))
             {
                 if (GUILayout.Button("Bake as New Saveable Entity"))
                 {

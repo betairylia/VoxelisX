@@ -682,6 +682,22 @@ namespace Voxelis
         /// </summary>
         private void OnEnable()
         {
+            // Awake allocates the native storage and OnDisable releases it, so a component that is
+            // disabled and re-enabled would come back with a disposed hash map — every later write
+            // then throws a NullReferenceException from inside Unity.Collections. Re-allocate here,
+            // preserving the identity exactly like Awake does.
+            if (!data.sectors.IsCreated)
+            {
+                Guid128 preservedGuid = data.Guid;
+                data = new VoxelEntityData(Allocator.Persistent, transform, ref globalEntityRandomState);
+                if (!preservedGuid.IsZero)
+                {
+                    data.Guid = preservedGuid;
+                }
+
+                data.isStatic = isStatic;
+            }
+
             VoxelisXCoreWorld.instance.AddEntity(this);
         }
 
