@@ -547,6 +547,9 @@ namespace Voxelis
                  "Persisted in .vxw so the designation survives save/load and travels with the entity by GUID.")]
         [SerializeField] private bool isProtected;
 
+        [Tooltip("Exclude this scene-authored entity from VoxelisX world save files. Authoring tools set this automatically; baked entities leave it off.")]
+        [SerializeField, HideInInspector] private bool excludeFromWorldSave;
+
         /// <summary>
         /// Whether this entity is protected from gameplay interaction (e.g. the main world that must
         /// never be unfrozen or dragged). This is a plain serialized flag — it is not part of the
@@ -556,6 +559,16 @@ namespace Voxelis
         {
             get => isProtected;
             set => isProtected = value;
+        }
+
+        /// <summary>
+        /// Whether world serialization must skip this entity. Scene-authoring tools use this for
+        /// generated working data. A baked, regular entity uses the default value of false.
+        /// </summary>
+        public bool ExcludeFromWorldSave
+        {
+            get => excludeFromWorldSave;
+            set => excludeFromWorldSave = value;
         }
 
         public static void InitializeRandomState(uint seed)

@@ -10,6 +10,8 @@
         "Unity.Numerics.Linear.Sparse",
         "Unity.Numerics.Memory",
         "Unity.Numerics.Random",
+        "Unity.Splines",
+        "Unity.Splines.Editor",
         "voxelis.Unity.Physics"
     ],
     "includePlatforms": [

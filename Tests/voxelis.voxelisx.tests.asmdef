@@ -16,7 +16,8 @@
         "GUID:8a1c450fd8e067e4d9bf03b7bf85843c",
         "GUID:ed204854e10122a43aebf832b20c0635",
         "GUID:688d11c459ec6e241a8227dd62b47e2b",
-        "GUID:734d92eba21c94caba915361bd5ac177"
+        "GUID:734d92eba21c94caba915361bd5ac177",
+        "Unity.Splines"
     ],
     "includePlatforms": [
         "Editor"

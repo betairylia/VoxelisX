@@ -17,6 +17,7 @@ namespace Voxelis.IO
             for (int i = 0; i < entities.Count; i++)
             {
                 var (guid, entity) = entities[i];
+                if (ShouldSkip(entity)) continue;
                 SaveEntity(writer, guid, entity);
             }
             writer.Commit();
@@ -30,9 +31,15 @@ namespace Voxelis.IO
             for (int i = 0; i < entities.Count; i++)
             {
                 var (guid, entity, hasBody, linearVelocity, angularVelocity) = entities[i];
+                if (ShouldSkip(entity)) continue;
                 SaveEntity(writer, guid, entity, hasBody, linearVelocity, angularVelocity);
             }
             writer.Commit();
+        }
+
+        private static bool ShouldSkip(VoxelEntity entity)
+        {
+            return entity == null || entity.ExcludeFromWorldSave;
         }
 
         /// <summary>

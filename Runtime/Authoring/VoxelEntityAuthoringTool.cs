@@ -1,0 +1,376 @@
+using System.Collections.Generic;
+using Unity.Collections;
+using Unity.Mathematics;
+using UnityEngine;
+using UnityEngine.SceneManagement;
+
+namespace Voxelis.Authoring
+{
+    /// <summary>
+    /// Base component for editable scene tools that generate a temporary voxel entity.
+    /// The working entity stays in the Unity scene, is excluded from .vxw saves, and can be
+    /// baked to a regular entity or merged into a grid-aligned entity.
+    /// </summary>
+    [DisallowMultipleComponent]
+    [RequireComponent(typeof(VoxelEntity), typeof(VoxelBody))]
+    public abstract class VoxelEntityAuthoringTool : MonoBehaviour
+    {
+        private const float GridAlignmentTolerance = 0.001f;
+
+        [SerializeField] private VoxelEntity bakeTarget;
+        [SerializeField, HideInInspector] private int generatedVoxelCount;
+
+        private bool rebuildRequested = true;
+
+        public VoxelEntity OwnedEntity => GetComponent<VoxelEntity>();
+        public VoxelBody OwnedBody => GetComponent<VoxelBody>();
+
+        public VoxelEntity BakeTarget
+        {
+            get => bakeTarget;
+            set => bakeTarget = value;
+        }
+
+        public int GeneratedVoxelCount => generatedVoxelCount;
+
+        protected abstract Block MaterialBlock { get; }
+
+        protected virtual void Reset()
+        {
+            ConfigureOwnedComponents();
+        }
+
+        protected virtual void Awake()
+        {
+            ConfigureOwnedComponents();
+        }
+
+        protected virtual void OnEnable()
+        {
+            ConfigureOwnedComponents();
+            rebuildRequested = true;
+        }
+
+        protected virtual void Start()
+        {
+            RebuildNow();
+        }
+
+        protected virtual void Update()
+        {
+            if (rebuildRequested && Application.isPlaying)
+            {
+                RebuildNow();
+            }
+        }
+
+#if UNITY_EDITOR
+        protected virtual void OnValidate()
+        {
+            ConfigureOwnedComponents();
+            RequestRebuild();
+        }
+#endif
+
+        /// <summary>Schedules one rebuild on the next update.</summary>
+        public void RequestRebuild()
+        {
+            rebuildRequested = true;
+        }
+
+        /// <summary>
+        /// Replaces the working entity's visible blocks with the current authored result.
+        /// Native voxel data exists only in Play Mode, so edit mode uses the Scene preview.
+        /// </summary>
+        public bool RebuildNow()
+        {
+            rebuildRequested = false;
+            ConfigureOwnedComponents();
+
+            if (!Application.isPlaying)
+            {
+                return false;
+            }
+
+            var voxels = new HashSet<Vector3Int>();
+            BuildVoxelSet(voxels);
+
+            VoxelEntity entity = OwnedEntity;
+            ClearBlocks(entity);
+
+            Block block = MaterialBlock;
+            if (!block.isEmpty)
+            {
+                foreach (Vector3Int position in voxels)
+                {
+                    entity.SetBlock(new int3(position.x, position.y, position.z), block);
+                }
+            }
+
+            entity.RefreshAllocatedBrickLists();
+            generatedVoxelCount = block.isEmpty ? 0 : voxels.Count;
+            return true;
+        }
+
+        /// <summary>Creates a regular, saveable entity with a copy of the generated voxels.</summary>
+        public VoxelEntity BakeCopy()
+        {
+            if (!Application.isPlaying)
+            {
+                Debug.LogWarning("Voxel authoring tools can bake only in Play Mode.", this);
+                return null;
+            }
+
+            RebuildNow();
+
+            var bakedObject = new GameObject($"{name} (Baked)");
+            bakedObject.SetActive(false);
+
+            Scene sourceScene = gameObject.scene;
+            if (sourceScene.IsValid())
+            {
+                SceneManager.MoveGameObjectToScene(bakedObject, sourceScene);
+            }
+
+            bakedObject.transform.SetPositionAndRotation(transform.position, transform.rotation);
+            bakedObject.transform.localScale = Vector3.one;
+
+            VoxelEntity bakedEntity = bakedObject.AddComponent<VoxelEntity>();
+            VoxelBody bakedBody = bakedObject.AddComponent<VoxelBody>();
+            bakedBody.physicsEnabled = false;
+            bakedBody.accuratePhysics = true;
+
+            bakedObject.SetActive(true);
+            bakedEntity.IsStatic = true;
+            bakedEntity.ExcludeFromWorldSave = false;
+
+            CopyNonEmptyBlocks(OwnedEntity, bakedEntity, null);
+            bakedEntity.RefreshAllocatedBrickLists();
+            return bakedEntity;
+        }
+
+        /// <summary>
+        /// Merges generated blocks into <see cref="BakeTarget"/>. The relative transform must map
+        /// integer voxel coordinates to integer voxel coordinates without scale or skew.
+        /// Existing target blocks at those coordinates are replaced.
+        /// </summary>
+        public bool BakeIntoTarget(out string error, out int copiedVoxelCount)
+        {
+            copiedVoxelCount = 0;
+
+            if (!Application.isPlaying)
+            {
+                error = "Voxel authoring tools can bake only in Play Mode.";
+                return false;
+            }
+
+            if (bakeTarget == null)
+            {
+                error = "Select a Bake Target entity first.";
+                return false;
+            }
+
+            if (bakeTarget == OwnedEntity)
+            {
+                error = "The working entity cannot be its own Bake Target.";
+                return false;
+            }
+
+            if (!TryGetGridAlignedMapping(transform, bakeTarget.transform, out Matrix4x4 mapping, out error))
+            {
+                return false;
+            }
+
+            RebuildNow();
+            copiedVoxelCount = CopyNonEmptyBlocks(OwnedEntity, bakeTarget, mapping);
+            bakeTarget.RefreshAllocatedBrickLists();
+            error = null;
+            return true;
+        }
+
+        /// <summary>
+        /// Adds every serialized component that defines this tool's editable scene state.
+        /// Editor persistence stores these components when the user keeps Play Mode changes.
+        /// </summary>
+        public virtual void CollectAuthoringStateComponents(List<Component> components)
+        {
+            components.Add(this);
+        }
+
+        protected abstract void BuildVoxelSet(HashSet<Vector3Int> voxels);
+
+        public void ConfigureOwnedComponents()
+        {
+            VoxelEntity entity = GetComponent<VoxelEntity>();
+            if (entity != null)
+            {
+                entity.ExcludeFromWorldSave = true;
+                entity.IsStatic = true;
+            }
+
+            VoxelBody body = GetComponent<VoxelBody>();
+            if (body != null)
+            {
+                body.physicsEnabled = false;
+                body.accuratePhysics = true;
+            }
+        }
+
+        private static unsafe void ClearBlocks(VoxelEntity entity)
+        {
+            NativeArray<int3> sectorPositions = entity.Sectors.GetKeyArray(Allocator.Temp);
+            try
+            {
+                for (int sectorIndex = 0; sectorIndex < sectorPositions.Length; sectorIndex++)
+                {
+                    int3 sectorPosition = sectorPositions[sectorIndex];
+                    if (!entity.Sectors.TryGetValue(sectorPosition, out SectorHandle handle))
+                    {
+                        continue;
+                    }
+
+                    ref Sector sector = ref handle.Get();
+                    foreach (SectorNonEmptyBrickEnumerator.BrickRef brickRef in sector.EnumerateNonEmptyBricks())
+                    {
+                        int3 brickPosition = Sector.ToBrickPos((short)brickRef.BrickAbs);
+                        int3 localOrigin = brickPosition * Sector.SIZE_IN_BLOCKS;
+                        int3 globalOrigin = sectorPosition * Sector.SECTOR_SIZE_IN_BLOCKS + localOrigin;
+
+                        for (int z = 0; z < Sector.SIZE_IN_BLOCKS; z++)
+                        for (int y = 0; y < Sector.SIZE_IN_BLOCKS; y++)
+                        for (int x = 0; x < Sector.SIZE_IN_BLOCKS; x++)
+                        {
+                            if (sector.GetBlock(localOrigin.x + x, localOrigin.y + y, localOrigin.z + z).isEmpty)
+                            {
+                                continue;
+                            }
+
+                            entity.SetBlock(globalOrigin + new int3(x, y, z), Block.Empty);
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                sectorPositions.Dispose();
+            }
+        }
+
+        private static unsafe int CopyNonEmptyBlocks(
+            VoxelEntity source,
+            VoxelEntity destination,
+            Matrix4x4? sourceToDestination)
+        {
+            int copied = 0;
+            NativeArray<int3> sectorPositions = source.Sectors.GetKeyArray(Allocator.Temp);
+            try
+            {
+                for (int sectorIndex = 0; sectorIndex < sectorPositions.Length; sectorIndex++)
+                {
+                    int3 sectorPosition = sectorPositions[sectorIndex];
+                    if (!source.Sectors.TryGetValue(sectorPosition, out SectorHandle handle))
+                    {
+                        continue;
+                    }
+
+                    ref Sector sector = ref handle.Get();
+                    foreach (SectorNonEmptyBrickEnumerator.BrickRef brickRef in sector.EnumerateNonEmptyBricks())
+                    {
+                        int3 brickPosition = Sector.ToBrickPos((short)brickRef.BrickAbs);
+                        int3 localOrigin = brickPosition * Sector.SIZE_IN_BLOCKS;
+                        int3 globalOrigin = sectorPosition * Sector.SECTOR_SIZE_IN_BLOCKS + localOrigin;
+
+                        for (int z = 0; z < Sector.SIZE_IN_BLOCKS; z++)
+                        for (int y = 0; y < Sector.SIZE_IN_BLOCKS; y++)
+                        for (int x = 0; x < Sector.SIZE_IN_BLOCKS; x++)
+                        {
+                            Block block = sector.GetBlock(localOrigin.x + x, localOrigin.y + y, localOrigin.z + z);
+                            if (block.isEmpty)
+                            {
+                                continue;
+                            }
+
+                            int3 sourcePosition = globalOrigin + new int3(x, y, z);
+                            int3 destinationPosition = sourcePosition;
+                            if (sourceToDestination.HasValue)
+                            {
+                                Vector3 mapped = sourceToDestination.Value.MultiplyPoint3x4(
+                                    new Vector3(sourcePosition.x, sourcePosition.y, sourcePosition.z));
+                                Vector3Int rounded = Vector3Int.RoundToInt(mapped);
+                                destinationPosition = new int3(rounded.x, rounded.y, rounded.z);
+                            }
+
+                            destination.SetBlock(destinationPosition, block);
+                            copied++;
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                sectorPositions.Dispose();
+            }
+
+            return copied;
+        }
+
+        public static bool TryGetGridAlignedMapping(
+            Transform source,
+            Transform destination,
+            out Matrix4x4 sourceToDestination,
+            out string error)
+        {
+            sourceToDestination = destination.worldToLocalMatrix * source.localToWorldMatrix;
+
+            if (!IsUnitScale(source.lossyScale) || !IsUnitScale(destination.lossyScale))
+            {
+                error = "Both entity transforms must have a world scale of (1, 1, 1).";
+                return false;
+            }
+
+            Vector3 x = sourceToDestination.MultiplyVector(Vector3.right);
+            Vector3 y = sourceToDestination.MultiplyVector(Vector3.up);
+            Vector3 z = sourceToDestination.MultiplyVector(Vector3.forward);
+            if (!IsSignedAxis(x) || !IsSignedAxis(y) || !IsSignedAxis(z))
+            {
+                error = "The source rotation must align with the target voxel axes.";
+                return false;
+            }
+
+            Vector3Int rx = Vector3Int.RoundToInt(x);
+            Vector3Int ry = Vector3Int.RoundToInt(y);
+            Vector3Int rz = Vector3Int.RoundToInt(z);
+            if (Vector3.Dot(rx, ry) != 0f || Vector3.Dot(rx, rz) != 0f || Vector3.Dot(ry, rz) != 0f)
+            {
+                error = "The source rotation does not form three distinct target voxel axes.";
+                return false;
+            }
+
+            Vector3 translation = sourceToDestination.MultiplyPoint3x4(Vector3.zero);
+            if ((translation - (Vector3)Vector3Int.RoundToInt(translation)).sqrMagnitude >
+                GridAlignmentTolerance * GridAlignmentTolerance)
+            {
+                error = "The source origin must align with an integer voxel coordinate in the target.";
+                return false;
+            }
+
+            error = null;
+            return true;
+        }
+
+        private static bool IsUnitScale(Vector3 scale)
+        {
+            return Mathf.Abs(scale.x - 1f) <= GridAlignmentTolerance &&
+                   Mathf.Abs(scale.y - 1f) <= GridAlignmentTolerance &&
+                   Mathf.Abs(scale.z - 1f) <= GridAlignmentTolerance;
+        }
+
+        private static bool IsSignedAxis(Vector3 axis)
+        {
+            Vector3Int rounded = Vector3Int.RoundToInt(axis);
+            int magnitude = Mathf.Abs(rounded.x) + Mathf.Abs(rounded.y) + Mathf.Abs(rounded.z);
+            return magnitude == 1 &&
+                   (axis - (Vector3)rounded).sqrMagnitude <= GridAlignmentTolerance * GridAlignmentTolerance;
+        }
+    }
+}
