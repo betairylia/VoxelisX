@@ -8,6 +8,11 @@ using Voxelis.Utils;
 
 namespace Voxelis
 {
+    internal interface IVoxelRaycastTarget
+    {
+        bool IsSolid(int3 position);
+    }
+
     /// <summary>
     /// Performs voxel raycasting using the DDA (Digital Differential Analyzer) algorithm.
     /// This component casts a ray from the camera center and determines which voxel is being looked at,
@@ -21,6 +26,21 @@ namespace Voxelis
     [RequireComponent(typeof(Camera))]
     public class VoxelRayCast : MonoBehaviour
     {
+        private readonly struct EntityRaycastTarget : IVoxelRaycastTarget
+        {
+            private readonly VoxelEntity entity;
+
+            public EntityRaycastTarget(VoxelEntity entity)
+            {
+                this.entity = entity;
+            }
+
+            public bool IsSolid(int3 position)
+            {
+                return !entity.GetBlock(position).isEmpty;
+            }
+        }
+
         #region Inspector Fields
 
         /// <summary>
@@ -187,13 +207,31 @@ namespace Voxelis
         /// <param name="hitNormal">Output: the face normal of the hit</param>
         /// <param name="distance">Output: the distance to the hit</param>
         /// <returns>True if a solid voxel was hit</returns>
-        private bool RaycastVoxelEntity(
+        private static bool RaycastVoxelEntity(
             VoxelEntity entity,
             Ray ray,
             float maxDist,
             out int3 hitPosition,
             out int3 hitNormal,
             out float distance)
+        {
+            return RaycastVoxelGrid(
+                new EntityRaycastTarget(entity),
+                ray,
+                maxDist,
+                out hitPosition,
+                out hitNormal,
+                out distance);
+        }
+
+        internal static bool RaycastVoxelGrid<TTarget>(
+            TTarget target,
+            Ray ray,
+            float maxDist,
+            out int3 hitPosition,
+            out int3 hitNormal,
+            out float distance)
+            where TTarget : struct, IVoxelRaycastTarget
         {
             hitPosition = int3.zero;
             hitNormal = int3.zero;
@@ -202,6 +240,10 @@ namespace Voxelis
             // DDA initialization
             Vector3 origin = ray.origin;
             Vector3 direction = ray.direction.normalized;
+            if (direction.sqrMagnitude < 0.00000001f || maxDist < 0f)
+            {
+                return false;
+            }
 
             // Current voxel position
             int3 voxelPos = new int3(
@@ -217,6 +259,15 @@ namespace Voxelis
                 direction.z > 0 ? 1 : (direction.z < 0 ? -1 : 0)
             );
 
+            // A point on a grid plane belongs to the cell entered by the ray. floor() already
+            // chooses that cell for a positive step; a negative step needs the cell below it.
+            bool startsOnXBoundary = IsGridBoundary(origin.x) && step.x != 0;
+            bool startsOnYBoundary = IsGridBoundary(origin.y) && step.y != 0;
+            bool startsOnZBoundary = IsGridBoundary(origin.z) && step.z != 0;
+            if (startsOnXBoundary && step.x < 0) voxelPos.x--;
+            if (startsOnYBoundary && step.y < 0) voxelPos.y--;
+            if (startsOnZBoundary && step.z < 0) voxelPos.z--;
+
             // tDelta: how far along the ray we must move (in units of t) to cross one voxel boundary in each axis
             Vector3 tDelta = new Vector3(
                 Mathf.Abs(direction.x) > 0.0001f ? 1.0f / Mathf.Abs(direction.x) : float.MaxValue,
@@ -226,74 +277,81 @@ namespace Voxelis
 
             // tMax: t-value at which the ray crosses the next voxel boundary in each axis
             Vector3 tMax = new Vector3(
-                CalculateInitialTMax(origin.x, direction.x, step.x),
-                CalculateInitialTMax(origin.y, direction.y, step.y),
-                CalculateInitialTMax(origin.z, direction.z, step.z)
+                CalculateInitialTMax(origin.x, direction.x, step.x, voxelPos.x),
+                CalculateInitialTMax(origin.y, direction.y, step.y, voxelPos.y),
+                CalculateInitialTMax(origin.z, direction.z, step.z, voxelPos.z)
             );
 
             // Track which face we entered through (for normal calculation)
-            int3 lastStep = int3.zero;
+            int3 lastStep = SelectPrimaryStep(
+                direction,
+                step,
+                startsOnXBoundary,
+                startsOnYBoundary,
+                startsOnZBoundary);
+            float currentDistance = 0f;
 
-            // Maximum number of steps to prevent infinite loops
-            int maxSteps = Mathf.CeilToInt(maxDist) + 1;
+            // A diagonal ray crosses more than one voxel plane per unit of distance. Size the
+            // safety limit from all three direction components instead of distance alone.
+            float crossingsPerUnit = Mathf.Abs(direction.x) + Mathf.Abs(direction.y) + Mathf.Abs(direction.z);
+            int maxSteps = Mathf.CeilToInt(maxDist * crossingsPerUnit) + 3;
 
             // DDA main loop: step through voxels along the ray
             for (int step_count = 0; step_count < maxSteps; step_count++)
             {
                 // Check if current voxel is solid
-                Block block = entity.GetBlock(voxelPos);
-                if (!block.isEmpty)
+                if (target.IsSolid(voxelPos))
                 {
                     // Hit a solid block!
                     hitPosition = voxelPos;
+                    if (math.all(lastStep == int3.zero))
+                    {
+                        lastStep = SelectPrimaryStep(direction, step, true, true, true);
+                    }
                     hitNormal = -lastStep; // Normal points outward from the face we entered
-
-                    // Calculate accurate hit distance
-                    distance = CalculateHitDistance(origin, direction, voxelPos, lastStep);
+                    distance = currentDistance;
 
                     return true;
                 }
 
-                // Move to next voxel along the ray
-                // Choose the axis where we'll cross the boundary soonest
-                if (tMax.x < tMax.y)
+                float nextDistance = Mathf.Min(tMax.x, Mathf.Min(tMax.y, tMax.z));
+                if (nextDistance > maxDist)
                 {
-                    if (tMax.x < tMax.z)
-                    {
-                        // Step in X
-                        if (tMax.x > maxDist) break;
-                        voxelPos.x += step.x;
-                        tMax.x += tDelta.x;
-                        lastStep = new int3(step.x, 0, 0);
-                    }
-                    else
-                    {
-                        // Step in Z
-                        if (tMax.z > maxDist) break;
-                        voxelPos.z += step.z;
-                        tMax.z += tDelta.z;
-                        lastStep = new int3(0, 0, step.z);
-                    }
+                    break;
                 }
-                else
+
+                // Cross every plane reached at this distance. Stepping only one axis at an exact
+                // edge or corner makes the traversal inspect cells that the ray never enters.
+                bool crossX = SameTraversalDistance(tMax.x, nextDistance);
+                bool crossY = SameTraversalDistance(tMax.y, nextDistance);
+                bool crossZ = SameTraversalDistance(tMax.z, nextDistance);
+                float crossingDistance = nextDistance;
+                if (crossX) crossingDistance = Mathf.Max(crossingDistance, tMax.x);
+                if (crossY) crossingDistance = Mathf.Max(crossingDistance, tMax.y);
+                if (crossZ) crossingDistance = Mathf.Max(crossingDistance, tMax.z);
+                if (crossingDistance > maxDist)
                 {
-                    if (tMax.y < tMax.z)
-                    {
-                        // Step in Y
-                        if (tMax.y > maxDist) break;
-                        voxelPos.y += step.y;
-                        tMax.y += tDelta.y;
-                        lastStep = new int3(0, step.y, 0);
-                    }
-                    else
-                    {
-                        // Step in Z
-                        if (tMax.z > maxDist) break;
-                        voxelPos.z += step.z;
-                        tMax.z += tDelta.z;
-                        lastStep = new int3(0, 0, step.z);
-                    }
+                    break;
                 }
+                lastStep = SelectPrimaryStep(direction, step, crossX, crossY, crossZ);
+
+                if (crossX)
+                {
+                    voxelPos.x += step.x;
+                    tMax.x += tDelta.x;
+                }
+                if (crossY)
+                {
+                    voxelPos.y += step.y;
+                    tMax.y += tDelta.y;
+                }
+                if (crossZ)
+                {
+                    voxelPos.z += step.z;
+                    tMax.z += tDelta.z;
+                }
+
+                currentDistance = Mathf.Max(0f, crossingDistance);
             }
 
             return false;
@@ -305,60 +363,48 @@ namespace Voxelis
         /// </summary>
         /// <param name="origin">Ray origin coordinate on this axis</param>
         /// <param name="direction">Ray direction on this axis</param>
-        /// <param name="step">Step direction on this axis (-1 or 1)</param>
+        /// <param name="step">Step direction on this axis (-1, 0, or 1)</param>
+        /// <param name="voxelCoordinate">Current voxel coordinate on this axis</param>
         /// <returns>The initial tMax value</returns>
-        private float CalculateInitialTMax(float origin, float direction, int step)
+        private static float CalculateInitialTMax(float origin, float direction, int step, int voxelCoordinate)
         {
-            if (Mathf.Abs(direction) < 0.0001f)
+            if (step == 0 || Mathf.Abs(direction) < 0.0001f)
                 return float.MaxValue;
 
-            // Calculate which voxel boundary we're heading toward
-            float voxelBoundary;
-            if (step > 0)
-            {
-                // Moving positive: next boundary is at ceiling
-                voxelBoundary = Mathf.Ceil(origin);
-            }
-            else
-            {
-                // Moving negative: next boundary is at floor
-                voxelBoundary = Mathf.Floor(origin);
-            }
+            float voxelBoundary = step > 0 ? voxelCoordinate + 1 : voxelCoordinate;
 
             // Calculate t value to reach that boundary
             return (voxelBoundary - origin) / direction;
         }
 
-        /// <summary>
-        /// Calculates the accurate distance from ray origin to the hit point on a voxel face.
-        /// </summary>
-        /// <param name="origin">Ray origin</param>
-        /// <param name="direction">Ray direction (normalized)</param>
-        /// <param name="voxelPos">The voxel that was hit</param>
-        /// <param name="faceNormal">The normal of the face that was hit</param>
-        /// <returns>Distance along the ray to the hit point</returns>
-        private float CalculateHitDistance(Vector3 origin, Vector3 direction, int3 voxelPos, int3 faceNormal)
+        private static bool IsGridBoundary(float coordinate)
         {
-            // Calculate which face of the voxel was hit
-            Vector3 hitFaceCenter = voxelPos.ToVector3Int() + Vector3.one * 0.5f + (Vector3)faceNormal.ToVector3Int() * 0.5f;
+            return coordinate == Mathf.Floor(coordinate);
+        }
 
-            // Find the distance to the plane of that face
-            // Using the face normal and a point on the plane
-            float t;
-            if (faceNormal.x != 0)
-            {
-                t = (hitFaceCenter.x - origin.x) / direction.x;
-            }
-            else if (faceNormal.y != 0)
-            {
-                t = (hitFaceCenter.y - origin.y) / direction.y;
-            }
-            else
-            {
-                t = (hitFaceCenter.z - origin.z) / direction.z;
-            }
+        private static bool SameTraversalDistance(float a, float b)
+        {
+            // Camera and entity transforms lose a small amount of precision at large world
+            // coordinates. Treat crossings within one thousandth of a voxel as the same edge so
+            // a grazing ray does not flicker into a cell for a microscopic segment.
+            return Mathf.Abs(a - b) <= 0.001f;
+        }
 
-            return Mathf.Max(0, t);
+        private static int3 SelectPrimaryStep(
+            Vector3 direction,
+            int3 step,
+            bool includeX,
+            bool includeY,
+            bool includeZ)
+        {
+            float x = includeX ? Mathf.Abs(direction.x) : -1f;
+            float y = includeY ? Mathf.Abs(direction.y) : -1f;
+            float z = includeZ ? Mathf.Abs(direction.z) : -1f;
+
+            if (x >= y && x >= z && step.x != 0) return new int3(step.x, 0, 0);
+            if (y >= z && step.y != 0) return new int3(0, step.y, 0);
+            if (step.z != 0) return new int3(0, 0, step.z);
+            return int3.zero;
         }
 
         #endregion
