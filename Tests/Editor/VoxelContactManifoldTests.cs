@@ -422,7 +422,7 @@ namespace VoxelisX.Tests
         }
 
         [Test]
-        public void FlatPatch_OneFaceContactPerSlabVoxel()
+        public void FlatPatch_OneSourceCellKeepsEveryVoxelContact()
         {
             using var a = new VoxelBodyFixture();
             using var b = new VoxelBodyFixture();
@@ -445,19 +445,24 @@ namespace VoxelisX.Tests
             a.Build();
             b.Build();
 
-            // A 2x2 slab resting grid-aligned on a 4x4 floor. Canonical finite squares use
-            // half-open positive endpoints, so adjacent target squares do not duplicate seams.
+            // A 2x2 slab resting grid-aligned on a 4x4 floor. The slab's four centers form ONE
+            // square cell, so dedup leaves a single source rooted at its minimum corner. That one
+            // cell still owns all four of its corners: the voxels at its far rim root nothing after
+            // dedup, so no anchor claims those points and the cell keeps them. It therefore pairs
+            // with the aligned floor cell and the three forward ones, and the four contact points
+            // are exactly the four the four-voxel-source version produced.
             List<ParsedManifold> manifolds = Collide(
                 a, b,
                 new RigidTransform(quaternion.identity, new float3(1f, 1f, 1f)),
                 RigidTransform.identity,
                 out _);
 
-            Assert.That(manifolds.Count, Is.EqualTo(4), "One raw contact per slab voxel");
+            Assert.That(manifolds.Count, Is.EqualTo(4), "One raw contact per owned cell corner");
             foreach (ParsedManifold m in manifolds)
             {
                 Assert.That(math.distance(m.Header.Normal, new float3(0f, 1f, 0f)), Is.LessThan(Tolerance));
                 Assert.That(m.Points.Count, Is.EqualTo(1));
+                Assert.That(m.Points[0].Distance, Is.EqualTo(0f).Within(Tolerance));
             }
 
             List<ContactPoint> points = AllPoints(manifolds);
@@ -491,16 +496,19 @@ namespace VoxelisX.Tests
             a.Build();
             b.Build();
 
-            // A 10x10 slab on a 12x12 floor. Sparse key sourcing keeps its 36 boundary voxels;
-            // the 64 face-interior voxels do not become sources. Finite target squares provide
-            // the shared flat plane under each boundary key.
+            // A 10x10 slab on a 12x12 floor. The slab deduplicates to a 9x9 grid of square cells,
+            // and a cell sources only when it covers a sparse (Corner/Edge) voxel, which leaves the
+            // 32 cells of its boundary ring and drops the 49 interior ones. An interior ring cell
+            // hands its forward boundary to the next cell and contributes one contact; the 17 cells
+            // on the two maximum sides have no forward cell to hand it to, so they keep their far
+            // edges and contribute the rest. Finite target squares provide the shared flat plane.
             List<ParsedManifold> manifolds = Collide(
                 a, b,
                 new RigidTransform(quaternion.identity, new float3(1f, 1f, 1f)),
                 RigidTransform.identity,
                 out _);
 
-            Assert.That(manifolds.Count, Is.EqualTo(36), "Only sparse boundary keys support the patch");
+            Assert.That(manifolds.Count, Is.EqualTo(67), "Only the boundary ring of cells sources");
             foreach (ParsedManifold m in manifolds)
             {
                 Assert.That(m.Points.Count, Is.EqualTo(1));
@@ -508,7 +516,7 @@ namespace VoxelisX.Tests
                 Assert.That(m.Points[0].Distance, Is.EqualTo(0f).Within(Tolerance));
             }
 
-            // The corner contacts remain part of the sparse boundary support set.
+            // The support ring still reaches the slab's outer voxel centers on every side.
             List<ContactPoint> points = AllPoints(manifolds);
             Assert.That(HasPointNear(points, new float3(1.5f, 1f, 1.5f)), Is.True);
             Assert.That(HasPointNear(points, new float3(10.5f, 1f, 1.5f)), Is.True);

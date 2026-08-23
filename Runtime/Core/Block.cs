@@ -116,15 +116,98 @@ namespace Voxelis
         }
     }
 
+    /// <summary>
+    /// Per-voxel physics topology: which finite cells of the voxel-center cubical complex are
+    /// ROOTED at this voxel and survive dedup. Occupied voxel centers form the complex: two
+    /// adjacent centers span a segment, four a square, eight a cube. A cell is rooted at its
+    /// minimum-corner voxel and spans one unit along each axis of its axis mask.
+    /// </summary>
+    /// <remarks>
+    /// A cell is dropped when a larger existing cell contains it. Every container of a cell rooted
+    /// at <c>r</c> is itself rooted in the backward octet <c>r - {0,1}^3</c>, so the test reduces to
+    /// single-axis growth: cell <c>(r, m)</c> survives when, for every axis <c>a</c> outside
+    /// <c>m</c>, neither <c>(r, m+a)</c> nor <c>(r-a, m+a)</c> is fully occupied. The union of the
+    /// surviving cells still covers every occupied voxel, so the collision surface is unchanged and
+    /// only redundant contact sources are removed.
+    /// </remarks>
     public struct PhysicsInfo : IEquatable<PhysicsInfo>
     {
-        // Bits 0-6 contain occupancy of the seven positive neighbors in the 2x2x2 octet rooted
-        // at this block: +X, +Y, +Z, +XY, +XZ, +YZ and +XYZ. Bit 7 marks a block whose six face
-        // neighbors are solid. Physics-key state is stored only in this slot's one-bit aux mask.
+        /// <summary>
+        /// One bit per surviving cell rooted here. Bits 0-6 keep the positive octet order
+        /// (+X, +Y, +Z, +XY, +XZ, +YZ, +XYZ); bit 7 marks the bare point. Zero means the voxel
+        /// roots nothing and physics must not use it as a source. Physics-key state is stored only
+        /// in this slot's one-bit aux mask.
+        /// </summary>
         public byte data;
 
-        public byte ForwardOccupancy => (byte)(data & 0x7f);
-        public bool IsInterior => (data & 0x80) != 0;
+        public const int BitEdgeX = 0;
+        public const int BitEdgeY = 1;
+        public const int BitEdgeZ = 2;
+        public const int BitFaceXY = 3;
+        public const int BitFaceXZ = 4;
+        public const int BitFaceYZ = 5;
+        public const int BitCube = 6;
+        public const int BitPoint = 7;
+
+        /// <summary>Number of distinct cells a single voxel can root.</summary>
+        public const int FeatureBitCount = 8;
+
+        // Nibble i of each constant maps one direction of the bit <-> axis-mask pair. Axis masks use
+        // X=1, Y=2, Z=4, so the two orders differ and a literal table is the cheapest Burst-safe map.
+        private const uint k_AxisMaskByFeatureBit = 0x07653421u;
+        private const uint k_FeatureBitByAxisMask = 0x65423107u;
+
+        /// <summary>Axis mask (X=1, Y=2, Z=4) of the cell stored in <paramref name="featureBit"/>.</summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static int AxisMaskFromFeatureBit(int featureBit)
+        {
+            return (int)((k_AxisMaskByFeatureBit >> (featureBit << 2)) & 0xFu);
+        }
+
+        /// <summary>Bit index holding the cell with the given axis mask (X=1, Y=2, Z=4).</summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static int FeatureBitFromAxisMask(int axisMask)
+        {
+            return (int)((k_FeatureBitByAxisMask >> (axisMask << 2)) & 0xFu);
+        }
+
+        // Bit i is set when the cell in feature bit i spans every axis in mask i. Used to ask
+        // "does this voxel root a cell that covers these axes", which is how a contact point on a
+        // cell's positive boundary finds out whether its canonical owner still exists after dedup.
+        private const uint k_CoverMaskLo = 0x486A59FFu;   // axes none, X, Y, XY
+        private const uint k_CoverMaskHi = 0x40605074u;   // axes Z, XZ, YZ, XYZ
+
+        /// <summary>
+        /// Feature-bit mask of the cells whose axis mask contains every axis in
+        /// <paramref name="axes"/> (X=1, Y=2, Z=4).
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static byte CoverMaskForAxes(int axes)
+        {
+            return axes < 4
+                ? (byte)((k_CoverMaskLo >> (axes << 3)) & 0xFFu)
+                : (byte)((k_CoverMaskHi >> ((axes - 4) << 3)) & 0xFFu);
+        }
+
+        /// <summary>
+        /// True when a cell rooted here spans every axis in <paramref name="axes"/>, so this voxel
+        /// can own a contact point that is interior along those axes.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool RootsCellCovering(int axes)
+        {
+            return (data & CoverMaskForAxes(axes)) != 0;
+        }
+
+        /// <summary>
+        /// True when this voxel roots no cell at all, so physics must skip it as a contact source.
+        /// Every cell it would root is contained in one rooted at a backward neighbor, which carries
+        /// the same geometry. Air blocks read as true as well.
+        /// </summary>
+        public bool IsInterior => data == 0;
+
+        /// <summary>True when the bare point survives, i.e. no face neighbor is occupied.</summary>
+        public bool HasPointFeature => (data & (1 << BitPoint)) != 0;
 
         public bool Equals(PhysicsInfo other)
         {

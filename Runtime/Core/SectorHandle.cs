@@ -103,6 +103,23 @@ namespace Voxelis
         }
 
         /// <summary>
+        /// Gets the aux slice of the brick containing the given block coordinates, or null.
+        /// </summary>
+        public void* GetBrickAuxPtrAtBlock(SectorSlotId slotId, int x, int y, int z)
+        {
+            return _ptr->GetBrickAuxPtrAtBlock(slotId, x, y, z);
+        }
+
+        /// <summary>
+        /// Gets the voxel storage of the brick containing the given block coordinates, or null.
+        /// </summary>
+        public T* GetBrickPtrAtBlock<T>(SectorSlotId slotId, int x, int y, int z)
+            where T : unmanaged, IEquatable<T>
+        {
+            return _ptr->GetBrickPtrAtBlock<T>(slotId, x, y, z);
+        }
+
+        /// <summary>
         /// Returns true if the handle is valid (not null).
         /// </summary>
         public bool IsValid => _ptr != null;

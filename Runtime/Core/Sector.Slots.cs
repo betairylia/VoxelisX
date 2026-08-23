@@ -367,6 +367,31 @@ namespace Voxelis
         }
 
         /// <summary>
+        /// Raw pointer to the aux slice of the brick that CONTAINS the given block coordinates, or
+        /// null when the brick is not allocated or the slot carries no aux. Block-coordinate sibling
+        /// of <see cref="GetBrickAuxPtr(SectorSlotId, short)"/>, for bulk consumers that walk a voxel
+        /// neighborhood instead of a brick list.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void* GetBrickAuxPtrAtBlock(SectorSlotId slotId, int x, int y, int z)
+        {
+            int brickIdx = ToBrickIdx(x >> SHIFT_IN_BLOCKS, y >> SHIFT_IN_BLOCKS, z >> SHIFT_IN_BLOCKS);
+            return GetBrickAuxPtr(slotId, brickMap.indices[brickIdx]);
+        }
+
+        /// <summary>
+        /// Raw pointer to the voxel storage of the brick that CONTAINS the given block coordinates,
+        /// or null when the brick is not allocated or the slot has no storage.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public T* GetBrickPtrAtBlock<T>(SectorSlotId slotId, int x, int y, int z)
+            where T : unmanaged, IEquatable<T>
+        {
+            int brickIdx = ToBrickIdx(x >> SHIFT_IN_BLOCKS, y >> SHIFT_IN_BLOCKS, z >> SHIFT_IN_BLOCKS);
+            return GetBrick<T>(slotId, brickMap.indices[brickIdx]);
+        }
+
+        /// <summary>
         /// Writes a value into a brick's aux slice at <paramref name="offsetInBytes"/>. The aux
         /// buffer must already exist (see <see cref="EnsureAuxAllocated"/>); unlike the voxel setters
         /// this never lazily allocates and does NOT mark the brick dirty.

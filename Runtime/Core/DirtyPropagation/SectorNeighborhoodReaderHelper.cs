@@ -1,3 +1,4 @@
+using System;
 using Unity.Mathematics;
 using UnityEngine;
 
@@ -153,6 +154,95 @@ namespace Voxelis
         public bool BlockTest(int3 pos) => BlockTest(pos.x, pos.y, pos.z);
 
         /// <summary>
+        /// Gets the aux slice of the brick containing the specified block coordinates, or null when
+        /// the brick is missing, the slot carries no aux, or the neighbor sector is absent. Bulk
+        /// consumers use this to read a whole brick's derived bitmask (e.g. the Block slot's
+        /// occupancy mask) without a per-voxel lookup.
+        /// </summary>
+        public void* GetBrickAuxPtrAtBlock(SectorSlotId slotId, int x, int y, int z)
+        {
+            if (x >= 0 && x < Sector.SECTOR_SIZE_IN_BLOCKS &&
+                y >= 0 && y < Sector.SECTOR_SIZE_IN_BLOCKS &&
+                z >= 0 && z < Sector.SECTOR_SIZE_IN_BLOCKS)
+            {
+                return centerSector.GetBrickAuxPtrAtBlock(slotId, x, y, z);
+            }
+
+            if (!TryGetNeighbor(x, y, z, out SectorHandle neighbor))
+            {
+                return null;
+            }
+
+            return neighbor.GetBrickAuxPtrAtBlock(
+                slotId,
+                ModuloWrap(x, Sector.SECTOR_SIZE_IN_BLOCKS),
+                ModuloWrap(y, Sector.SECTOR_SIZE_IN_BLOCKS),
+                ModuloWrap(z, Sector.SECTOR_SIZE_IN_BLOCKS));
+        }
+
+        /// <summary>
+        /// Gets the aux slice of the brick containing the specified block coordinates.
+        /// </summary>
+        public void* GetBrickAuxPtrAtBlock(SectorSlotId slotId, int3 pos)
+            => GetBrickAuxPtrAtBlock(slotId, pos.x, pos.y, pos.z);
+
+        /// <summary>
+        /// Gets the voxel storage of the brick containing the specified block coordinates, or null
+        /// when the brick is missing or the neighbor sector is absent.
+        /// </summary>
+        public T* GetBrickPtrAtBlock<T>(SectorSlotId slotId, int x, int y, int z)
+            where T : unmanaged, IEquatable<T>
+        {
+            if (x >= 0 && x < Sector.SECTOR_SIZE_IN_BLOCKS &&
+                y >= 0 && y < Sector.SECTOR_SIZE_IN_BLOCKS &&
+                z >= 0 && z < Sector.SECTOR_SIZE_IN_BLOCKS)
+            {
+                return centerSector.GetBrickPtrAtBlock<T>(slotId, x, y, z);
+            }
+
+            if (!TryGetNeighbor(x, y, z, out SectorHandle neighbor))
+            {
+                return null;
+            }
+
+            return neighbor.GetBrickPtrAtBlock<T>(
+                slotId,
+                ModuloWrap(x, Sector.SECTOR_SIZE_IN_BLOCKS),
+                ModuloWrap(y, Sector.SECTOR_SIZE_IN_BLOCKS),
+                ModuloWrap(z, Sector.SECTOR_SIZE_IN_BLOCKS));
+        }
+
+        /// <summary>
+        /// Gets the voxel storage of the brick containing the specified block coordinates.
+        /// </summary>
+        public T* GetBrickPtrAtBlock<T>(SectorSlotId slotId, int3 pos)
+            where T : unmanaged, IEquatable<T>
+            => GetBrickPtrAtBlock<T>(slotId, pos.x, pos.y, pos.z);
+
+        /// <summary>
+        /// Resolves the neighbor sector owning out-of-range coordinates. Returns false when the
+        /// offset has no neighbor entry or the neighbor is absent.
+        /// </summary>
+        private bool TryGetNeighbor(int x, int y, int z, out SectorHandle neighbor)
+        {
+            int3 sectorOffset = new int3(
+                x < 0 ? -1 : (x >= Sector.SECTOR_SIZE_IN_BLOCKS ? 1 : 0),
+                y < 0 ? -1 : (y >= Sector.SECTOR_SIZE_IN_BLOCKS ? 1 : 0),
+                z < 0 ? -1 : (z >= Sector.SECTOR_SIZE_IN_BLOCKS ? 1 : 0)
+            );
+
+            int neighborIdx = FindNeighborIndex(sectorOffset);
+            if (neighborIdx < 0 || !neighbors.Neighbors[neighborIdx].IsValid)
+            {
+                neighbor = default;
+                return false;
+            }
+
+            neighbor = neighbors.Neighbors[neighborIdx];
+            return true;
+        }
+
+        /// <summary>
         /// Gets a pointer to the brick containing the specified block coordinates.
         /// Automatically accesses neighboring sectors if coordinates fall outside bounds.
         /// </summary>
@@ -161,36 +251,7 @@ namespace Voxelis
         /// <param name="z">Z coordinate (can be negative or >= 128)</param>
         /// <returns>Pointer to the brick data, or null if brick doesn't exist or neighbor is invalid</returns>
         public Block* GetBrick(int x, int y, int z)
-        {
-            // Fast path: coordinates within center sector bounds
-            if (x >= 0 && x < Sector.SECTOR_SIZE_IN_BLOCKS &&
-                y >= 0 && y < Sector.SECTOR_SIZE_IN_BLOCKS &&
-                z >= 0 && z < Sector.SECTOR_SIZE_IN_BLOCKS)
-            {
-                return centerSector.GetBrick(x, y, z);
-            }
-
-            // Calculate which neighbor sector to access
-            int3 sectorOffset = new int3(
-                x < 0 ? -1 : (x >= Sector.SECTOR_SIZE_IN_BLOCKS ? 1 : 0),
-                y < 0 ? -1 : (y >= Sector.SECTOR_SIZE_IN_BLOCKS ? 1 : 0),
-                z < 0 ? -1 : (z >= Sector.SECTOR_SIZE_IN_BLOCKS ? 1 : 0)
-            );
-
-            // Find the neighbor index for this offset
-            int neighborIdx = FindNeighborIndex(sectorOffset);
-            if (neighborIdx < 0 || !neighbors.Neighbors[neighborIdx].IsValid)
-            {
-                return null;
-            }
-
-            // Transform coordinates to neighbor's local space
-            int localX = ModuloWrap(x, Sector.SECTOR_SIZE_IN_BLOCKS);
-            int localY = ModuloWrap(y, Sector.SECTOR_SIZE_IN_BLOCKS);
-            int localZ = ModuloWrap(z, Sector.SECTOR_SIZE_IN_BLOCKS);
-
-            return neighbors.Neighbors[neighborIdx].GetBrick(localX, localY, localZ);
-        }
+            => GetBrickPtrAtBlock<Block>(SectorSlotId.Block, x, y, z);
 
         /// <summary>
         /// Gets a pointer to the brick containing the specified block coordinates.
