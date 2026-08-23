@@ -12,22 +12,31 @@ namespace Voxelis
         /// Recomputes the per-block <see cref="PhysicsInfo"/> slot for every sector that has pending
         /// require-update flags matching <paramref name="dirtyMask"/>. The slot encodes, for each
         /// solid block, the cells of the voxel-center cubical complex that are rooted at that block
-        /// and are not contained in a cell rooted at a backward neighbor. The slot's aux bitmap is
-        /// rebuilt in the same pass and marks the physics-key roots: a root is a key when one of its
-        /// surviving cells covers a sparse (Corner/Edge) voxel. Cross-sector topology is resolved
-        /// through neighbor handles.
+        /// and are COLLISION-ACTIVE. The slot's aux bitmap is rebuilt in the same pass and marks the
+        /// physics-key roots: a root is a key when it carries an active point or an active edge.
+        /// Cross-sector topology is resolved through neighbor handles.
         /// </summary>
         /// <remarks>
         /// Gating uses the require-update (read) buffers populated by dirty propagation, mirroring the
         /// sector renderer. The brick-level <c>GeometryWithLocalNeighbor</c> flag already covers bricks
         /// adjacent to a geometry change, so boundary blocks whose exposure flipped are re-evaluated too.
         ///
+        /// The key rule is deliberately ROOT-LOCAL. The previous rule ("a root is a key when one of
+        /// its cells covers a sparse seed voxel") was a two-step dependency - root, covered voxel,
+        /// that voxel's own neighbor - which pushed the read window two voxels past the brick. The
+        /// per-voxel propagation table in <c>NeighborhoodSettings.s_voxelPropagationMasks</c> only
+        /// reaches ONE voxel, so a change at the neighbor brick's local index 1 set no direction bit
+        /// towards this brick and this brick never refreshed. That silently froze key bits at the
+        /// brick seam, and the harmful direction (clearing a voxel so a key should appear) dropped a
+        /// contact source. A root-local rule keeps the window inside the one-voxel reach the
+        /// propagation table guarantees, so the hole cannot recur.
+        ///
         /// Every output is derived from block occupancy alone, never from another brick's
         /// <see cref="PhysicsInfo"/> or key bits. That matters because those are rewritten in place:
-        /// a brick that is not flagged this update still holds the previous update's DEDUPED bytes
-        /// and FINAL key bits, so reading them as if they were raw occupancy or seed keys would mix
-        /// two representations and silently drop keys near a dirty-set boundary. Occupancy is stable
-        /// input for the whole refresh, so one parallel pass per brick is race free and deterministic.
+        /// a brick that is not flagged this update still holds the previous update's ACTIVE bytes
+        /// and key bits, so reading them as if they were raw occupancy would mix two representations.
+        /// Occupancy is stable input for the whole refresh, so one parallel pass per brick is race
+        /// free and deterministic.
         /// </remarks>
         private unsafe void RefreshPhysicsSlot(
             LockableUnsafeHashMap<int3, SectorHandle> sectors,
@@ -117,11 +126,11 @@ namespace Voxelis
         /// </summary>
         /// <remarks>
         /// Per brick the job first loads an occupancy window covering the brick plus a one-voxel halo
-        /// on the low side and a two-voxel halo on the high side. The window is stored as one 11-bit
-        /// row of X per (Y, Z) pair, so cell existence, dedup, seed keys and key coverage all become
-        /// AND/OR/shift chains over eight voxels at a time. The window is filled from the Block slot's
-        /// per-brick occupancy bitmask (rebuilt by <c>RefreshNonEmptyMask</c> immediately before this
-        /// pass), which costs 27 brick lookups per brick instead of one lookup per neighbor test.
+        /// on each side. The window is stored as one 10-bit row of X per (Y, Z) pair, so cell
+        /// existence, activity and the key mask all become AND/OR/shift chains over eight voxels at a
+        /// time. The window is filled from the Block slot's per-brick occupancy bitmask (rebuilt by
+        /// <c>RefreshNonEmptyMask</c> immediately before this pass), which costs 27 brick lookups per
+        /// brick instead of one lookup per neighbor test.
         /// </remarks>
         [BurstCompile]
         private struct ComputePhysicsSlotJob : IJobParallelFor
@@ -129,18 +138,21 @@ namespace Voxelis
             [ReadOnly] public NativeArray<PhysicsSlotInput> inputs;
             public ushort dirtyMask;
 
-            // Window bounds in brick-local block coordinates. The low end reaches -1 because a cell
-            // rooted one voxel back can absorb a cell rooted at 0. The high end reaches +1 past the
-            // brick because a root at 7 covers the voxel at 8, and that voxel's seed-key state needs
-            // its own neighbor at 9.
+            // Window bounds in brick-local block coordinates. The low end reaches -1 because the cell
+            // grown one voxel back is what a cell competes against for its negative directions. The
+            // high end reaches +1 past the brick because a cube rooted at 7 spans the voxel at 8.
+            //
+            // ONE voxel each way is the whole reach, and that is load bearing: the per-voxel
+            // propagation table only marks neighbor bricks within one voxel, so a window that reached
+            // +2 would read voxels whose edits never flag this brick. Do not widen this without
+            // widening s_voxelPropagationMasks to match.
             private const int WindowLow = -1;
-            private const int WindowHigh = Sector.SIZE_IN_BLOCKS + 1;
+            private const int WindowHigh = Sector.SIZE_IN_BLOCKS;
             private const int WindowSpan = WindowHigh - WindowLow + 1;
             private const int WindowRows = WindowSpan * WindowSpan;
 
-            // Highest root coordinate, and highest coordinate a root's cells can cover.
+            // Highest root coordinate.
             private const int RootHigh = Sector.SIZE_IN_BLOCKS - 1;
-            private const int CoveredHigh = Sector.SIZE_IN_BLOCKS;
 
             // Bit b of a window row holds the occupancy of x = b - 1.
             private const int RowBitOrigin = -WindowLow;
@@ -166,8 +178,7 @@ namespace Voxelis
                 Block** brickBlocks = stackalloc Block*[NeighborBrickCount];
                 uint* occupancyRows = stackalloc uint[WindowRows];
                 uint* cellRows = stackalloc uint[PhysicsInfo.FeatureBitCount * WindowRows];
-                uint* seedKeyRows = stackalloc uint[WindowRows];
-                uint* survivingRows = stackalloc uint[PhysicsInfo.FeatureBitCount];
+                uint* activeRows = stackalloc uint[PhysicsInfo.FeatureBitCount];
 
                 foreach (SectorNonEmptyBrickEnumerator.BrickRef brickRef in sector.EnumerateNonEmptyBricks())
                 {
@@ -191,8 +202,7 @@ namespace Voxelis
                     LoadNeighborBricks(ref helper, brickBlockPos, brickMasks, brickBlocks);
                     LoadOccupancyWindow(brickMasks, brickBlocks, occupancyRows);
                     ComputeCellRows(occupancyRows, cellRows);
-                    ComputeSeedKeyRows(occupancyRows, seedKeyRows);
-                    WriteBrick(cellRows, seedKeyRows, survivingRows, physBrick, physicsKeyMask);
+                    WriteBrick(cellRows, activeRows, physBrick, physicsKeyMask);
                 }
             }
 
@@ -264,7 +274,9 @@ namespace Voxelis
 
             /// <summary>
             /// Fills the occupancy window. Each row splices the last bit of the -X brick, all eight
-            /// bits of the centre brick and the first two bits of the +X brick.
+            /// bits of the centre brick and the first bit of the +X brick. The +X brick's remaining
+            /// bits land above the window and are simply unused; they hold correct occupancy, so a
+            /// shift that reaches them cannot read stale data.
             /// </summary>
             private static unsafe void LoadOccupancyWindow(
                 ulong** brickMasks, Block** brickBlocks, uint* occupancyRows)
@@ -295,7 +307,7 @@ namespace Voxelis
             /// Step 1: existence of every cell of the complex, indexed by axis mask (X=1, Y=2, Z=4).
             /// A cell exists when all of its corner voxels are occupied, so each mask is an AND of
             /// the rows and shifts its axes select. Rows are produced for every root a brick voxel
-            /// can dedup against, which includes one row back on Y and Z.
+            /// competes against, which includes one row back on Y and Z.
             /// </summary>
             private static unsafe void ComputeCellRows(uint* occupancyRows, uint* cellRows)
             {
@@ -327,42 +339,20 @@ namespace Voxelis
             }
 
             /// <summary>
-            /// Step 1 (keys): the sparse seed set. A voxel seeds a key unless two or more axes have
-            /// both face neighbors occupied, which is the Corner/Edge test the sparse contact source
-            /// has always used. Seeds are produced for every voxel a brick root can cover, so the
-            /// rows reach one past the brick on Y and Z.
+            /// Step 2: keeps only the cells that are collision-active. A cell that can grow along
+            /// axis <c>a</c> gives every direction with a positive <c>+a</c> component to the grown
+            /// cell rooted here, and every direction with a positive <c>-a</c> component to the grown
+            /// cell rooted one voxel back. Both together leave only a zero-area slice, so the cell
+            /// survives exactly when at least one of the two grown cells is missing.
+            /// <para>
+            /// This is the old containment rule with AND in place of OR: dedup dropped a cell when
+            /// EITHER grown cell existed, activity drops it only when BOTH do. The cube has no axis
+            /// to grow along, so it is always active; it is a volume cell and the surface path
+            /// excludes it. Results are indexed by <see cref="PhysicsInfo"/> feature bit.
+            /// </para>
             /// </summary>
-            private static unsafe void ComputeSeedKeyRows(uint* occupancyRows, uint* seedKeyRows)
-            {
-                for (int z = 0; z <= CoveredHigh; z++)
-                {
-                    for (int y = 0; y <= CoveredHigh; y++)
-                    {
-                        int row = RowIndex(y, z);
-                        uint here = occupancyRows[row];
-
-                        uint surroundedX = (here >> 1) & (here << 1);
-                        uint surroundedY = occupancyRows[RowIndex(y + 1, z)] &
-                                           occupancyRows[RowIndex(y - 1, z)];
-                        uint surroundedZ = occupancyRows[RowIndex(y, z + 1)] &
-                                           occupancyRows[RowIndex(y, z - 1)];
-
-                        uint twoOrMore = (surroundedX & surroundedY) |
-                                         (surroundedX & surroundedZ) |
-                                         (surroundedY & surroundedZ);
-                        seedKeyRows[row] = here & ~twoOrMore;
-                    }
-                }
-            }
-
-            /// <summary>
-            /// Step 2: drops every cell contained in a larger existing cell. Containers of a cell
-            /// rooted at r are always rooted inside r - {0,1}^3, so growing the mask by one axis and
-            /// testing both the cell here and the one rooted one voxel back on that axis is exact.
-            /// Results are indexed by <see cref="PhysicsInfo"/> feature bit, ready to pack.
-            /// </summary>
-            private static unsafe void ComputeSurvivingRows(
-                uint* cellRows, int y, int z, uint* survivingRows)
+            private static unsafe void ComputeActiveRows(
+                uint* cellRows, int y, int z, uint* activeRows)
             {
                 int row = RowIndex(y, z);
                 int rowBackY = RowIndex(y - 1, z);
@@ -370,55 +360,46 @@ namespace Voxelis
 
                 for (int axisMask = 0; axisMask < PhysicsInfo.FeatureBitCount; axisMask++)
                 {
-                    uint grown = 0u;
+                    uint covered = 0u;
                     if ((axisMask & 1) == 0)
                     {
                         // One voxel back on X is one bit up in the row.
                         uint grownX = cellRows[(axisMask | 1) * WindowRows + row];
-                        grown |= grownX | (grownX << 1);
+                        covered |= grownX & (grownX << 1);
                     }
                     if ((axisMask & 2) == 0)
                     {
-                        grown |= cellRows[(axisMask | 2) * WindowRows + row] |
-                                 cellRows[(axisMask | 2) * WindowRows + rowBackY];
+                        covered |= cellRows[(axisMask | 2) * WindowRows + row] &
+                                   cellRows[(axisMask | 2) * WindowRows + rowBackY];
                     }
                     if ((axisMask & 4) == 0)
                     {
-                        grown |= cellRows[(axisMask | 4) * WindowRows + row] |
-                                 cellRows[(axisMask | 4) * WindowRows + rowBackZ];
+                        covered |= cellRows[(axisMask | 4) * WindowRows + row] &
+                                   cellRows[(axisMask | 4) * WindowRows + rowBackZ];
                     }
 
-                    survivingRows[PhysicsInfo.FeatureBitFromAxisMask(axisMask)] =
-                        cellRows[axisMask * WindowRows + row] & ~grown;
+                    activeRows[PhysicsInfo.FeatureBitFromAxisMask(axisMask)] =
+                        cellRows[axisMask * WindowRows + row] & ~covered;
                 }
             }
 
             /// <summary>
-            /// Steps 3 and 4: a root is a key when one of its surviving cells covers a seed voxel.
-            /// Coverage of a cell is the OR of the seed rows its axes reach, so a root with no
-            /// surviving cell can never be marked and needs no separate removal pass.
+            /// Step 3: a root is a key when it carries an active point or an active edge. Every
+            /// permitted feature pair (vertex-vertex, vertex-edge, vertex-face, edge-edge) has a
+            /// vertex or an edge on at least one side, so these roots are exactly the contact
+            /// sources; a face-only root is always the target of a vertex.
+            /// <para>
+            /// Root-local by design. Deriving the key from cells covering a neighboring seed voxel
+            /// would reach two voxels past the brick, which is one more than dirty propagation
+            /// guarantees.
+            /// </para>
             /// </summary>
-            private static unsafe uint ComputeKeyRow(
-                uint* seedKeyRows, uint* survivingRows, int y, int z)
+            private static unsafe uint ComputeKeyRow(uint* activeRows)
             {
-                uint here = seedKeyRows[RowIndex(y, z)];
-                uint aheadY = seedKeyRows[RowIndex(y + 1, z)];
-                uint aheadZ = seedKeyRows[RowIndex(y, z + 1)];
-                uint aheadYZ = seedKeyRows[RowIndex(y + 1, z + 1)];
-
-                uint coverY = here | aheadY;
-                uint coverZ = here | aheadZ;
-                uint coverYZ = coverY | aheadZ | aheadYZ;
-
-                // One voxel ahead on X is one bit down in the row.
-                return (survivingRows[PhysicsInfo.BitPoint] & here) |
-                       (survivingRows[PhysicsInfo.BitEdgeX] & (here | (here >> 1))) |
-                       (survivingRows[PhysicsInfo.BitEdgeY] & coverY) |
-                       (survivingRows[PhysicsInfo.BitEdgeZ] & coverZ) |
-                       (survivingRows[PhysicsInfo.BitFaceXY] & (coverY | (coverY >> 1))) |
-                       (survivingRows[PhysicsInfo.BitFaceXZ] & (coverZ | (coverZ >> 1))) |
-                       (survivingRows[PhysicsInfo.BitFaceYZ] & coverYZ) |
-                       (survivingRows[PhysicsInfo.BitCube] & (coverYZ | (coverYZ >> 1)));
+                return activeRows[PhysicsInfo.BitPoint] |
+                       activeRows[PhysicsInfo.BitEdgeX] |
+                       activeRows[PhysicsInfo.BitEdgeY] |
+                       activeRows[PhysicsInfo.BitEdgeZ];
             }
 
             /// <summary>
@@ -427,8 +408,7 @@ namespace Voxelis
             /// </summary>
             private static unsafe void WriteBrick(
                 uint* cellRows,
-                uint* seedKeyRows,
-                uint* survivingRows,
+                uint* activeRows,
                 PhysicsInfo* physBrick,
                 ulong* physicsKeyMask)
             {
@@ -437,8 +417,8 @@ namespace Voxelis
                     ulong keyWord = 0ul;
                     for (int y = 0; y < Sector.SIZE_IN_BLOCKS; y++)
                     {
-                        ComputeSurvivingRows(cellRows, y, z, survivingRows);
-                        uint keyRow = ComputeKeyRow(seedKeyRows, survivingRows, y, z);
+                        ComputeActiveRows(cellRows, y, z, activeRows);
+                        uint keyRow = ComputeKeyRow(activeRows);
 
                         int baseIdx = Sector.ToBlockIdx(0, y, z);
                         for (int x = 0; x < Sector.SIZE_IN_BLOCKS; x++)
@@ -447,7 +427,7 @@ namespace Voxelis
                             uint data = 0u;
                             for (int feature = 0; feature < PhysicsInfo.FeatureBitCount; feature++)
                             {
-                                data |= ((survivingRows[feature] >> bit) & 1u) << feature;
+                                data |= ((activeRows[feature] >> bit) & 1u) << feature;
                             }
                             physBrick[baseIdx + x] = new PhysicsInfo { data = (byte)data };
                         }

@@ -204,6 +204,36 @@ namespace VoxelisX.Tests
             return false;
         }
 
+        /// <summary>
+        /// Number of geometrically distinct contact points. v1 of the active-feature narrowphase
+        /// runs with seam ownership off, so one witness on a shared cell boundary is reported once
+        /// per cell that touches it. The distinct count is the physically meaningful number; the raw
+        /// count is what the merging stage has to reduce.
+        /// </summary>
+        static int DistinctPointCount(List<ContactPoint> points, float tolerance = 1e-3f)
+        {
+            var distinct = new List<float3>();
+            foreach (ContactPoint point in points)
+            {
+                bool seen = false;
+                foreach (float3 existing in distinct)
+                {
+                    if (math.all(math.abs(existing - point.Position) < tolerance))
+                    {
+                        seen = true;
+                        break;
+                    }
+                }
+
+                if (!seen)
+                {
+                    distinct.Add(point.Position);
+                }
+            }
+
+            return distinct.Count;
+        }
+
         static float MinimumDistance(List<ParsedManifold> manifolds)
         {
             float minimum = float.MaxValue;
@@ -445,19 +475,20 @@ namespace VoxelisX.Tests
             a.Build();
             b.Build();
 
-            // A 2x2 slab resting grid-aligned on a 4x4 floor. The slab's four centers form ONE
-            // square cell, so dedup leaves a single source rooted at its minimum corner. That one
-            // cell still owns all four of its corners: the voxels at its far rim root nothing after
-            // dedup, so no anchor claims those points and the cell keeps them. It therefore pairs
-            // with the aligned floor cell and the three forward ones, and the four contact points
-            // are exactly the four the four-voxel-source version produced.
+            // A 2x2 slab resting grid-aligned on a 4x4 floor. Every one of the slab's four voxels is
+            // a geometric corner of the sheet, so each roots an active point and sources one
+            // vertex-face pair against the floor. The slab's own square and rim edges pair with
+            // nothing: face-face and edge-face are not dispatched, and the floor's rim edges are a
+            // voxel away.
+            //
+            // Each slab corner sits exactly on the shared corner of four floor tiles, and with seam
+            // ownership off all four claim it, so the four physical contacts arrive four times each.
             List<ParsedManifold> manifolds = Collide(
                 a, b,
                 new RigidTransform(quaternion.identity, new float3(1f, 1f, 1f)),
                 RigidTransform.identity,
                 out _);
 
-            Assert.That(manifolds.Count, Is.EqualTo(4), "One raw contact per owned cell corner");
             foreach (ParsedManifold m in manifolds)
             {
                 Assert.That(math.distance(m.Header.Normal, new float3(0f, 1f, 0f)), Is.LessThan(Tolerance));
@@ -466,6 +497,11 @@ namespace VoxelisX.Tests
             }
 
             List<ContactPoint> points = AllPoints(manifolds);
+            Assert.That(DistinctPointCount(points), Is.EqualTo(4),
+                "One physical contact per slab corner");
+            Assert.That(manifolds.Count, Is.EqualTo(16),
+                "Four floor tiles meet at each corner and seam ownership is off in v1");
+
             Assert.That(HasPointNear(points, new float3(1.5f, 1f, 1.5f)), Is.True);
             Assert.That(HasPointNear(points, new float3(2.5f, 1f, 1.5f)), Is.True);
             Assert.That(HasPointNear(points, new float3(1.5f, 1f, 2.5f)), Is.True);
@@ -496,19 +532,22 @@ namespace VoxelisX.Tests
             a.Build();
             b.Build();
 
-            // A 10x10 slab on a 12x12 floor. The slab deduplicates to a 9x9 grid of square cells,
-            // and a cell sources only when it covers a sparse (Corner/Edge) voxel, which leaves the
-            // 32 cells of its boundary ring and drops the 49 interior ones. An interior ring cell
-            // hands its forward boundary to the next cell and contributes one contact; the 17 cells
-            // on the two maximum sides have no forward cell to hand it to, so they keep their far
-            // edges and contribute the rest. Finite target squares provide the shared flat plane.
+            // A 10x10 slab on a 12x12 floor, the case the whole scheme exists for.
+            //
+            // Active classification makes the slab's 36 rim roots the only sources, and of those
+            // only the FOUR corner roots carry an active point: a non-corner rim voxel has both
+            // neighbors along the rim, so its point is absorbed by the collinear edges. Rim edges
+            // can only pair with the floor's rim edges, which are a voxel outside the slab and out
+            // of reach. So the whole resting patch reduces to its four corners.
+            //
+            // Contrast with containment dedup, which sourced the whole boundary ring of square cells
+            // and produced 67 contacts spread over the patch.
             List<ParsedManifold> manifolds = Collide(
                 a, b,
                 new RigidTransform(quaternion.identity, new float3(1f, 1f, 1f)),
                 RigidTransform.identity,
                 out _);
 
-            Assert.That(manifolds.Count, Is.EqualTo(67), "Only the boundary ring of cells sources");
             foreach (ParsedManifold m in manifolds)
             {
                 Assert.That(m.Points.Count, Is.EqualTo(1));
@@ -516,8 +555,13 @@ namespace VoxelisX.Tests
                 Assert.That(m.Points[0].Distance, Is.EqualTo(0f).Within(Tolerance));
             }
 
-            // The support ring still reaches the slab's outer voxel centers on every side.
+            // Exactly the four slab corners, each claimed by the four floor tiles that meet there.
             List<ContactPoint> points = AllPoints(manifolds);
+            Assert.That(DistinctPointCount(points), Is.EqualTo(4),
+                "A flat rest reduces to the corners of the overlap");
+            Assert.That(manifolds.Count, Is.EqualTo(16),
+                "Seam ownership is off in v1, so each corner arrives four times");
+
             Assert.That(HasPointNear(points, new float3(1.5f, 1f, 1.5f)), Is.True);
             Assert.That(HasPointNear(points, new float3(10.5f, 1f, 1.5f)), Is.True);
             Assert.That(HasPointNear(points, new float3(1.5f, 1f, 10.5f)), Is.True);
@@ -708,7 +752,13 @@ namespace VoxelisX.Tests
                 RigidTransform.identity,
                 out _);
 
-            Assert.That(manifolds.Count, Is.EqualTo(2), "Only the step and wall face contacts");
+            // Two physical contacts, one per arm. Each arrives twice: the corner voxel's segment and
+            // the arm end's own point meet at the same core position, and with seam ownership off
+            // both report it.
+            List<ContactPoint> cornerPoints = AllPoints(manifolds);
+            Assert.That(DistinctPointCount(cornerPoints), Is.EqualTo(2),
+                "Only the step and wall face contacts");
+            Assert.That(manifolds.Count, Is.EqualTo(4));
             foreach (ParsedManifold m in manifolds)
             {
                 Assert.That(m.Points[0].Distance, Is.GreaterThan(-0.01f),

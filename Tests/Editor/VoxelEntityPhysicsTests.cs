@@ -141,7 +141,7 @@ namespace VoxelisX.Tests
         }
 
         [Test]
-        public void RefreshPhysicsSlotKeepsOnlyMaximalCubicCells()
+        public void RefreshPhysicsSlotClassifiesSolidCubeBoundary()
         {
             using var scope = new EntityDataTestScope();
             SectorHandle sector = scope.AddSector(int3.zero);
@@ -170,28 +170,49 @@ namespace VoxelisX.Tests
 
                 Assert.That(UnsafeUtility.SizeOf<PhysicsInfo>(), Is.EqualTo(1));
 
-                // The eight voxels of the minimum 2x2x2 corner each root a full cube. Nothing
-                // larger exists, so those cells survive and exclude every smaller cell there.
-                byte cube = 1 << PhysicsInfo.BitCube;
-                for (int z = 0; z < 2; z++)
-                {
-                    for (int y = 0; y < 2; y++)
-                    {
-                        for (int x = 0; x < 2; x++)
-                        {
-                            Assert.That(PhysicsData(sector, x, y, z).data, Is.EqualTo(cube),
-                                "Voxel in the minimum 2x2x2 corner roots exactly one cube");
-                        }
-                    }
-                }
+                // The minimum corner is a geometric corner of the box, so every surface cell rooted
+                // there is active at once: three boundary faces, three convex edges and the point.
+                // The cube exists too, which is what makes all eight bits set.
+                Assert.That(PhysicsData(sector, 0, 0, 0).data, Is.EqualTo(0xFF),
+                    "Minimum corner roots every cell, including all seven surface features");
 
-                // Every voxel on a maximum face roots only cells that a backward neighbor's cube
-                // already contains, so it drops out as a contact source.
-                Assert.That(PhysicsData(sector, 2, 0, 0).data, Is.EqualTo(0));
-                Assert.That(PhysicsData(sector, 2, 2, 0).data, Is.EqualTo(0));
-                Assert.That(PhysicsData(sector, 2, 2, 2).data, Is.EqualTo(0));
-                Assert.That(PhysicsData(sector, 2, 2, 2).IsInterior, Is.True);
-                Assert.That(PhysicsData(sector, 1, 1, 1).IsInterior, Is.False);
+                // A voxel on a box edge keeps the edge running along that box edge, the two boundary
+                // faces meeting there, and its cube. Its point is absorbed by the collinear edges.
+                Assert.That(PhysicsData(sector, 1, 0, 0).data, Is.EqualTo(
+                    (1 << PhysicsInfo.BitEdgeX) | (1 << PhysicsInfo.BitFaceXY) |
+                    (1 << PhysicsInfo.BitFaceXZ) | (1 << PhysicsInfo.BitCube)));
+
+                // A voxel in the middle of a flat boundary face keeps only that face. Its edges are
+                // flat subdivisions and its point is interior to the face.
+                Assert.That(PhysicsData(sector, 1, 1, 0).data, Is.EqualTo(
+                    (1 << PhysicsInfo.BitFaceXY) | (1 << PhysicsInfo.BitCube)));
+
+                // The centre voxel is deep inside solid: no surface feature at all, only the volume
+                // cube. This is the case IsInterior now names.
+                Assert.That(PhysicsData(sector, 1, 1, 1).data,
+                    Is.EqualTo(1 << PhysicsInfo.BitCube));
+                Assert.That(PhysicsData(sector, 1, 1, 1).IsInterior, Is.True);
+                Assert.That(PhysicsData(sector, 1, 1, 1).HasVolumeCell, Is.True);
+
+                // The maximum side roots no cell that grows forward, but it is still real boundary.
+                // A max-face voxel keeps the two in-plane edges and the face they bound; the max
+                // corner keeps only its point. Under containment dedup all three read as zero.
+                Assert.That(PhysicsData(sector, 2, 0, 0).data, Is.EqualTo(
+                    (1 << PhysicsInfo.BitPoint) | (1 << PhysicsInfo.BitEdgeY) |
+                    (1 << PhysicsInfo.BitEdgeZ) | (1 << PhysicsInfo.BitFaceYZ)));
+                Assert.That(PhysicsData(sector, 2, 2, 0).data, Is.EqualTo(
+                    (1 << PhysicsInfo.BitPoint) | (1 << PhysicsInfo.BitEdgeZ)));
+                Assert.That(PhysicsData(sector, 2, 2, 2).data,
+                    Is.EqualTo(1 << PhysicsInfo.BitPoint));
+                Assert.That(PhysicsData(sector, 2, 2, 2).IsInterior, Is.False);
+
+                // Keys are the roots carrying an active point or edge, i.e. the twelve box edge
+                // chains and the eight corners. The six face centres and the centre are not keys.
+                Assert.That(IsPhysicsKey(sector, 0, 0, 0), Is.True);
+                Assert.That(IsPhysicsKey(sector, 2, 2, 2), Is.True);
+                Assert.That(IsPhysicsKey(sector, 1, 0, 0), Is.True);
+                Assert.That(IsPhysicsKey(sector, 1, 1, 0), Is.False);
+                Assert.That(IsPhysicsKey(sector, 1, 1, 1), Is.False);
 
                 // Air block inside the allocated brick is cleared, not stale.
                 Assert.That(PhysicsData(sector, 5, 5, 5).data, Is.EqualTo(0));
@@ -230,7 +251,7 @@ namespace VoxelisX.Tests
         }
 
         [Test]
-        public void RefreshPhysicsSlotMovesEndVoxelGeometryOntoItsSegmentRoot()
+        public void RefreshPhysicsSlotKeepsBothWireEndpoints()
         {
             using var scope = new EntityDataTestScope();
             SectorHandle sector = scope.AddSector(int3.zero);
@@ -245,15 +266,17 @@ namespace VoxelisX.Tests
             {
                 bodyData.ComputePhysicsProperties(scope.Data);
 
-                // The segment covers both centers, so the far voxel roots nothing at all and the
-                // near voxel carries the whole pair.
-                Assert.That(PhysicsData(sector, 1, 1, 1).data,
-                    Is.EqualTo(1 << PhysicsInfo.BitEdgeX));
-                Assert.That(PhysicsData(sector, 2, 1, 1).data, Is.EqualTo(0));
+                // The segment carries the geometry, but both endpoints stay active: an endpoint owns
+                // the cap of directions past the end of the segment, which the segment does not.
+                // Those two points are what lets a wire form a permitted pair against a face.
+                Assert.That(PhysicsData(sector, 1, 1, 1).data, Is.EqualTo(
+                    (1 << PhysicsInfo.BitEdgeX) | (1 << PhysicsInfo.BitPoint)));
+                Assert.That(PhysicsData(sector, 2, 1, 1).data,
+                    Is.EqualTo(1 << PhysicsInfo.BitPoint));
 
-                // The key must follow the geometry onto the surviving root.
+                // Both roots carry a point or an edge, so both are contact sources.
                 Assert.That(IsPhysicsKey(sector, 1, 1, 1), Is.True);
-                Assert.That(IsPhysicsKey(sector, 2, 1, 1), Is.False);
+                Assert.That(IsPhysicsKey(sector, 2, 1, 1), Is.True);
             }
             finally
             {
@@ -278,12 +301,16 @@ namespace VoxelisX.Tests
             {
                 bodyData.ComputePhysicsProperties(scope.Data);
 
-                // No square exists, so both segments survive on the corner voxel and neither arm
-                // end roots anything.
-                Assert.That(PhysicsData(sector, 1, 1, 1).data,
-                    Is.EqualTo((1 << PhysicsInfo.BitEdgeX) | (1 << PhysicsInfo.BitEdgeY)));
-                Assert.That(PhysicsData(sector, 2, 1, 1).data, Is.EqualTo(0));
-                Assert.That(PhysicsData(sector, 1, 2, 1).data, Is.EqualTo(0));
+                // No square exists, so both segments stay on the corner voxel and no diagonal square
+                // is fabricated. The corner point is active too - the two arms are not collinear, so
+                // they cannot absorb it - and each arm end keeps its own endpoint.
+                Assert.That(PhysicsData(sector, 1, 1, 1).data, Is.EqualTo(
+                    (1 << PhysicsInfo.BitEdgeX) | (1 << PhysicsInfo.BitEdgeY) |
+                    (1 << PhysicsInfo.BitPoint)));
+                Assert.That(PhysicsData(sector, 2, 1, 1).data,
+                    Is.EqualTo(1 << PhysicsInfo.BitPoint));
+                Assert.That(PhysicsData(sector, 1, 2, 1).data,
+                    Is.EqualTo(1 << PhysicsInfo.BitPoint));
             }
             finally
             {
@@ -297,9 +324,10 @@ namespace VoxelisX.Tests
             using var scope = new EntityDataTestScope();
             SectorHandle sector = scope.AddSector(int3.zero);
 
-            // A 3x3x3 cube deduplicates to the eight cubes rooted in its minimum 2x2x2 corner.
-            // Each of those cubes covers a sparse (Corner/Edge) voxel, so each root is a key and
-            // no other voxel is.
+            // In a 3x3x3 cube the keys are the roots carrying an active point or edge: the eight
+            // geometric corners and the twelve box edge chains. The six face centres keep only a
+            // flat face and the centre keeps only the volume cube, so neither is a key. That is
+            // exactly "at least two coordinates on an extreme", i.e. 8 + 12 = 20 of the 27.
             for (int z = 0; z < 3; z++)
             {
                 for (int y = 0; y < 3; y++)
@@ -326,12 +354,22 @@ namespace VoxelisX.Tests
                     source.EnumeratePhysicsKeyBlocks();
                 int selected = 0;
 
-                for (int z = 0; z < 2; z++)
+                // Walk in flat voxel-index order (x fastest, then y, then z) and require the
+                // enumerator to visit exactly the expected roots in that order.
+                for (int z = 0; z < 3; z++)
                 {
-                    for (int y = 0; y < 2; y++)
+                    for (int y = 0; y < 3; y++)
                     {
-                        for (int x = 0; x < 2; x++)
+                        for (int x = 0; x < 3; x++)
                         {
+                            int extremes = (x == 1 ? 0 : 1) + (y == 1 ? 0 : 1) + (z == 1 ? 0 : 1);
+                            if (extremes < 2)
+                            {
+                                Assert.That(IsPhysicsKey(sector, x, y, z), Is.False,
+                                    $"({x},{y},{z}) is a face centre or the centre");
+                                continue;
+                            }
+
                             Assert.That(enumerator.MoveNext(), Is.True);
                             Assert.That(enumerator.Current.position, Is.EqualTo(new int3(x, y, z)));
                             Assert.That(enumerator.Current.value.IsInterior, Is.False);
@@ -340,7 +378,7 @@ namespace VoxelisX.Tests
                     }
                 }
 
-                Assert.That(selected, Is.EqualTo(8));
+                Assert.That(selected, Is.EqualTo(20));
                 Assert.That(enumerator.MoveNext(), Is.False);
 
                 enumerator.Reset();
@@ -353,7 +391,7 @@ namespace VoxelisX.Tests
                     Sector = sector,
                     Result = burstCount
                 }.Schedule().Complete();
-                Assert.That(burstCount[0], Is.EqualTo(8));
+                Assert.That(burstCount[0], Is.EqualTo(20));
             }
             finally
             {

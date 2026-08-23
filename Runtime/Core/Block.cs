@@ -118,25 +118,38 @@ namespace Voxelis
 
     /// <summary>
     /// Per-voxel physics topology: which finite cells of the voxel-center cubical complex are
-    /// ROOTED at this voxel and survive dedup. Occupied voxel centers form the complex: two
+    /// ROOTED at this voxel and are COLLISION-ACTIVE. Occupied voxel centers form the complex: two
     /// adjacent centers span a segment, four a square, eight a cube. A cell is rooted at its
     /// minimum-corner voxel and spans one unit along each axis of its axis mask.
     /// </summary>
     /// <remarks>
-    /// A cell is dropped when a larger existing cell contains it. Every container of a cell rooted
-    /// at <c>r</c> is itself rooted in the backward octet <c>r - {0,1}^3</c>, so the test reduces to
-    /// single-axis growth: cell <c>(r, m)</c> survives when, for every axis <c>a</c> outside
-    /// <c>m</c>, neither <c>(r, m+a)</c> nor <c>(r-a, m+a)</c> is fully occupied. The union of the
-    /// surviving cells still covers every occupied voxel, so the collision surface is unchanged and
-    /// only redundant contact sources are removed.
+    /// A cell is active when it owns at least one outward direction that no higher-dimensional cell
+    /// containing it owns. A cell that can grow along axis <c>a</c> loses every direction with a
+    /// positive component along <c>+a</c> to the grown cell rooted here, and every direction with a
+    /// positive component along <c>-a</c> to the grown cell rooted one voxel back. So both of them
+    /// together take everything except a zero-area slice, which gives:
+    /// <code>
+    /// (r, m) is active  &lt;=&gt;  for every axis a outside m,
+    ///                            NOT ( (r, m+a) exists AND (r-a, m+a) exists )
+    /// </code>
+    /// This is the containment rule it replaced with AND in place of OR: containment dedup dropped a
+    /// cell when EITHER grown cell existed, activity drops it only when BOTH do. Concretely: an edge
+    /// inside a flat tiled face is inactive, a sheet rim is active, a vertex inside a flat face is
+    /// inactive, a geometric corner is active, and an interior face of a solid is inactive.
+    ///
+    /// Coverage invariant this preserves: for any point OUTSIDE the solid region, the distance to
+    /// the active cells equals the distance to the full complex, because every inactive cell is
+    /// contained in a cell that is either active or buried inside solid. Interior distance is NOT
+    /// preserved - containment and deep overlap need the separate volume path (see BitCube).
     /// </remarks>
     public struct PhysicsInfo : IEquatable<PhysicsInfo>
     {
         /// <summary>
-        /// One bit per surviving cell rooted here. Bits 0-6 keep the positive octet order
-        /// (+X, +Y, +Z, +XY, +XZ, +YZ, +XYZ); bit 7 marks the bare point. Zero means the voxel
-        /// roots nothing and physics must not use it as a source. Physics-key state is stored only
-        /// in this slot's one-bit aux mask.
+        /// One bit per active cell rooted here. Bits 0-6 keep the positive octet order
+        /// (+X, +Y, +Z, +XY, +XZ, +YZ, +XYZ); bit 7 marks the bare point. Bit 6 (the cube) is a
+        /// VOLUME cell, not a surface feature: it is set whenever the cube exists and is excluded
+        /// from surface contact generation. Physics-key state is stored only in this slot's one-bit
+        /// aux mask.
         /// </summary>
         public byte data;
 
@@ -151,6 +164,16 @@ namespace Voxelis
 
         /// <summary>Number of distinct cells a single voxel can root.</summary>
         public const int FeatureBitCount = 8;
+
+        /// <summary>
+        /// Every bit except <see cref="BitCube"/>. A root can carry all seven at once - the minimum
+        /// corner voxel of a solid box roots three boundary faces, three convex edges and the corner
+        /// point - so consumers must not assume the old "at most three cells" dedup bound.
+        /// </summary>
+        public const byte SurfaceFeatureMask = unchecked((byte)~(1 << BitCube));
+
+        /// <summary>Number of surface cells a single voxel can root, i.e. everything but the cube.</summary>
+        public const int SurfaceFeatureBitCount = FeatureBitCount - 1;
 
         // Nibble i of each constant maps one direction of the bit <-> axis-mask pair. Axis masks use
         // X=1, Y=2, Z=4, so the two orders differ and a literal table is the cheapest Burst-safe map.
@@ -171,11 +194,15 @@ namespace Voxelis
             return (int)((k_FeatureBitByAxisMask >> (axisMask << 2)) & 0xFu);
         }
 
-        // Bit i is set when the cell in feature bit i spans every axis in mask i. Used to ask
+        // Bit i is set when the SURFACE cell in feature bit i spans every axis in mask i. Used to ask
         // "does this voxel root a cell that covers these axes", which is how a contact point on a
-        // cell's positive boundary finds out whether its canonical owner still exists after dedup.
-        private const uint k_CoverMaskLo = 0x486A59FFu;   // axes none, X, Y, XY
-        private const uint k_CoverMaskHi = 0x40605074u;   // axes Z, XZ, YZ, XYZ
+        // cell's positive boundary finds out whether its canonical owner exists.
+        //
+        // BitCube is deliberately absent from every entry. A cube does span all three axes, but it
+        // never becomes a contact feature, so it must not claim a seam point it cannot emit. Axes
+        // XYZ therefore maps to 0: no surface cell spans all three.
+        private const uint k_CoverMaskLo = 0x082A19BFu;   // axes none, X, Y, XY
+        private const uint k_CoverMaskHi = 0x00201034u;   // axes Z, XZ, YZ, XYZ
 
         /// <summary>
         /// Feature-bit mask of the cells whose axis mask contains every axis in
@@ -200,14 +227,36 @@ namespace Voxelis
         }
 
         /// <summary>
-        /// True when this voxel roots no cell at all, so physics must skip it as a contact source.
-        /// Every cell it would root is contained in one rooted at a backward neighbor, which carries
-        /// the same geometry. Air blocks read as true as well.
+        /// True when this voxel roots at least one active surface cell, i.e. it can take part in
+        /// ordinary contact generation. False for air, and false for a voxel deep inside a solid,
+        /// which roots only <see cref="BitCube"/>.
         /// </summary>
-        public bool IsInterior => data == 0;
+        public bool HasSurfaceFeatures => (data & SurfaceFeatureMask) != 0;
 
-        /// <summary>True when the bare point survives, i.e. no face neighbor is occupied.</summary>
+        /// <summary>True when a cube cell is rooted here, i.e. the eight-voxel octet is solid.</summary>
+        public bool HasVolumeCell => (data & (1 << BitCube)) != 0;
+
+        /// <summary>
+        /// True when this voxel roots no active surface cell, so the surface contact path must skip
+        /// it. Either it is buried in solid and every direction belongs to a cell nearer the
+        /// boundary, or a lower-dimensional cell it would root is fully absorbed by its neighbors.
+        /// Air blocks read as true as well.
+        /// </summary>
+        public bool IsInterior => !HasSurfaceFeatures;
+
+        /// <summary>
+        /// True when the bare point is active, i.e. every axis has at least one empty face neighbor.
+        /// This is the geometric-corner / endpoint / isolated-voxel class.
+        /// </summary>
         public bool HasPointFeature => (data & (1 << BitPoint)) != 0;
+
+        /// <summary>
+        /// True when this root can start a sparse contact probe: it carries an active point or an
+        /// active edge. Every permitted feature pair has a vertex or an edge on at least one side,
+        /// so these roots are exactly the contact sources. Mirrors the slot's aux key mask.
+        /// </summary>
+        public bool IsContactSource =>
+            (data & ((1 << BitPoint) | (1 << BitEdgeX) | (1 << BitEdgeY) | (1 << BitEdgeZ))) != 0;
 
         public bool Equals(PhysicsInfo other)
         {
