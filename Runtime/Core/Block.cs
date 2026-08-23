@@ -175,6 +175,37 @@ namespace Voxelis
         /// <summary>Number of surface cells a single voxel can root, i.e. everything but the cube.</summary>
         public const int SurfaceFeatureBitCount = FeatureBitCount - 1;
 
+        /// <summary>The bare point, i.e. every cell of dimension 0 rooted here.</summary>
+        public const byte PointMask = 1 << BitPoint;
+
+        /// <summary>The three positive segments, i.e. every cell of dimension 1 rooted here.</summary>
+        public const byte EdgeMask = (1 << BitEdgeX) | (1 << BitEdgeY) | (1 << BitEdgeZ);
+
+        /// <summary>The three positive squares, i.e. every cell of dimension 2 rooted here.</summary>
+        public const byte FaceMask = (1 << BitFaceXY) | (1 << BitFaceXZ) | (1 << BitFaceYZ);
+
+        /// <summary>
+        /// Dimension of the LOWEST-dimensional active surface cell rooted here: 0 for a point, 1 for
+        /// a segment, 2 for a square. Callers must have checked <see cref="HasSurfaceFeatures"/>
+        /// first; a root with no surface cell answers 2 and must not be used.
+        /// </summary>
+        /// <remarks>
+        /// The narrowphase pairs features by dimension, and its permitted set is exactly
+        /// <c>dim(a) + dim(b) &lt;= 2</c>. Because the smallest dimension present bounds every pair a
+        /// root can take part in, two roots can produce a contact only when the sum of their minimum
+        /// dimensions also fits in 2. That makes this the cheapest possible pair rejection, decided
+        /// from two bytes before any feature or vertex is built.
+        /// </remarks>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int MinSurfaceFeatureDimension()
+        {
+            if ((data & PointMask) != 0)
+            {
+                return 0;
+            }
+            return (data & EdgeMask) != 0 ? 1 : 2;
+        }
+
         // Nibble i of each constant maps one direction of the bit <-> axis-mask pair. Axis masks use
         // X=1, Y=2, Z=4, so the two orders differ and a literal table is the cheapest Burst-safe map.
         private const uint k_AxisMaskByFeatureBit = 0x07653421u;
