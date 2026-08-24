@@ -206,6 +206,68 @@ namespace Voxelis
             return (data & EdgeMask) != 0 ? 1 : 2;
         }
 
+        // Nibble i holds the segments (X = bit 0, Y = bit 1, Z = bit 2) contained in the squares of
+        // index i, where i is the three square bits taken in BitFaceXY order (XY = 1, XZ = 2,
+        // YZ = 4). A square contains the segments of both of its axes, so XY covers X and Y, XZ
+        // covers X and Z, and YZ covers Y and Z.
+        private const uint k_EdgesCoveredByFaces = 0x77767530u;
+
+        /// <summary>
+        /// Feature-bit mask of the active surface cells rooted here that are MAXIMAL among the
+        /// active cells rooted here of dimension at most <paramref name="dimensionBudget"/>.
+        /// </summary>
+        /// <remarks>
+        /// If cell c is contained in cell d, then for every pose and every opposing feature S the
+        /// distance to d is at most the distance to c, so the constraint (S, d) implies (S, c) and
+        /// the pair (S, c) can be dropped - but ONLY when (S, d) is really emitted. The narrowphase
+        /// permits <c>dim(a) + dim(b) &lt;= 2</c>, so an opposing feature of dimension k leaves this
+        /// root a budget of <c>2 - k</c> and only containments inside that budget may drop anything.
+        /// That makes maximality a property of (root, budget), NOT of the root alone: the end voxel
+        /// of a one-wide bar roots a point covered by a segment, so the point must go at budget 1
+        /// and must stay at budget 0, where the segment cannot be paired at all.
+        ///
+        /// Every containment used here is rooted at this same voxel, so the dominating cell is built
+        /// from this same byte and is always enumerated alongside the cell it replaces. No probe
+        /// range, pass order or seam rule can take it away. Cells contained only in a cell rooted at
+        /// a NEGATIVE neighbor are not detected, which keeps some duplicates but never opens a hole.
+        ///
+        /// The cube is never a dominator. It is a volume cell that takes part in no permitted pair,
+        /// so a square contained only in a cube must survive - the same reason
+        /// <see cref="CoverMaskForAxes"/> excludes it.
+        /// </remarks>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public byte MaximalFeatureMask(int dimensionBudget)
+        {
+            if (dimensionBudget < 0)
+            {
+                return 0;
+            }
+
+            if (dimensionBudget == 0)
+            {
+                // No cell of dimension 0 can contain the point, so an active point is always maximal.
+                return (byte)(data & PointMask);
+            }
+
+            int edges = data & EdgeMask;
+            if (dimensionBudget == 1)
+            {
+                // Segments are contained only in squares and cubes, both outside this budget, so
+                // every active segment is maximal. The point survives only when no segment rooted
+                // here contains it.
+                return edges != 0 ? (byte)edges : (byte)(data & PointMask);
+            }
+
+            int faces = data & FaceMask;
+            int coveredEdges = (int)((k_EdgesCoveredByFaces >> ((faces >> BitFaceXY) << 2)) & 0xFu);
+
+            // Squares are maximal whenever they are active: their only proper superset is the cube.
+            // A segment falls out when an active square rooted here spans its axis, and the point
+            // falls out when any segment or square is rooted here at all.
+            int point = (data & (EdgeMask | FaceMask)) == 0 ? data & PointMask : 0;
+            return (byte)(faces | (edges & ~coveredEdges) | point);
+        }
+
         // Nibble i of each constant maps one direction of the bit <-> axis-mask pair. Axis masks use
         // X=1, Y=2, Z=4, so the two orders differ and a literal table is the cheapest Burst-safe map.
         private const uint k_AxisMaskByFeatureBit = 0x07653421u;
