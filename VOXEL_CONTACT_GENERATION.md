@@ -376,6 +376,15 @@ into a hole.
   and generates nothing. `BitCube` is stored for a future volume path. The window
   formulation detects the case for free: all 8 bracket voxels occupied means the source
   vertex is strictly inside the solid, and the nearest bracket face gives a direction.
+* **The target window caps the speculative margin at 0.5.** Unity's `maxDistance` also
+  contains motion expansion and can be larger for fast linear or angular motion. The
+  distance gate accepts the full value, but the capped window can omit a feature whose
+  distance is still below it. This can miss speculative contacts and allow tunnelling.
+* **Coincident core witnesses are dropped.** A core distance at or below `1e-4` has no
+  usable delta normal, so `EmitCoreContact` rejects it. This makes exact grid-aligned
+  intersections discontinuous. For example, perpendicular bar cores at the same point
+  lose the `-1` depth contact, while an offset of `0.01` reports about `-0.99`. A fallback
+  normal needs a stable geometric or motion-based rule.
 * **No merging or reduction.** Contacts go raw into a flat list, one single-point manifold
   and one event per raw contact.
 * **No normal-cone gate.** See section 10.
@@ -510,6 +519,12 @@ mostly interior".
 If `roots / contact` is small and the cache hit rate is high, the loop is near its floor and
 what remains is arithmetic, not search — at which point the SoA and branch-free kernel work
 is the next step, not a wider cull.
+
+**Known profiler-state bug:** disabling `enableContactProfiling` immediately after an
+interval report can leave `VoxelContactProfiler.Enabled` true because the report reset
+`m_ContactProfileSteps` to zero. Generation then keeps doing atomic counter flushes while
+the visible toggle is off. The disable path must clear the shared flag independently of
+the interval accumulator state.
 
 ## 14. Verification
 

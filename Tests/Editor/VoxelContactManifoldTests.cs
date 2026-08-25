@@ -510,6 +510,45 @@ namespace VoxelisX.Tests
         }
 
         [Test]
+        public void ReverseBodyOrder_InteriorFaceContactUsesBGridCoordinates()
+        {
+            using var a = new VoxelBodyFixture();
+            using var b = new VoxelBodyFixture();
+            for (int x = 0; x < 5; x++)
+            {
+                for (int z = 0; z < 5; z++)
+                {
+                    a.Set(x, 0, z);
+                }
+            }
+
+            b.Set(0, 0, 0);
+            a.Build();
+            b.Build();
+
+            // A is the floor and B is the resting voxel. The floor's interior has no point source,
+            // so only the B-side vertex query can produce this vertex-face contact. Both bodies use
+            // one sector, which also prevents the size heuristic from swapping them internally.
+            List<ParsedManifold> manifolds = Collide(
+                a, b,
+                RigidTransform.identity,
+                new RigidTransform(quaternion.identity, new float3(2f, 1f, 2f)),
+                out List<ParsedEvent> events);
+
+            Assert.That(manifolds.Count, Is.EqualTo(1));
+            Assert.That(manifolds[0].Points.Count, Is.EqualTo(1));
+            Assert.That(manifolds[0].Points[0].Distance, Is.EqualTo(0f).Within(Tolerance));
+            Assert.That(math.distance(manifolds[0].Header.Normal, new float3(0f, -1f, 0f)),
+                Is.LessThan(Tolerance));
+            Assert.That(HasPointNear(manifolds[0].Points, new float3(2.5f, 1f, 2.5f)), Is.True);
+            Assert.That(events.Count, Is.EqualTo(1));
+            Assert.That(events[0].VoxelInA.y, Is.EqualTo(0));
+            Assert.That(events[0].VoxelInA.x, Is.InRange(1, 2));
+            Assert.That(events[0].VoxelInA.z, Is.InRange(1, 2));
+            Assert.That(events[0].VoxelInB, Is.EqualTo(int3.zero));
+        }
+
+        [Test]
         public void LargePatch_UsesSparseBoundarySources()
         {
             using var a = new VoxelBodyFixture();
