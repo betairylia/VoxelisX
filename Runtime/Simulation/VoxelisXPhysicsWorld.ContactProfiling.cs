@@ -15,7 +15,7 @@ namespace Voxelis.Simulation
     ///
     /// The report is a funnel, one column per query plus the total:
     ///
-    ///   sources -> window roots -> occupied -> active -> cell tests -> contacts
+    ///   sources -> window roots -> touched -> active -> cell tests -> contacts
     ///
     /// The split matters because scenes load the two queries in opposite proportions. Large bodies
     /// resting on ground are rim-heavy and run mostly edge sources; machinery of cogs and chains is
@@ -23,7 +23,11 @@ namespace Voxelis.Simulation
     ///
     /// <c>roots/contact</c> says how much of each window is swept for nothing, <c>cache hit</c>
     /// whether sector hash lookups still cost anything, and <c>rows skipped</c> how much empty space
-    /// the word-level occupancy test rejects before any voxel is touched.
+    /// the word-level bitmask test rejects before any voxel is read.
+    ///
+    /// <c>touched</c> counts the roots the bitmask prefilter admitted, and the two queries use
+    /// different masks: the vertex query scans occupancy, the edge query scans the physics key mask.
+    /// So the vertex and edge columns of <c>touched share</c> are not measuring the same thing.
     /// </remarks>
     public partial class VoxelisXPhysicsWorld
     {
@@ -142,7 +146,7 @@ namespace Voxelis.Simulation
             Header(sb);
             Counts(sb, "sources", vertex.Sources, edge.Sources, total.Sources, divisor);
             Counts(sb, "window roots", vertex.WindowRoots, edge.WindowRoots, total.WindowRoots, divisor);
-            Counts(sb, "occupied", vertex.OccupiedRoots, edge.OccupiedRoots, total.OccupiedRoots, divisor);
+            Counts(sb, "touched", vertex.TouchedRoots, edge.TouchedRoots, total.TouchedRoots, divisor);
             Counts(sb, "active", vertex.ActiveRoots, edge.ActiveRoots, total.ActiveRoots, divisor);
             Counts(sb, "cell tests", vertex.CellTests, edge.CellTests, total.CellTests, divisor);
             Counts(sb, "contacts", vertex.ContactsEmitted, edge.ContactsEmitted, total.ContactsEmitted, divisor);
@@ -160,10 +164,10 @@ namespace Voxelis.Simulation
                 edge.ContactsEmitted, total.WindowRoots, total.ContactsEmitted, "F1");
             Ratios(sb, "tests / contact", vertex.CellTests, vertex.ContactsEmitted, edge.CellTests,
                 edge.ContactsEmitted, total.CellTests, total.ContactsEmitted, "F1");
-            Percents(sb, "occupied share", vertex.OccupiedRoots, vertex.WindowRoots, edge.OccupiedRoots,
-                edge.WindowRoots, total.OccupiedRoots, total.WindowRoots);
-            Percents(sb, "active of occupied", vertex.ActiveRoots, vertex.OccupiedRoots, edge.ActiveRoots,
-                edge.OccupiedRoots, total.ActiveRoots, total.OccupiedRoots);
+            Percents(sb, "touched share", vertex.TouchedRoots, vertex.WindowRoots, edge.TouchedRoots,
+                edge.WindowRoots, total.TouchedRoots, total.WindowRoots);
+            Percents(sb, "active of touched", vertex.ActiveRoots, vertex.TouchedRoots, edge.ActiveRoots,
+                edge.TouchedRoots, total.ActiveRoots, total.TouchedRoots);
             Percents(sb, "rows skipped", vertex.RowsSkipped, vertex.RowsTested, edge.RowsSkipped,
                 edge.RowsTested, total.RowsSkipped, total.RowsTested);
             Percents(sb, "brick cache hit", vertex.BrickCacheHits, vertex.BrickLookups, edge.BrickCacheHits,

@@ -319,6 +319,91 @@ namespace VoxelisX.Tests
         }
 
         [Test]
+        public void PhysicsKeyMaskMatchesActivePointAndEdgeBits()
+        {
+            using var scope = new EntityDataTestScope();
+            SectorHandle sector = scope.AddSector(int3.zero);
+
+            // A mix that produces every class at once: solid volume with a buried interior, a
+            // one-thick plate, a wire with two ends, an L with two arms, and an isolated voxel.
+            for (int z = 0; z < 3; z++)
+            {
+                for (int y = 0; y < 3; y++)
+                {
+                    for (int x = 0; x < 3; x++)
+                    {
+                        sector.SetBlock(x, y, z, new Block(1));
+                    }
+                }
+            }
+            for (int y = 0; y < 5; y++)
+            {
+                for (int x = 0; x < 5; x++)
+                {
+                    sector.SetBlock(x, y, 5, new Block(1));
+                }
+            }
+            for (int x = 0; x < 5; x++)
+            {
+                sector.SetBlock(x, 7, 7, new Block(1));
+            }
+            sector.SetBlock(5, 3, 0, new Block(1));
+            sector.SetBlock(6, 3, 0, new Block(1));
+            sector.SetBlock(5, 4, 0, new Block(1));
+            sector.SetBlock(7, 0, 7, new Block(1));
+
+            sector.Get().MarkBrickRequireUpdate(
+                Sector.ToBrickIdx(0, 0, 0), DirtyFlags.GeometryWithLocalNeighbor);
+            scope.Data.RefreshNonEmptyMask();
+
+            var bodyData = new VoxelBodyData(Allocator.Persistent);
+            try
+            {
+                bodyData.ComputePhysicsProperties(scope.Data);
+
+                // The key bit must be exactly "roots an active point or an active edge". The source
+                // enumeration relies on that to find every contact source, and the edge-edge query
+                // relies on the superset half of it: it scans the key mask instead of occupancy, so
+                // a root carrying an active edge whose key bit was clear would be a lost contact
+                // that no scene-level test would localise.
+                const int pointOrEdge = PhysicsInfo.PointMask | PhysicsInfo.EdgeMask;
+                int checkedVoxels = 0;
+                int keyVoxels = 0;
+
+                for (int z = 0; z < Sector.SIZE_IN_BLOCKS; z++)
+                {
+                    for (int y = 0; y < Sector.SIZE_IN_BLOCKS; y++)
+                    {
+                        for (int x = 0; x < Sector.SIZE_IN_BLOCKS; x++)
+                        {
+                            bool rootsPointOrEdge = (PhysicsData(sector, x, y, z).data & pointOrEdge) != 0;
+                            bool isKey = IsPhysicsKey(sector, x, y, z);
+                            Assert.That(isKey, Is.EqualTo(rootsPointOrEdge),
+                                $"key bit disagrees with the point/edge bits at ({x},{y},{z})");
+
+                            checkedVoxels++;
+                            if (isKey)
+                            {
+                                keyVoxels++;
+                            }
+                        }
+                    }
+                }
+
+                Assert.That(checkedVoxels, Is.EqualTo(Sector.BLOCKS_IN_BRICK));
+
+                // Guards against the assertion passing vacuously on an all-clear brick, and against
+                // a key mask that simply marks everything.
+                Assert.That(keyVoxels, Is.GreaterThan(0), "the shape produced no keys at all");
+                Assert.That(keyVoxels, Is.LessThan(checkedVoxels), "every voxel came back a key");
+            }
+            finally
+            {
+                bodyData.Dispose();
+            }
+        }
+
+        [Test]
         public unsafe void PhysicsKeyEnumeratorFollowsPhysicsInfoBitmapInVoxelIndexOrder()
         {
             using var scope = new EntityDataTestScope();
