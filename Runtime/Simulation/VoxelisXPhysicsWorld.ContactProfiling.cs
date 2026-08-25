@@ -29,11 +29,10 @@ namespace Voxelis.Simulation
     /// different masks: the vertex query scans occupancy, the edge query scans the physics key mask.
     /// So the vertex and edge columns of <c>touched share</c> are not measuring the same thing.
     ///
-    /// Brick resolution is reported above the table because it is amortised over a whole source
-    /// brick rather than charged to a query. <c>gather resolves</c> is what the up-front gathers
-    /// cost, <c>residual resolves</c> what still fell through to a sector hash lookup, and
-    /// <c>window misses</c> should stay zero - a nonzero count means a source brick reached a target
-    /// brick outside the range the cull said it could.
+    /// <c>brick resolves</c> is the number that matters for brick lookup cost: requests the memo
+    /// could not answer, i.e. actual sector lookups. <c>brick lookups</c> counts requests, most of
+    /// which the memo answers for free. <c>window misses</c> should stay zero - a nonzero count
+    /// means a source brick reached a target brick outside the range the cull said it could.
     /// </remarks>
     public partial class VoxelisXPhysicsWorld
     {
@@ -149,17 +148,13 @@ namespace Voxelis.Simulation
               .Append("    body pairs ")
               .AppendLine(Mean(c.BodyPairs, divisor).ToString("F1"));
 
-            // Brick resolution is amortised over a whole source brick, so it sits outside the
-            // per-query columns. Residual resolves are the fallback lookups the gather did not
-            // cover: one per brick request the cache also missed.
-            long residualResolves = (total.BrickLookups - total.BrickCacheHits);
+            // The brick memo spans a whole source brick, so its shape sits outside the per-query
+            // columns. BrickResolves is the cost that matters - the requests the memo could not
+            // answer - and it is reported per query in the table below.
             sb.Append("  source bricks ").Append(Mean(c.SourceBricks, divisor).ToString("F1"))
-              .Append("   unwindowed ").Append(Mean(c.SourceBricksUnwindowed, divisor).ToString("F1"))
-              .Append("   gather resolves ").Append(Mean(c.GatherResolves, divisor).ToString("F1"))
-              .Append("   residual resolves ")
-              .AppendLine(Mean(residualResolves, divisor).ToString("F1"));
-            sb.Append("  brick resolves per source brick ")
-              .AppendLine(Ratio(c.GatherResolves + residualResolves, c.SourceBricks).ToString("F1"));
+              .Append("   too wide ").Append(Mean(c.SourceBricksTooWide, divisor).ToString("F1"))
+              .Append("   resolves per source brick ")
+              .AppendLine(Ratio(total.BrickResolves, c.SourceBricks).ToString("F1"));
             sb.AppendLine();
 
             Header(sb);
@@ -174,6 +169,8 @@ namespace Voxelis.Simulation
             Counts(sb, "degenerate", vertex.ContactsDegenerate, edge.ContactsDegenerate, total.ContactsDegenerate, divisor);
             Counts(sb, "rows tested", vertex.RowsTested, edge.RowsTested, total.RowsTested, divisor);
             Counts(sb, "brick lookups", vertex.BrickLookups, edge.BrickLookups, total.BrickLookups, divisor);
+            Counts(sb, "brick resolves", vertex.BrickResolves, edge.BrickResolves,
+                total.BrickResolves, divisor);
             Counts(sb, "window misses", vertex.BrickWindowMisses, edge.BrickWindowMisses,
                 total.BrickWindowMisses, divisor);
 
