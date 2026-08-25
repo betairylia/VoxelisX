@@ -499,8 +499,9 @@ namespace VoxelisX.Tests
             List<ContactPoint> points = AllPoints(manifolds);
             Assert.That(DistinctPointCount(points), Is.EqualTo(4),
                 "One physical contact per slab corner");
-            Assert.That(manifolds.Count, Is.EqualTo(16),
-                "Four floor tiles meet at each corner and seam ownership is off in v1");
+            Assert.That(manifolds.Count, Is.EqualTo(4),
+                "Each corner is reported once: the four floor tiles meeting there all produce "
+                + "the same witness, which canonicalizes onto one carrier");
 
             Assert.That(HasPointNear(points, new float3(1.5f, 1f, 1.5f)), Is.True);
             Assert.That(HasPointNear(points, new float3(2.5f, 1f, 1.5f)), Is.True);
@@ -555,12 +556,12 @@ namespace VoxelisX.Tests
                 Assert.That(m.Points[0].Distance, Is.EqualTo(0f).Within(Tolerance));
             }
 
-            // Exactly the four slab corners, each claimed by the four floor tiles that meet there.
+            // Exactly the four slab corners, once each.
             List<ContactPoint> points = AllPoints(manifolds);
             Assert.That(DistinctPointCount(points), Is.EqualTo(4),
                 "A flat rest reduces to the corners of the overlap");
-            Assert.That(manifolds.Count, Is.EqualTo(16),
-                "Seam ownership is off in v1, so each corner arrives four times");
+            Assert.That(manifolds.Count, Is.EqualTo(4),
+                "No duplicate per corner: one manifold per physical contact");
 
             Assert.That(HasPointNear(points, new float3(1.5f, 1f, 1.5f)), Is.True);
             Assert.That(HasPointNear(points, new float3(10.5f, 1f, 1.5f)), Is.True);
@@ -752,13 +753,13 @@ namespace VoxelisX.Tests
                 RigidTransform.identity,
                 out _);
 
-            // Two physical contacts, one per arm. Each arrives twice: the corner voxel's segment and
-            // the arm end's own point meet at the same core position, and with seam ownership off
-            // both report it.
+            // Two physical contacts, one per arm, reported once each. The corner voxel's segment
+            // and the arm end's own point meet at the same core position and share a carrier.
             List<ContactPoint> cornerPoints = AllPoints(manifolds);
             Assert.That(DistinctPointCount(cornerPoints), Is.EqualTo(2),
                 "Only the step and wall face contacts");
-            Assert.That(manifolds.Count, Is.EqualTo(4));
+            Assert.That(manifolds.Count, Is.EqualTo(2),
+                "One manifold per physical contact");
             foreach (ParsedManifold m in manifolds)
             {
                 Assert.That(m.Points[0].Distance, Is.GreaterThan(-0.01f),
