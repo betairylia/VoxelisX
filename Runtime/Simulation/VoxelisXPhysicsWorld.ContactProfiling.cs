@@ -28,6 +28,12 @@ namespace Voxelis.Simulation
     /// <c>touched</c> counts the roots the bitmask prefilter admitted, and the two queries use
     /// different masks: the vertex query scans occupancy, the edge query scans the physics key mask.
     /// So the vertex and edge columns of <c>touched share</c> are not measuring the same thing.
+    ///
+    /// Brick resolution is reported above the table because it is amortised over a whole source
+    /// brick rather than charged to a query. <c>gather resolves</c> is what the up-front gathers
+    /// cost, <c>residual resolves</c> what still fell through to a sector hash lookup, and
+    /// <c>window misses</c> should stay zero - a nonzero count means a source brick reached a target
+    /// brick outside the range the cull said it could.
     /// </remarks>
     public partial class VoxelisXPhysicsWorld
     {
@@ -72,12 +78,13 @@ namespace Voxelis.Simulation
         {
             if (!enableContactProfiling)
             {
-                if (m_ContactProfileSteps != 0)
-                {
-                    m_ContactProfileAccumulated = default;
-                    m_ContactProfileSteps = 0;
-                    VoxelContactProfiler.Enabled = false;
-                }
+                // Cleared unconditionally. An interval report zeroes m_ContactProfileSteps, so
+                // gating this on the accumulator leaves the shared flag armed whenever profiling is
+                // switched off on the tick right after a report - and generation then keeps paying
+                // for atomic flushes with the visible toggle off.
+                VoxelContactProfiler.Enabled = false;
+                m_ContactProfileAccumulated = default;
+                m_ContactProfileSteps = 0;
                 return;
             }
 
@@ -141,6 +148,18 @@ namespace Voxelis.Simulation
               .Append(steps).Append(divisor > 1 ? " steps" : " step(s)")
               .Append("    body pairs ")
               .AppendLine(Mean(c.BodyPairs, divisor).ToString("F1"));
+
+            // Brick resolution is amortised over a whole source brick, so it sits outside the
+            // per-query columns. Residual resolves are the fallback lookups the gather did not
+            // cover: one per brick request the cache also missed.
+            long residualResolves = (total.BrickLookups - total.BrickCacheHits);
+            sb.Append("  source bricks ").Append(Mean(c.SourceBricks, divisor).ToString("F1"))
+              .Append("   unwindowed ").Append(Mean(c.SourceBricksUnwindowed, divisor).ToString("F1"))
+              .Append("   gather resolves ").Append(Mean(c.GatherResolves, divisor).ToString("F1"))
+              .Append("   residual resolves ")
+              .AppendLine(Mean(residualResolves, divisor).ToString("F1"));
+            sb.Append("  brick resolves per source brick ")
+              .AppendLine(Ratio(c.GatherResolves + residualResolves, c.SourceBricks).ToString("F1"));
             sb.AppendLine();
 
             Header(sb);
@@ -155,6 +174,8 @@ namespace Voxelis.Simulation
             Counts(sb, "degenerate", vertex.ContactsDegenerate, edge.ContactsDegenerate, total.ContactsDegenerate, divisor);
             Counts(sb, "rows tested", vertex.RowsTested, edge.RowsTested, total.RowsTested, divisor);
             Counts(sb, "brick lookups", vertex.BrickLookups, edge.BrickLookups, total.BrickLookups, divisor);
+            Counts(sb, "window misses", vertex.BrickWindowMisses, edge.BrickWindowMisses,
+                total.BrickWindowMisses, divisor);
 
             sb.AppendLine();
             sb.AppendLine("  ---- where the sweep goes");
@@ -170,7 +191,7 @@ namespace Voxelis.Simulation
                 edge.TouchedRoots, total.ActiveRoots, total.TouchedRoots);
             Percents(sb, "rows skipped", vertex.RowsSkipped, vertex.RowsTested, edge.RowsSkipped,
                 edge.RowsTested, total.RowsSkipped, total.RowsTested);
-            Percents(sb, "brick cache hit", vertex.BrickCacheHits, vertex.BrickLookups, edge.BrickCacheHits,
+            Percents(sb, "lookups free", vertex.BrickCacheHits, vertex.BrickLookups, edge.BrickCacheHits,
                 edge.BrickLookups, total.BrickCacheHits, total.BrickLookups);
             Percents(sb, "dedup share", vertex.ContactsDeduped, vertex.ContactsDeduped + vertex.ContactsEmitted,
                 edge.ContactsDeduped, edge.ContactsDeduped + edge.ContactsEmitted,
