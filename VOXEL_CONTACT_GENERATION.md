@@ -460,7 +460,47 @@ wants any of it back.
 
 ---
 
-## 13. Verification
+## 13. Profiling
+
+Generation carries funnel counters (`VoxelContactCounters`, collected by
+`VoxelContactProfiler`). They are compiled out unless the scripting define
+**`VOXELIS_CONTACT_PROFILING`** is set, so a normal build pays nothing: with no reader, the
+per-root increments are dead stores that Burst removes.
+
+To measure:
+
+1. Add `VOXELIS_CONTACT_PROFILING` under Project Settings > Player > Scripting Define Symbols.
+2. Tick `enableContactProfiling` on `VoxelisXPhysicsWorld`. Set `contactProfilingLogInterval`
+   (default 60 steps) and `contactProfilingAverage`.
+3. Read the per-interval report in the console.
+
+Counters accumulate on the stack for one body pair and flush once, so the hot loops never
+touch shared memory; the flush is one interlocked add per field per pair. Without the define
+the toggle warns once rather than reporting an all-zero funnel as if it were data.
+
+The funnel narrows in stages:
+
+```
+body pairs -> source features -> window roots -> occupied -> active -> cell tests -> contacts
+```
+
+Three ratios are the ones worth acting on:
+
+| ratio | what it decides |
+|---|---|
+| `roots / contact` | how much of each window is swept for nothing. Large means the target loop is search-bound and worth restructuring into a gathered local bit window with a branch-free kernel. |
+| `cache hit` | whether sector hash lookups still cost anything after the brick cache. Low means a per-source-brick gathered window would pay for itself. |
+| `dedup share` | how much redundancy carrier canonicalization is absorbing. High means the seam is still the dominant duplicate source and a reducer would help the solver. |
+
+`occupied share` and `active share` say how much of the window is empty space versus solid
+interior, which separates "the window is too big" from "the window is right but the body is
+mostly interior".
+
+If `roots / contact` is small and the cache hit rate is high, the loop is near its floor and
+what remains is arithmetic, not search — at which point the SoA and branch-free kernel work
+is the next step, not a wider cull.
+
+## 14. Verification
 
 * `Claude/verify_physics_active.py` — cross-checks the activity bit-row algebra against
   both the single-axis definition and the independent per-dimension geometric rules,

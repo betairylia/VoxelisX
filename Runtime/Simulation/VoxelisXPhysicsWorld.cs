@@ -262,6 +262,9 @@ namespace Voxelis.Simulation
             simulation.ResetSimulationContext(stepInput);
             Profiler.EndSample();
 
+            // Narrowphase funnel counters: clear before the jobs that fill them are scheduled.
+            BeginVoxelContactProfiling();
+
             Profiler.BeginSample("Physics Schedule Step Jobs");
             var handles = simulation.ScheduleStepJobs(stepInput, default, multiThreaded);
             Profiler.EndSample();
@@ -274,6 +277,7 @@ namespace Voxelis.Simulation
             // ResetSimulationContext, while this frame's voxel contact event stream is valid.
             Profiler.BeginSample("Physics Contact Debug Logging");
             LogVoxelContactsAfterStep(tickBuf.nDynamicBodies);
+            LogVoxelContactProfileAfterStep();
             Profiler.EndSample();
 
             Profiler.BeginSample("Physics OnSimulationFinished");
