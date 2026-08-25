@@ -29,10 +29,9 @@ namespace Voxelis.Simulation
     /// different masks: the vertex query scans occupancy, the edge query scans the physics key mask.
     /// So the vertex and edge columns of <c>touched share</c> are not measuring the same thing.
     ///
-    /// <c>brick resolves</c> is the number that matters for brick lookup cost: requests the memo
+    /// <c>brick resolves</c> is the number that matters for brick lookup cost: requests the cache
     /// could not answer, i.e. actual sector lookups. <c>brick lookups</c> counts requests, most of
-    /// which the memo answers for free. <c>window misses</c> should stay zero - a nonzero count
-    /// means a source brick reached a target brick outside the range the cull said it could.
+    /// which the cache answers for free.
     /// </remarks>
     public partial class VoxelisXPhysicsWorld
     {
@@ -148,11 +147,9 @@ namespace Voxelis.Simulation
               .Append("    body pairs ")
               .AppendLine(Mean(c.BodyPairs, divisor).ToString("F1"));
 
-            // The brick memo spans a whole source brick, so its shape sits outside the per-query
-            // columns. BrickResolves is the cost that matters - the requests the memo could not
-            // answer - and it is reported per query in the table below.
+            // Source brick count sits outside the per-query columns because both queries of a
+            // brick share the same cache state. BrickResolves is the cost that matters.
             sb.Append("  source bricks ").Append(Mean(c.SourceBricks, divisor).ToString("F1"))
-              .Append("   too wide ").Append(Mean(c.SourceBricksTooWide, divisor).ToString("F1"))
               .Append("   resolves per source brick ")
               .AppendLine(Ratio(total.BrickResolves, c.SourceBricks).ToString("F1"));
             sb.AppendLine();
@@ -171,8 +168,6 @@ namespace Voxelis.Simulation
             Counts(sb, "brick lookups", vertex.BrickLookups, edge.BrickLookups, total.BrickLookups, divisor);
             Counts(sb, "brick resolves", vertex.BrickResolves, edge.BrickResolves,
                 total.BrickResolves, divisor);
-            Counts(sb, "window misses", vertex.BrickWindowMisses, edge.BrickWindowMisses,
-                total.BrickWindowMisses, divisor);
 
             sb.AppendLine();
             sb.AppendLine("  ---- where the sweep goes");
