@@ -478,6 +478,17 @@ Counters accumulate on the stack for one body pair and flush once, so the hot lo
 touch shared memory; the flush is one interlocked add per field per pair. Without the define
 the toggle warns once rather than reporting an all-zero funnel as if it were data.
 
+**Trap: the shared accumulator must never change size.** Burst registers a `SharedStatic` in a
+native registry keyed by type, and that registry survives domain reloads - only a process
+restart clears it. A payload whose size changes throws
+`TypeInitializationException -> "Unable to create a SharedStatic for this key"` on every access
+until Unity is restarted, and because generation touches the profiler at the top of
+`_VoxelVoxel`, every voxel contact test fails before reaching any geometry. The counters are
+therefore stored in a fixed 64-slot long buffer and copied through it as a flat run of longs, so
+adding a counter is a recompile rather than a restart. Both counter structs must stay
+`[StructLayout(LayoutKind.Sequential)]` with `long` fields only for that copy to be valid, and
+`Reset` throws on the main thread if the struct outgrows the buffer.
+
 The funnel narrows in stages:
 
 ```

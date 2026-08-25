@@ -6,23 +6,24 @@ using UnityEngine;
 namespace Voxelis.Simulation
 {
     /// <summary>
-    /// Reads the voxel narrowphase funnel counters and logs them per tick.
+    /// Reads the voxel narrowphase funnel counters and logs them per tick, split by query.
     /// </summary>
     /// <remarks>
     /// Requires the scripting define <c>VOXELIS_CONTACT_PROFILING</c>. Without it the counters are
     /// compiled out of the physics assembly and every reading here is zero; the toggle below warns
     /// once instead of reporting silence as data.
     ///
-    /// The report is a funnel. Each stage narrows the one above it, so the ratios say where the
-    /// work goes:
+    /// The report is a funnel, one column per query plus the total:
     ///
-    ///   body pairs -> source features -> window roots -> occupied -> active -> cell tests -> contacts
+    ///   sources -> window roots -> occupied -> active -> cell tests -> contacts
     ///
-    /// Two ratios decide whether the target loop is worth restructuring into a gathered local
-    /// window and a branch-free kernel. <c>roots/contact</c> is how much of each window is swept
-    /// for nothing. <c>cache hit</c> is whether sector hash lookups still cost anything after the
-    /// brick cache. If roots/contact is small and the cache hit rate is high, the loop is already
-    /// near its floor and the remaining cost is arithmetic, not search.
+    /// The split matters because scenes load the two queries in opposite proportions. Large bodies
+    /// resting on ground are rim-heavy and run mostly edge sources; machinery of cogs and chains is
+    /// corner-heavy and runs mostly vertex sources. A blended total hides which query a change moved.
+    ///
+    /// <c>roots/contact</c> says how much of each window is swept for nothing, <c>cache hit</c>
+    /// whether sector hash lookups still cost anything, and <c>rows skipped</c> how much empty space
+    /// the word-level occupancy test rejects before any voxel is touched.
     /// </remarks>
     public partial class VoxelisXPhysicsWorld
     {
@@ -121,48 +122,96 @@ namespace Voxelis.Simulation
             return false;
         }
 
+        const int k_ProfileLabelWidth = 18;
+        const int k_ProfileColumnWidth = 13;
+
         static string FormatContactProfile(in VoxelContactCounters c, int divisor, int steps)
         {
-            double Per(long value) => divisor > 0 ? value / (double)divisor : 0.0;
-            double Ratio(long numerator, long denominator) =>
-                denominator > 0 ? numerator / (double)denominator : 0.0;
+            VoxelContactQueryCounters vertex = c.Vertex;
+            VoxelContactQueryCounters edge = c.Edge;
+            VoxelContactQueryCounters total = c.Total;
 
-            long sources = c.VertexSources + c.EdgeSources;
-            var sb = new StringBuilder(768);
-
+            var sb = new StringBuilder(2048);
             sb.Append("[VoxelContactProfile] ")
               .Append(divisor > 1 ? "mean of " : "last of ")
-              .Append(steps).AppendLine(divisor > 1 ? " steps" : " step(s)");
+              .Append(steps).Append(divisor > 1 ? " steps" : " step(s)")
+              .Append("    body pairs ")
+              .AppendLine(Mean(c.BodyPairs, divisor).ToString("F1"));
+            sb.AppendLine();
 
-            sb.Append("  body pairs      ").AppendLine(Per(c.BodyPairs).ToString("F1"));
-            sb.Append("  sources         ").Append(Per(sources).ToString("F1"))
-              .Append("   (vertex ").Append(Per(c.VertexSources).ToString("F1"))
-              .Append(", edge ").Append(Per(c.EdgeSources).ToString("F1")).AppendLine(")");
-            sb.Append("  window roots    ").Append(Per(c.WindowRoots).ToString("F1"))
-              .Append("   occupied ").Append(Per(c.OccupiedRoots).ToString("F1"))
-              .Append("   active ").AppendLine(Per(c.ActiveRoots).ToString("F1"));
-            sb.Append("  cell tests      ").AppendLine(Per(c.CellTests).ToString("F1"));
-            sb.Append("  contacts        ").Append(Per(c.ContactsEmitted).ToString("F1"))
-              .Append("   out of range ").Append(Per(c.ContactsOutOfRange).ToString("F1"))
-              .Append("   deduped ").Append(Per(c.ContactsDeduped).ToString("F1"))
-              .Append("   degenerate ").AppendLine(Per(c.ContactsDegenerate).ToString("F1"));
-            sb.Append("  brick lookups   ").Append(Per(c.BrickLookups).ToString("F1"))
-              .Append("   cache hit ")
-              .Append((100.0 * Ratio(c.BrickCacheHits, c.BrickLookups)).ToString("F1")).AppendLine("%");
+            Header(sb);
+            Counts(sb, "sources", vertex.Sources, edge.Sources, total.Sources, divisor);
+            Counts(sb, "window roots", vertex.WindowRoots, edge.WindowRoots, total.WindowRoots, divisor);
+            Counts(sb, "occupied", vertex.OccupiedRoots, edge.OccupiedRoots, total.OccupiedRoots, divisor);
+            Counts(sb, "active", vertex.ActiveRoots, edge.ActiveRoots, total.ActiveRoots, divisor);
+            Counts(sb, "cell tests", vertex.CellTests, edge.CellTests, total.CellTests, divisor);
+            Counts(sb, "contacts", vertex.ContactsEmitted, edge.ContactsEmitted, total.ContactsEmitted, divisor);
+            Counts(sb, "out of range", vertex.ContactsOutOfRange, edge.ContactsOutOfRange, total.ContactsOutOfRange, divisor);
+            Counts(sb, "deduped", vertex.ContactsDeduped, edge.ContactsDeduped, total.ContactsDeduped, divisor);
+            Counts(sb, "degenerate", vertex.ContactsDegenerate, edge.ContactsDegenerate, total.ContactsDegenerate, divisor);
+            Counts(sb, "rows tested", vertex.RowsTested, edge.RowsTested, total.RowsTested, divisor);
+            Counts(sb, "brick lookups", vertex.BrickLookups, edge.BrickLookups, total.BrickLookups, divisor);
 
-            sb.AppendLine("  ---- ratios that decide whether the target loop needs restructuring");
-            sb.Append("  roots / source  ").AppendLine(Ratio(c.WindowRoots, sources).ToString("F1"));
-            sb.Append("  roots / contact ").AppendLine(Ratio(c.WindowRoots, c.ContactsEmitted).ToString("F1"));
-            sb.Append("  tests / contact ").AppendLine(Ratio(c.CellTests, c.ContactsEmitted).ToString("F1"));
-            sb.Append("  occupied share  ")
-              .Append((100.0 * Ratio(c.OccupiedRoots, c.WindowRoots)).ToString("F1")).AppendLine("%");
-            sb.Append("  active share    ")
-              .Append((100.0 * Ratio(c.ActiveRoots, c.OccupiedRoots)).ToString("F1")).AppendLine("% of occupied");
-            sb.Append("  dedup share     ")
-              .Append((100.0 * Ratio(c.ContactsDeduped, c.ContactsDeduped + c.ContactsEmitted)).ToString("F1"))
-              .AppendLine("% of in-range hits");
+            sb.AppendLine();
+            sb.AppendLine("  ---- where the sweep goes");
+            Ratios(sb, "roots / source", vertex.WindowRoots, vertex.Sources, edge.WindowRoots, edge.Sources,
+                total.WindowRoots, total.Sources, "F1");
+            Ratios(sb, "roots / contact", vertex.WindowRoots, vertex.ContactsEmitted, edge.WindowRoots,
+                edge.ContactsEmitted, total.WindowRoots, total.ContactsEmitted, "F1");
+            Ratios(sb, "tests / contact", vertex.CellTests, vertex.ContactsEmitted, edge.CellTests,
+                edge.ContactsEmitted, total.CellTests, total.ContactsEmitted, "F1");
+            Percents(sb, "occupied share", vertex.OccupiedRoots, vertex.WindowRoots, edge.OccupiedRoots,
+                edge.WindowRoots, total.OccupiedRoots, total.WindowRoots);
+            Percents(sb, "active of occupied", vertex.ActiveRoots, vertex.OccupiedRoots, edge.ActiveRoots,
+                edge.OccupiedRoots, total.ActiveRoots, total.OccupiedRoots);
+            Percents(sb, "rows skipped", vertex.RowsSkipped, vertex.RowsTested, edge.RowsSkipped,
+                edge.RowsTested, total.RowsSkipped, total.RowsTested);
+            Percents(sb, "brick cache hit", vertex.BrickCacheHits, vertex.BrickLookups, edge.BrickCacheHits,
+                edge.BrickLookups, total.BrickCacheHits, total.BrickLookups);
+            Percents(sb, "dedup share", vertex.ContactsDeduped, vertex.ContactsDeduped + vertex.ContactsEmitted,
+                edge.ContactsDeduped, edge.ContactsDeduped + edge.ContactsEmitted,
+                total.ContactsDeduped, total.ContactsDeduped + total.ContactsEmitted);
 
             return sb.ToString();
+        }
+
+        static double Mean(long value, int divisor) => divisor > 0 ? value / (double)divisor : 0.0;
+
+        static double Ratio(long numerator, long denominator) =>
+            denominator > 0 ? numerator / (double)denominator : 0.0;
+
+        static void Header(StringBuilder sb)
+        {
+            sb.Append(' ', k_ProfileLabelWidth + 2)
+              .Append("vertex".PadLeft(k_ProfileColumnWidth))
+              .Append("edge".PadLeft(k_ProfileColumnWidth))
+              .AppendLine("total".PadLeft(k_ProfileColumnWidth));
+        }
+
+        static void Counts(StringBuilder sb, string label, long v, long e, long t, int divisor)
+        {
+            sb.Append("  ").Append(label.PadRight(k_ProfileLabelWidth))
+              .Append(Mean(v, divisor).ToString("F1").PadLeft(k_ProfileColumnWidth))
+              .Append(Mean(e, divisor).ToString("F1").PadLeft(k_ProfileColumnWidth))
+              .AppendLine(Mean(t, divisor).ToString("F1").PadLeft(k_ProfileColumnWidth));
+        }
+
+        static void Ratios(StringBuilder sb, string label, long vn, long vd, long en, long ed,
+            long tn, long td, string format)
+        {
+            sb.Append("  ").Append(label.PadRight(k_ProfileLabelWidth))
+              .Append(Ratio(vn, vd).ToString(format).PadLeft(k_ProfileColumnWidth))
+              .Append(Ratio(en, ed).ToString(format).PadLeft(k_ProfileColumnWidth))
+              .AppendLine(Ratio(tn, td).ToString(format).PadLeft(k_ProfileColumnWidth));
+        }
+
+        static void Percents(StringBuilder sb, string label, long vn, long vd, long en, long ed,
+            long tn, long td)
+        {
+            sb.Append("  ").Append(label.PadRight(k_ProfileLabelWidth))
+              .Append((100.0 * Ratio(vn, vd)).ToString("F1").PadLeft(k_ProfileColumnWidth - 1)).Append('%')
+              .Append((100.0 * Ratio(en, ed)).ToString("F1").PadLeft(k_ProfileColumnWidth - 1)).Append('%')
+              .Append((100.0 * Ratio(tn, td)).ToString("F1").PadLeft(k_ProfileColumnWidth - 1)).AppendLine("%");
         }
     }
 }
