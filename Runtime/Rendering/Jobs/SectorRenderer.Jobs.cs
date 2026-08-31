@@ -1,4 +1,4 @@
-﻿// #define VOXELISX_RENDER_DISABLE_TRANSPARENCY
+﻿// #define CAELIX_RENDER_DISABLE_TRANSPARENCY
 
 using System;
 using Unity.Burst;
@@ -7,9 +7,9 @@ using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
-using Voxelis.Utils;
+using Caelix.Utils;
 
-namespace Voxelis.Rendering
+namespace Caelix.Rendering
 {
     public partial class SectorRenderer
     {
@@ -44,7 +44,7 @@ namespace Voxelis.Rendering
             public SectorHandle sectorHandle;
 
             public SectorNeighborHandles neighbors;
-#if !VOXELISX_RENDER_DISABLE_CULLING
+#if !CAELIX_RENDER_DISABLE_CULLING
             public SparseBrickIdTable rendererBrickMap;
             private SectorNeighborhoodReaderHelper helper;
 #endif
@@ -73,7 +73,7 @@ namespace Voxelis.Rendering
 
                 ref Sector sector = ref sectorHandle.Get();
 
-#if !VOXELISX_RENDER_DISABLE_CULLING
+#if !CAELIX_RENDER_DISABLE_CULLING
                 helper = new SectorNeighborhoodReaderHelper(sectorHandle, neighbors);
 #endif
 
@@ -147,7 +147,7 @@ namespace Voxelis.Rendering
                             
                             int rendererBlockIdx = Sector.ToBlockIdx(bx, by, bz) / 2;
                             
-#if !VOXELISX_RENDER_DISABLE_CULLING
+#if !CAELIX_RENDER_DISABLE_CULLING
                             uint block0Data = GetRendererBlockData(block0, brickBlockPos + new int3(bx, by, bz));
                             uint block1Data = GetRendererBlockData(block1, brickBlockPos + new int3(bx + 1, by, bz));
                             
@@ -168,7 +168,7 @@ namespace Voxelis.Rendering
                             // Brick not allocated yet
                             if (rendererBrickId == -1)
                             {
-#if !VOXELISX_RENDER_DISABLE_CULLING
+#if !CAELIX_RENDER_DISABLE_CULLING
                                 // Alloc the buffer
                                 bool requireExtension = false;
                                 isAdded = rendererBrickMap.AddBrick(brickPos, out rendererBrickId, out requireExtension);
@@ -225,7 +225,7 @@ namespace Voxelis.Rendering
                 // TODO: Compaction?
                 if (coarseOccupancy == 0)
                 {
-#if !VOXELISX_RENDER_DISABLE_CULLING
+#if !CAELIX_RENDER_DISABLE_CULLING
                     int removed = rendererBrickMap.RemoveBrick(brickPos);
 #else
                     int removed = SparseBrickIdTable.EMPTY;
@@ -289,12 +289,12 @@ namespace Voxelis.Rendering
                 }
             }
 
-#if !VOXELISX_RENDER_DISABLE_CULLING
+#if !CAELIX_RENDER_DISABLE_CULLING
             private ushort GetRendererBlockData(Block currentBlock, int3 sectorBlockPos)
             {
                 bool alive = false;
 
-    #if !VOXELISX_RENDER_DISABLE_TRANSPARENCY
+    #if !CAELIX_RENDER_DISABLE_TRANSPARENCY
                 bool isOpaque = currentBlock.isOpaque;
                 uint transparentId = currentBlock.transparentId;
                 uint faceMask = 0;
@@ -305,7 +305,7 @@ namespace Voxelis.Rendering
                     int3 nd = NeighborhoodSettings.Directions[ni];
                     Block neighbor = helper.GetBlock(sectorBlockPos + nd);
                     
-    #if !VOXELISX_RENDER_DISABLE_TRANSPARENCY
+    #if !CAELIX_RENDER_DISABLE_TRANSPARENCY
                     // Opaque face is always non-visible
                     alive |= (!neighbor.isOpaque);
                     
@@ -333,7 +333,7 @@ namespace Voxelis.Rendering
                 }
 
                 ushort result = 0;
-    #if !VOXELISX_RENDER_DISABLE_TRANSPARENCY
+    #if !CAELIX_RENDER_DISABLE_TRANSPARENCY
                 if (!isOpaque)
                 {
                     result = (ushort)Block.MaskTransparency(faceMask, transparentId);

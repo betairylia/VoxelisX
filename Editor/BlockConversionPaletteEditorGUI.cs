@@ -2,7 +2,7 @@ using System;
 using UnityEditor;
 using UnityEngine;
 
-namespace Voxelis.EditorTools
+namespace Caelix.EditorTools
 {
     internal static class BlockConversionPaletteEditorGUI
     {
@@ -77,7 +77,7 @@ namespace Voxelis.EditorTools
 
             EditorGUI.LabelField(colorRect, "Color", EditorStyles.miniBoldLabel);
             EditorGUI.LabelField(sourceIdRect, sourceIdHeader, EditorStyles.miniBoldLabel);
-            EditorGUI.LabelField(blockIdRect, "VoxelisX Block ID", EditorStyles.miniBoldLabel);
+            EditorGUI.LabelField(blockIdRect, "Caelix Block ID", EditorStyles.miniBoldLabel);
         }
 
         private static void DrawEntry(

@@ -2,5 +2,6 @@
 .idea/
 .DS_Store
 .codex
-StressTest/
+StressTest~/
+StressTest~.meta
 StressTest.meta

@@ -1,11 +1,11 @@
 using NUnit.Framework;
 using Unity.Collections;
 using Unity.Mathematics;
-using Voxelis;
-using Voxelis.Rendering.Meshing;
-using VoxelisX.Tests.TestSupport;
+using Caelix;
+using Caelix.Rendering.Meshing;
+using Caelix.Tests.TestSupport;
 
-namespace VoxelisX.Tests
+namespace Caelix.Tests
 {
     public class MeshingRendererTests
     {

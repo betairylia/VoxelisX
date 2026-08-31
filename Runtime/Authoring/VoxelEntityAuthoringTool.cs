@@ -5,7 +5,7 @@ using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
-namespace Voxelis.Authoring
+namespace Caelix.Authoring
 {
     /// <summary>
     /// Base component for editable scene tools that generate a temporary voxel entity.

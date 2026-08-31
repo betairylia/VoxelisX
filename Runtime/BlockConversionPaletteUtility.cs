@@ -2,10 +2,10 @@ using System;
 using System.Collections.Generic;
 using UnityEngine;
 
-namespace Voxelis
+namespace Caelix
 {
     /// <summary>
-    /// Shared mechanics for file-loader palettes whose source keys map to VoxelisX block IDs.
+    /// Shared mechanics for file-loader palettes whose source keys map to Caelix block IDs.
     /// Format-specific loaders remain responsible for choosing and validating their source keys.
     /// </summary>
     internal static class BlockConversionPaletteUtility

@@ -4,10 +4,10 @@ using System.IO;
 using Unity.Mathematics;
 using UnityEngine;
 
-namespace Voxelis
+namespace Caelix
 {
     /// <summary>
-    /// Maps a BMP palette entry or direct pixel color to a VoxelisX block ID.
+    /// Maps a BMP palette entry or direct pixel color to a Caelix block ID.
     /// </summary>
     [Serializable]
     public struct BmpBlockConversion
@@ -28,7 +28,7 @@ namespace Voxelis
         public Color32 BmpColor => bmpColor;
 
         /// <summary>
-        /// The VoxelisX block ID used when importing matching pixels.
+        /// The Caelix block ID used when importing matching pixels.
         /// </summary>
         public ushort TargetBlockId => (ushort)Mathf.Clamp(targetBlockId, ushort.MinValue, ushort.MaxValue);
 
@@ -67,7 +67,7 @@ namespace Voxelis
         private VoxelEntity entity;
 
         /// <summary>
-        /// The currently configured BMP-to-VoxelisX palette mappings.
+        /// The currently configured BMP-to-Caelix palette mappings.
         /// </summary>
         public IReadOnlyList<BmpBlockConversion> BlockConversionPalette => blockConversionPalette;
 

@@ -3,9 +3,9 @@ using NUnit.Framework;
 using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Splines;
-using Voxelis.Authoring;
+using Caelix.Authoring;
 
-namespace VoxelisX.Tests
+namespace Caelix.Tests
 {
     public class VoxelSplineAuthoringTests
     {

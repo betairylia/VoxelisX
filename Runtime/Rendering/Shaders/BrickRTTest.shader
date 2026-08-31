@@ -1,4 +1,4 @@
-Shader "VoxelisX/BrickRTTest"
+Shader "Caelix/BrickRTTest"
 {
     Properties
     {
@@ -11,7 +11,7 @@ Shader "VoxelisX/BrickRTTest"
     {
         Pass
         {
-            Name "VoxelisX"
+            Name "Caelix"
             Tags{
                 "LightMode" = "RayTracing"
             }
@@ -23,10 +23,10 @@ Shader "VoxelisX/BrickRTTest"
 
             #include "RayPayload.hlsl"
             #include "Utils/Utils.hlsl"
-            #include "Assets/VoxelisX/VoxelMaterials.hlsl"
+            #include "Assets/Caelix/VoxelMaterials.hlsl"
             #include "Utils/BlueNoise.hlsl"
 
-            #include "VoxelisXBrickTrace.hlsl"
+            #include "CaelixBrickTrace.hlsl"
             
             float _Smoothness;
             float _Metallic;
@@ -41,7 +41,7 @@ Shader "VoxelisX/BrickRTTest"
             void IntersectionMain()
             {
                 AttributeData attrib;
-                float T = VoxelisXTraceBrickPrimitive(attrib);
+                float T = CaelixTraceBrickPrimitive(attrib);
                 
                 if (attrib.matID_faceNormal)
                 {
@@ -54,14 +54,14 @@ Shader "VoxelisX/BrickRTTest"
             [shader("closesthit")]
             void ClosestHitMain(inout RayPayload payload : SV_RayPayload, AttributeData attribs : SV_IntersectionAttributes)
             {
-                VoxelisXBrickHit hit;
+                CaelixBrickHit hit;
                 payload.T = RayTCurrent();
                 payload.materialID_voxelFaceHash = attribs.matID_faceNormal;
-                payload.packedWorldNormal = VoxelisXPackWorldNormal(mul((float3x3)ObjectToWorld3x4(), UnpackObjectNormal(attribs.matID_faceNormal)));
+                payload.packedWorldNormal = CaelixPackWorldNormal(mul((float3x3)ObjectToWorld3x4(), UnpackObjectNormal(attribs.matID_faceNormal)));
 
                 float3 objectHitPosition = ObjectRayOrigin() + ObjectRayDirection() * payload.T;
                 float3 worldHitPosition = WorldRayOrigin() + WorldRayDirection() * payload.T;
-                payload.packedPrevWorldOffset = VoxelisXPackFloat3ToHalf4(
+                payload.packedPrevWorldOffset = CaelixPackFloat3ToHalf4(
                 mul(_PrevObjectToWorld, float4(objectHitPosition, 1.0f)).xyz - worldHitPosition);
             }
             

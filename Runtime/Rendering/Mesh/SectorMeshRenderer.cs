@@ -5,9 +5,9 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Rendering;
-using Voxelis.Utils;
+using Caelix.Utils;
 
-namespace Voxelis.Rendering.Meshing
+namespace Caelix.Rendering.Meshing
 {
     /// <summary>
     /// Manages mesh rendering for a single sector.

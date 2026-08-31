@@ -3,9 +3,9 @@ using UnityEditor;
 using UnityEditor.EditorTools;
 using UnityEditor.Splines;
 using UnityEngine;
-using Voxelis.Authoring;
+using Caelix.Authoring;
 
-namespace Voxelis.Authoring.EditorTools
+namespace Caelix.Authoring.EditorTools
 {
     [CustomEditor(typeof(VoxelSplineAuthoring))]
     [CanEditMultipleObjects]

@@ -1,8 +1,8 @@
 using UnityEditor;
 using UnityEngine;
-using Voxelis.Authoring;
+using Caelix.Authoring;
 
-namespace Voxelis.Authoring.EditorTools
+namespace Caelix.Authoring.EditorTools
 {
     /// <summary>
     /// Rebuilds authoring tools after an undo or redo.

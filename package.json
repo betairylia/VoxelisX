@@ -1,19 +1,18 @@
 {
-  "name": "com.voxelis.voxelisx",
-  "version": "0.1.0",
-  "displayName": "VoxelisX",
+  "name": "ink.irylia.caelix",
+  "version": "0.0.1-dev.1",
+  "displayName": "Caelix",
   "description": "Ray-traced dynamic VoxelEngine for Unity URP",
-  "unity": "6000.0",
-  "documentationUrl": "https://example.com/",
-  "changelogUrl": "https://example.com/changelog.html",
-  "licensesUrl": "https://example.com/licensing.html",
+  "unity": "6000.5",
   "dependencies": {
     "com.unity.burst": "1.8.25",
     "com.unity.collections": "2.6.3",
     "com.unity.entities": "1.4.3",
     "com.unity.mathematics": "1.3.2",
     "com.unity.splines": "2.9.0",
-    "com.unity.render-pipelines.universal": "17.0.0"
+    "com.unity.render-pipelines.universal": "17.0.0",
+    "ink.irylia.caelix.core": "0.0.1-dev.1",
+    "ink.irylia.caelix.physics": "0.0.1-dev.1"
  },
  "keywords": [
     "Voxel Engine",

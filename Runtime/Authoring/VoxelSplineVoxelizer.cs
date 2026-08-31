@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-namespace Voxelis.Authoring
+namespace Caelix.Authoring
 {
     /// <summary>Rasterizes sampled paths into solid voxel pencil strokes.</summary>
     /// <remarks>

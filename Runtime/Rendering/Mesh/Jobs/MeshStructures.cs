@@ -3,7 +3,7 @@ using Unity.Collections;
 using Unity.Mathematics;
 using UnityEngine;
 
-namespace Voxelis.Rendering.Meshing
+namespace Caelix.Rendering.Meshing
 {
     /// <summary>
     /// Vertex structure for voxel mesh generation.

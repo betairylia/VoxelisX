@@ -1,7 +1,7 @@
 using UnityEditor;
 using UnityEngine;
 
-namespace Voxelis.EditorTools
+namespace Caelix.EditorTools
 {
     [CustomEditor(typeof(VoxFileLoader))]
     public sealed class VoxFileLoaderEditor : Editor

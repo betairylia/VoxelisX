@@ -1,8 +1,8 @@
 using NUnit.Framework;
 using Unity.Mathematics;
-using Voxelis.Rendering;
+using Caelix.Rendering;
 
-namespace VoxelisX.Tests
+namespace Caelix.Tests
 {
     public class BrickRenderLayoutTests
     {
@@ -37,7 +37,7 @@ namespace VoxelisX.Tests
             Assert.That((packed >> 24) & 0xFF, Is.EqualTo(0));
         }
 
-        // Mirrors the unpack in VoxelisXBrickTrace.hlsl (VoxelisXTraceBrickPrimitive):
+        // Mirrors the unpack in CaelixBrickTrace.hlsl (CaelixTraceBrickPrimitive):
         // [minX:0-2][minY:3-5][minZ:6-8][maxX:9-11][maxY:12-14][maxZ:15-17], bounds inclusive.
         [TestCase(0, 0, 0, 7, 7, 7)]
         [TestCase(0, 0, 0, 0, 0, 0)]

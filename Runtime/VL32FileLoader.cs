@@ -2,7 +2,7 @@ using System.IO;
 using Unity.Mathematics;
 using UnityEngine;
 
-namespace Voxelis
+namespace Caelix
 {
     /// <summary>
     /// Loads voxel data from VL32 files into a <see cref="VoxelEntity"/>.

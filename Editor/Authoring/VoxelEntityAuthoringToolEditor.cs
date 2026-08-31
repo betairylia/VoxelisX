@@ -1,8 +1,8 @@
 using UnityEditor;
 using UnityEngine;
-using Voxelis.Authoring;
+using Caelix.Authoring;
 
-namespace Voxelis.Authoring.EditorTools
+namespace Caelix.Authoring.EditorTools
 {
     internal abstract class VoxelEntityAuthoringToolEditor : UnityEditor.Editor
     {
@@ -54,7 +54,7 @@ namespace Voxelis.Authoring.EditorTools
                 }
 
                 EditorGUILayout.HelpBox(
-                    "Keep Changes After Play marks this tool. VoxelisX reads its live values as Play Mode exits, " +
+                    "Keep Changes After Play marks this tool. Caelix reads its live values as Play Mode exits, " +
                     "applies them to the scene object, and saves the scene, so later edits are included automatically.",
                     MessageType.Info);
             }

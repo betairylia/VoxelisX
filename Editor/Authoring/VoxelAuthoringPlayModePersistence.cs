@@ -4,9 +4,9 @@ using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.SceneManagement;
-using Voxelis.Authoring;
+using Caelix.Authoring;
 
-namespace Voxelis.Authoring.EditorTools
+namespace Caelix.Authoring.EditorTools
 {
     /// <summary>
     /// Stores an authoring tool snapshot in SessionState during Play Mode, restores it after
@@ -15,7 +15,7 @@ namespace Voxelis.Authoring.EditorTools
     [InitializeOnLoad]
     internal static class VoxelAuthoringPlayModePersistence
     {
-        private const string SessionKey = "VoxelisX.Authoring.PendingPlayModeSnapshots";
+        private const string SessionKey = "Caelix.Authoring.PendingPlayModeSnapshots";
 
         [Serializable]
         private sealed class SnapshotCollection
@@ -75,7 +75,7 @@ namespace Voxelis.Authoring.EditorTools
             Save(collection);
 
             Debug.Log(
-                $"'{tool.name}' will keep its Play Mode changes. VoxelisX re-reads the live values when Play Mode " +
+                $"'{tool.name}' will keep its Play Mode changes. Caelix re-reads the live values when Play Mode " +
                 "exits, so later edits are included automatically.",
                 tool);
         }

@@ -3,10 +3,10 @@
 using System;
 using Unity.Mathematics;
 using UnityEngine;
-using Voxelis;
-using Voxelis.Utils;
+using Caelix;
+using Caelix.Utils;
 
-namespace Voxelis
+namespace Caelix
 {
     internal interface IVoxelRaycastTarget
     {
@@ -52,8 +52,8 @@ namespace Voxelis
         /// <summary>
         /// The voxel world renderer containing all voxel entities to raycast against.
         /// </summary>
-        [Tooltip("Reference to the VoxelisX world renderer")]
-        public VoxelisXCoreWorld targetWorld;
+        [Tooltip("Reference to the Caelix world renderer")]
+        public CaelixCoreWorld targetWorld;
 
         /// <summary>
         /// The block type ID currently held by the player for placement.

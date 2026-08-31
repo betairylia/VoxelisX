@@ -1,14 +1,14 @@
 using System;
 using UnityEngine;
 
-namespace Voxelis.Rendering.Meshing
+namespace Caelix.Rendering.Meshing
 {
     /// <summary>
     /// MonoBehaviour component for managing mesh-based voxel rendering.
     /// Automatically discovers and renders all VoxelEntity instances in the scene.
     /// This provides a fallback rendering method for platforms that don't support ray tracing (e.g., macOS).
     /// </summary>
-    [AddComponentMenu("Voxelis/Voxel Mesh Renderer")]
+    [AddComponentMenu("Caelix/Voxel Mesh Renderer")]
     public class VoxelMeshRendererComponent : MonoBehaviour
     {
         [Header("Mesh Settings")]

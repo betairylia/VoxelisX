@@ -1,0 +1,39 @@
+{
+    "name": "Caelix.Tests",
+    "rootNamespace": "Caelix.Tests",
+    "references": [
+        "GUID:27619889b8ba8c24980f49ee34dbb44a",
+        "GUID:0acc523941302664db1f4e527237feb3",
+        "GUID:855b02a26d3920647a4e726003fbebeb",
+        "GUID:f67c08170e7480e4387e5e6513ebd65c",
+        "GUID:d8b63aba1907145bea998dd612889d6b",
+        "GUID:e0cd26848372d4e5c891c569017e11f1",
+        "GUID:2665a8d13d1b3f18800f46e256720795",
+        "GUID:6a24c2880bd987c45ae5f1eea549342a",
+        "GUID:f3308e4921f17a74388ef6e08d716075",
+        "GUID:ee223c682114030479db9169fd343e2a",
+        "GUID:6b1d380945b2566408e5837f5dbb3ff1",
+        "GUID:8a1c450fd8e067e4d9bf03b7bf85843c",
+        "GUID:ed204854e10122a43aebf832b20c0635",
+        "GUID:688d11c459ec6e241a8227dd62b47e2b",
+        "GUID:734d92eba21c94caba915361bd5ac177",
+        "Unity.Splines",
+        "Caelix.Core.Tests",
+        "Caelix.Physics"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": true,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "nunit.framework.dll"
+    ],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "UNITY_INCLUDE_TESTS"
+    ],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

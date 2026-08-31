@@ -2,13 +2,13 @@ using UnityEditor;
 using UnityEditor.EditorTools;
 using UnityEditor.Splines;
 using UnityEngine;
-using Voxelis.Authoring;
+using Caelix.Authoring;
 
-namespace Voxelis.Authoring.EditorTools
+namespace Caelix.Authoring.EditorTools
 {
     internal static class VoxelSplineAuthoringMenu
     {
-        [MenuItem("GameObject/VoxelisX/Authoring/Voxel Spline", false, 10)]
+        [MenuItem("GameObject/Caelix/Authoring/Voxel Spline", false, 10)]
         private static void Create(MenuCommand command)
         {
             // Creating the object and adding its components are separate undo entries by default,

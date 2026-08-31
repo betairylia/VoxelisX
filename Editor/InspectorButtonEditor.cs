@@ -3,9 +3,9 @@ using System.Collections.Generic;
 using System.Reflection;
 using UnityEditor;
 using UnityEngine;
-using Voxelis;
+using Caelix;
 
-namespace Voxelis.EditorTools
+namespace Caelix.EditorTools
 {
     [CanEditMultipleObjects]
     [CustomEditor(typeof(MonoBehaviour), true)]

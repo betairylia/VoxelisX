@@ -2,9 +2,9 @@ using System;
 using System.Collections.Generic;
 using NUnit.Framework;
 using UnityEngine;
-using Voxelis;
+using Caelix;
 
-namespace VoxelisX.Tests
+namespace Caelix.Tests
 {
     public class BmpFileLoaderTests
     {

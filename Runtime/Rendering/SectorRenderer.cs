@@ -9,10 +9,10 @@ using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Profiling;
 using UnityEngine.Rendering;
-using Voxelis.Utils;
+using Caelix.Utils;
 using Random = UnityEngine.Random;
 
-namespace Voxelis.Rendering
+namespace Caelix.Rendering
 {
     /// <summary>
     /// Manages rendering of a single voxel sector, including GPU buffer management
@@ -77,7 +77,7 @@ namespace Voxelis.Rendering
         
         /// <summary>
         /// Shared material used for rendering all sectors.
-        /// Set globally by VoxelisXRenderer on initialization.
+        /// Set globally by CaelixRenderer on initialization.
         /// </summary>
         public static Material sectorMaterial;
 
@@ -121,7 +121,7 @@ namespace Voxelis.Rendering
 
         private NativeList<AABB> hostAABBBuffer;
         private NativeList<int> hostBrickBuffer;
-#if !VOXELISX_RENDER_DISABLE_CULLING
+#if !CAELIX_RENDER_DISABLE_CULLING
         private SparseBrickIdTable rendererBrickMap;
 #endif
 
@@ -129,7 +129,7 @@ namespace Voxelis.Rendering
         {
             get
             {
-#if VOXELISX_RENDER_DISABLE_CULLING
+#if CAELIX_RENDER_DISABLE_CULLING
                 return hostAABBBuffer.Length;
 #else
                 return rendererBrickMap.Capacity;
@@ -180,7 +180,7 @@ namespace Voxelis.Rendering
             if (sector.RendererNonEmptyBrickCount == 0) return;
 
             int requestedCapacity = 0;
-#if VOXELISX_RENDER_DISABLE_CULLING
+#if CAELIX_RENDER_DISABLE_CULLING
             requestedCapacity = sector.RendererNonEmptyBrickCount;
 #endif
 
@@ -190,14 +190,14 @@ namespace Voxelis.Rendering
                 hostAABBBuffer = new NativeList<AABB>(requestedCapacity, Allocator.Persistent);
                 hostBrickBuffer = new NativeList<int>(requestedCapacity * BRICK_DATA_LENGTH,
                     Allocator.Persistent);
-#if !VOXELISX_RENDER_DISABLE_CULLING
+#if !CAELIX_RENDER_DISABLE_CULLING
                 rendererBrickMap = SparseBrickIdTable.New(Allocator.Persistent);
 #endif
             }
 
             // Pre-allocate buffers only for non-culling case
             // Since we already know how many bricks will be there before running the actual data-filling job
-#if VOXELISX_RENDER_DISABLE_CULLING
+#if CAELIX_RENDER_DISABLE_CULLING
             hostAABBBuffer.Resize(requestedCapacity, NativeArrayOptions.ClearMemory);
             hostBrickBuffer.Resize(requestedCapacity * BRICK_DATA_LENGTH, NativeArrayOptions.ClearMemory);
 #endif
@@ -391,7 +391,7 @@ namespace Voxelis.Rendering
             // Set for the frame an entity flips to static (including the initial flip on a
             // born-static body). Collapsing prev onto the current transform zeroes the motion
             // vectors once, so the denoiser stops reprojecting a body that will never move again.
-            // VoxelisXRenderer clears the flag after every sector of the entity has consumed it.
+            // CaelixRenderer clears the flag after every sector of the entity has consumed it.
             bool resetsMotionVectors = entity._shouldResetMotionVectors;
             Matrix4x4 prevObjectToWorld = (hasPreviousObjectToWorld && !resetsMotionVectors)
                 ? previousObjectToWorld
@@ -507,7 +507,7 @@ namespace Voxelis.Rendering
             {
                 sectorHandle = sector,
                 neighbors = neighborHandle,
-#if !VOXELISX_RENDER_DISABLE_CULLING
+#if !CAELIX_RENDER_DISABLE_CULLING
                 rendererBrickMap = rendererBrickMap,
 #endif
                 aabbBuffer = hostAABBBuffer,
@@ -534,7 +534,7 @@ namespace Voxelis.Rendering
         {
             if (hostAABBBuffer.IsCreated) hostAABBBuffer.Dispose();
             if (hostBrickBuffer.IsCreated) hostBrickBuffer.Dispose();
-#if !VOXELISX_RENDER_DISABLE_CULLING
+#if !CAELIX_RENDER_DISABLE_CULLING
             if (rendererBrickMap.IsCreated) rendererBrickMap.Dispose();
 #endif
             

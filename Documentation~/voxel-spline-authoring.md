@@ -1,6 +1,6 @@
 # Voxel spline authoring
 
-Create a tool with **GameObject > VoxelisX > Authoring > Voxel Spline**.
+Create a tool with **GameObject > Caelix > Authoring > Voxel Spline**.
 
 1. Select **Edit Spline in Scene View**.
 2. Use Unity's spline knot and tangent controls.
@@ -40,11 +40,11 @@ Undo and redo work on the spline, on the tool's settings, and on creating the to
 the generated voxels live in native memory that Unity's undo system does not track, an undo restores
 the *inputs* and the tool then regenerates the voxels from them.
 
-During Play Mode, select **Keep Changes After Play**. That marks the tool; VoxelisX reads its live
+During Play Mode, select **Keep Changes After Play**. That marks the tool; Caelix reads its live
 values as Play Mode exits, applies them to the scene object and saves the scene, so edits made after
 you pressed the button are included too. Select **Cancel Keep Changes** to drop the mark.
 
-The working entity is excluded from VoxelisX `.vxw` saves.
+The working entity is excluded from Caelix `.vxw` saves.
 
 - **Bake as New Saveable Entity** creates a regular static `VoxelEntity` and `VoxelBody`. It has no
   spline controls and is included in the next world save.

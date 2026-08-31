@@ -4,10 +4,10 @@ using Unity.Mathematics;
 using UnityEngine;
 using VoxReader.Interfaces;
 
-namespace Voxelis
+namespace Caelix
 {
     /// <summary>
-    /// Maps a MagicaVoxel palette entry to a VoxelisX block ID.
+    /// Maps a MagicaVoxel palette entry to a Caelix block ID.
     /// </summary>
     [Serializable]
     public struct VoxBlockConversion
@@ -28,7 +28,7 @@ namespace Voxelis
         public Color32 VoxColor => voxColor;
 
         /// <summary>
-        /// The VoxelisX block ID used when importing voxels with this palette ID.
+        /// The Caelix block ID used when importing voxels with this palette ID.
         /// </summary>
         public ushort TargetBlockId => (ushort)Mathf.Clamp(targetBlockId, ushort.MinValue, ushort.MaxValue);
 
@@ -45,7 +45,7 @@ namespace Voxelis
     /// </summary>
     /// <remarks>
     /// The Y and Z axes are swapped during import to match Unity's coordinate system.
-    /// Used VOX palette IDs can be mapped to arbitrary VoxelisX block IDs. Colors without
+    /// Used VOX palette IDs can be mapped to arbitrary Caelix block IDs. Colors without
     /// a mapping retain the loader's legacy stone/RGB555 fallback behavior.
     /// </remarks>
     [RequireComponent(typeof(VoxelEntity))]
@@ -64,7 +64,7 @@ namespace Voxelis
         private VoxelEntity entity;
 
         /// <summary>
-        /// The currently configured VOX-to-VoxelisX palette mappings.
+        /// The currently configured VOX-to-Caelix palette mappings.
         /// </summary>
         public IReadOnlyList<VoxBlockConversion> BlockConversionPalette => blockConversionPalette;
 

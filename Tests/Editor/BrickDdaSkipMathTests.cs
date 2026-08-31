@@ -1,7 +1,7 @@
 using NUnit.Framework;
 using Unity.Mathematics;
 
-namespace VoxelisX.Tests
+namespace Caelix.Tests
 {
     public class BrickDdaSkipMathTests
     {

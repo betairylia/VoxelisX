@@ -1,4 +1,4 @@
-Shader "VoxelisX/PostFlip"
+Shader "Caelix/PostFlip"
 {
     HLSLINCLUDE
 
@@ -13,27 +13,27 @@ Shader "VoxelisX/PostFlip"
         TEXTURE2D(_DepthTex);
         SAMPLER(sampler_DepthTex);
 
-        // Must match the VoxelisXDebugView enum (VoxelisXRenderSettings.cs). The present stage binds
+        // Must match the CaelixDebugView enum (CaelixRenderSettings.cs). The present stage binds
         // the matching buffer as _BlitTexture, so this only selects how to decode it.
-        #define VOXELISX_DEBUG_REGULAR                       0
-        #define VOXELISX_DEBUG_MOTION_VECTOR                 1
-        #define VOXELISX_DEBUG_ALBEDO                        2
-        #define VOXELISX_DEBUG_NORMAL                        3
-        #define VOXELISX_DEBUG_DEPTH                         4
-        #define VOXELISX_DEBUG_DETERMINISTIC_RADIANCE        5
-        #define VOXELISX_DEBUG_INDIRECT_RADIANCE_RAW         6
-        #define VOXELISX_DEBUG_INDIRECT_RADIANCE_FILTERED    7
-        #define VOXELISX_DEBUG_INDIRECT_RADIANCE_ACCUMULATED 8
-        #define VOXELISX_DEBUG_STOCHASTIC_DIFFUSE            9
-        #define VOXELISX_DEBUG_STOCHASTIC_SPECULAR           10
+        #define CAELIX_DEBUG_REGULAR                       0
+        #define CAELIX_DEBUG_MOTION_VECTOR                 1
+        #define CAELIX_DEBUG_ALBEDO                        2
+        #define CAELIX_DEBUG_NORMAL                        3
+        #define CAELIX_DEBUG_DEPTH                         4
+        #define CAELIX_DEBUG_DETERMINISTIC_RADIANCE        5
+        #define CAELIX_DEBUG_INDIRECT_RADIANCE_RAW         6
+        #define CAELIX_DEBUG_INDIRECT_RADIANCE_FILTERED    7
+        #define CAELIX_DEBUG_INDIRECT_RADIANCE_ACCUMULATED 8
+        #define CAELIX_DEBUG_STOCHASTIC_DIFFUSE            9
+        #define CAELIX_DEBUG_STOCHASTIC_SPECULAR           10
 
         int _DebugView;
 
-        // The VoxelisX G-buffer carries linear view depth, but SV_Depth wants a raw
+        // The Caelix G-buffer carries linear view depth, but SV_Depth wants a raw
         // (post-projection, platform-convention) depth. This is the inverse of LinearEyeDepth,
         // which is 1/(z*raw + w) -- this conversion belongs here, at the only point the depth is
         // consumed as a depth-buffer value.
-        float VoxelisXEyeDepthToRawDepth(float eyeZ)
+        float CaelixEyeDepthToRawDepth(float eyeZ)
         {
             // saturate() pins beyond-far hits onto the far plane under either depth convention:
             // reversed-Z produces a small negative value there, non-reversed slightly over 1.
@@ -50,10 +50,10 @@ Shader "VoxelisX/PostFlip"
             // Point-sampled: depth is discontinuous at silhouettes, so interpolating it would
             // produce in-between values that exist on no surface.
             float linearViewDepth = SAMPLE_TEXTURE2D(_DepthTex, sampler_PointClamp, uv).r;
-            float rawDepth = VoxelisXEyeDepthToRawDepth(linearViewDepth);
+            float rawDepth = CaelixEyeDepthToRawDepth(linearViewDepth);
             outDepth = rawDepth;
 
-            if (_DebugView == VOXELISX_DEBUG_MOTION_VECTOR)
+            if (_DebugView == CAELIX_DEBUG_MOTION_VECTOR)
             {
                 // Raw buffer contents, so this reads in the stored NRD convention
                 // (previousUV - currentUV): the colour points back to where the surface came from.
@@ -65,14 +65,14 @@ Shader "VoxelisX/PostFlip"
                     1.0f);
             }
 
-            if (_DebugView == VOXELISX_DEBUG_NORMAL)
+            if (_DebugView == CAELIX_DEBUG_NORMAL)
             {
                 // Normals are stored octahedral-packed in .xy over [0,1].
                 float3 normal = UnpackNormalOctQuadEncode(source.xy * 2.0f - 1.0f);
                 return float4(normal * 0.5f + 0.5f, 1.0f);
             }
 
-            if (_DebugView == VOXELISX_DEBUG_DEPTH)
+            if (_DebugView == CAELIX_DEBUG_DEPTH)
             {
                 // The buffer holds linear view depth in world units, which would blow out to white,
                 // so show the converted raw depth instead -- it spans [0,1] and is what actually
@@ -80,7 +80,7 @@ Shader "VoxelisX/PostFlip"
                 return float4(rawDepth.rrr, 1.0f);
             }
 
-            if (_DebugView != VOXELISX_DEBUG_REGULAR)
+            if (_DebugView != CAELIX_DEBUG_REGULAR)
             {
                 // Albedo and the radiance buffers are all plain colour; show them opaque so empty
                 // regions read as black instead of letting the scene behind show through.
@@ -105,7 +105,7 @@ Shader "VoxelisX/PostFlip"
 
         Pass
         {
-            Name "VoxelisXPresent"
+            Name "CaelixPresent"
 
             HLSLPROGRAM
 

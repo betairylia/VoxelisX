@@ -1,4 +1,4 @@
-namespace Voxelis
+namespace Caelix
 {
     /// <summary>
     /// Global input-capture flags, set by whatever UI is currently consuming raw input

@@ -1,4 +1,4 @@
-Shader "Voxelis/VoxelMeshDiffuse"
+Shader "Caelix/VoxelMeshDiffuse"
 {
     Properties
     {

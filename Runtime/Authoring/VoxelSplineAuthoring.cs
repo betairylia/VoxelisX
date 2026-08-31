@@ -3,10 +3,10 @@ using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Splines;
 
-namespace Voxelis.Authoring
+namespace Caelix.Authoring
 {
     /// <summary>Scene-authored voxel spline or parallel rail generator.</summary>
-    [AddComponentMenu("VoxelisX/Authoring/Voxel Spline")]
+    [AddComponentMenu("Caelix/Authoring/Voxel Spline")]
     [RequireComponent(typeof(SplineContainer))]
     public sealed class VoxelSplineAuthoring : VoxelEntityAuthoringTool
     {

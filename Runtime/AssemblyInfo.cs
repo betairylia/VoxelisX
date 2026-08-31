@@ -1,3 +1,3 @@
 using System.Runtime.CompilerServices;
 
-[assembly: InternalsVisibleTo("voxelis.voxelisx.tests")]
+[assembly: InternalsVisibleTo("Caelix.Tests")]

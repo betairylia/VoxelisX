@@ -1,4 +1,4 @@
-# VoxelisX Development Notes
+# Caelix Development Notes
 
 This file captures engine contracts that should stay true unless a change explicitly redesigns the affected systems and tests.
 

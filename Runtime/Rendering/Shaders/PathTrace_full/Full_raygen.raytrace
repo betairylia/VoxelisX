@@ -3,7 +3,7 @@
 // Cannot handle perfect metal (metallic = 1, smoothness = 1) opaque surfaces
 
 #pragma use_dxc
-#define VOXELISXRT_BOUNCE 1
+#define CAELIXRT_BOUNCE 1
 
 // Uncomment this pragma for debugging the HLSL code in PIX. GPU performance will be impacted.
 #pragma enable_ray_tracing_shader_debug_symbols
@@ -13,12 +13,12 @@
 #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Packing.hlsl"
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/GlobalIllumination.hlsl"
-#include "Assets/VoxelisX/VoxelMaterials.hlsl"
+#include "Assets/Caelix/VoxelMaterials.hlsl"
 #include "../RayPayload.hlsl"
 #include "../Utils/Utils.hlsl"
 #include "../Utils/BlueNoise.hlsl"
-#include "../def/VoxelisXRayPayloadUtils.hlsl"
-#include "../def/VoxelisXUtils.hlsl"
+#include "../def/CaelixRayPayloadUtils.hlsl"
+#include "../def/CaelixUtils.hlsl"
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 // GLOBALS
@@ -67,7 +67,7 @@ RWTexture2D<float4> g_CurrentNormalHistory;
 TextureCube<float4> g_Sky;
 SamplerState sampler_g_Sky;
 
-struct VoxelisXPathState
+struct CaelixPathState
 {
     float3 throughput;
     float T;
@@ -84,7 +84,7 @@ struct VoxelisXPathState
 #define BOUNCEIDX_DETERM_SHIFT 12
 #define BOUNCEIDX_STOCHASTIC_MASK 0x000F
 
-void VoxelisXInitPathState(out VoxelisXPathState path, uint rngState)
+void CaelixInitPathState(out CaelixPathState path, uint rngState)
 {
     path.throughput = float3(1, 1, 1);
     path.T = 0;
@@ -93,27 +93,27 @@ void VoxelisXInitPathState(out VoxelisXPathState path, uint rngState)
     path.previousTransparentMaterial = 0;
 }
 
-int PathBounceIndexDeterministic(VoxelisXPathState path)
+int PathBounceIndexDeterministic(CaelixPathState path)
 {
     return (path.bounceIndex & BOUNCEIDX_DETERM_MASK) >> BOUNCEIDX_DETERM_SHIFT;
 }
 
-int PathBounceIndexStochastic(VoxelisXPathState path)
+int PathBounceIndexStochastic(CaelixPathState path)
 {
     return (path.bounceIndex & BOUNCEIDX_STOCHASTIC_MASK);
 }
 
-bool PathBounceIndexIsSpecular(VoxelisXPathState path)
+bool PathBounceIndexIsSpecular(CaelixPathState path)
 {
     return (path.bounceIndex & BOUNCEIDX_IS_SPECULAR) > 0;
 }
 
-bool PathIsPSR(VoxelisXPathState path)
+bool PathIsPSR(CaelixPathState path)
 {
     return (path.bounceIndex & BOUNCEIDX_IS_PSR) > 0;
 }
 
-bool AdvanceDeltaRay(RayPayload payload, inout RayDesc ray, inout VoxelisXPathState path)
+bool AdvanceDeltaRay(RayPayload payload, inout RayDesc ray, inout CaelixPathState path)
 {
     float currentRayT = payload.T;
 
@@ -129,7 +129,7 @@ bool AdvanceDeltaRay(RayPayload payload, inout RayDesc ray, inout VoxelisXPathSt
     path.bounceIndex += (1 << BOUNCEIDX_DETERM_SHIFT);                                      // Advance deterministic bounce count
 
     // Terminate on miss
-    if(!VoxelisXRayPayloadHasHit(payload)) { return false; }
+    if(!CaelixRayPayloadHasHit(payload)) { return false; }
 
     // Get material info
     int materialID = int((payload.materialID_voxelFaceHash >> 16) & 0xFFFFu);
@@ -140,7 +140,7 @@ bool AdvanceDeltaRay(RayPayload payload, inout RayDesc ray, inout VoxelisXPathSt
 
     // Compute world hit info
     float3 worldHitPosition = ray.Origin + ray.Direction * currentRayT;
-    float3 worldNormal = VoxelisXUnpackWorldNormal(payload.packedWorldNormal);
+    float3 worldNormal = CaelixUnpackWorldNormal(payload.packedWorldNormal);
 
     // Advance delta
     if(IsOpaque(materialID))
@@ -212,7 +212,7 @@ bool AdvanceDeltaRay(RayPayload payload, inout RayDesc ray, inout VoxelisXPathSt
 // STOCHASTIC SHADING
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
-struct VoxelisXShadeResult
+struct CaelixShadeResult
 {
     half3 albedo;
     half3 emission;
@@ -229,7 +229,7 @@ struct VoxelisXShadeResult
 // Attenuation of one straight segment of length segmentT travelling inside mediumMaterialID
 // (0 = vacuum). AdvanceDeltaRay folds this into path.throughput for delta segments; the bounce
 // loop folds it into its own throughput. Shading never applies it, so it is counted exactly once.
-float3 VoxelisXMediumExtinction(int mediumMaterialID, float segmentT)
+float3 CaelixMediumExtinction(int mediumMaterialID, float segmentT)
 {
     if (mediumMaterialID == 0) { return float3(1.0f, 1.0f, 1.0f); }
 
@@ -239,17 +239,17 @@ float3 VoxelisXMediumExtinction(int mediumMaterialID, float segmentT)
 
 // Shades one hit and samples the next bounce ray. Unlike AdvanceDeltaRay this accepts any
 // material: it is what runs once the delta chain has terminated.
-void VoxelisXShadeVoxelHit(
+void CaelixShadeVoxelHit(
     RayPayload payload,
     float3 worldHitPosition,
     float3 worldRayDirection,
-    inout VoxelisXPathState path,
-    out VoxelisXShadeResult shade)
+    inout CaelixPathState path,
+    out CaelixShadeResult shade)
 {
     int materialID = int((payload.materialID_voxelFaceHash >> 16) & 0xFFFFu);
     VoxelMaterial material = GET_MATERIAL(materialID);
 
-    float3 worldNormal = VoxelisXUnpackWorldNormal(payload.packedWorldNormal);
+    float3 worldNormal = CaelixUnpackWorldNormal(payload.packedWorldNormal);
 
     path.bounceIndex += 1;                                                                      // Advance stochastic bounce count
 
@@ -321,7 +321,7 @@ void VoxelisXShadeVoxelHit(
     }
 }
 
-float3 VoxelisXSampleSkyRadiance(float3 direction)
+float3 CaelixSampleSkyRadiance(float3 direction)
 {
     return g_Sky.SampleLevel(sampler_g_Sky, direction, 0).xyz * 2.0f;
 }
@@ -361,9 +361,9 @@ void MainRayGenShader()
     ray.TMax = K_T_MAX;
 
     RayPayload payload;
-    VoxelisXPathState path;
+    CaelixPathState path;
 
-    VoxelisXInitPathState(path, rngState);
+    CaelixInitPathState(path, rngState);
 
     //////////////////////////////////////////////
     // Primary ray
@@ -379,7 +379,7 @@ void MainRayGenShader()
     // Primary delta
     for(; PathBounceIndexDeterministic(path) < g_BounceCountTransparent;)
     {
-        VoxelisXClearRayPayload(payload);
+        CaelixClearRayPayload(payload);
         ray.TMin = 0;
         ray.TMax = K_T_MAX;
         TraceRay(
@@ -394,7 +394,7 @@ void MainRayGenShader()
         );
 
         // Handle miss
-        if(!VoxelisXRayPayloadHasHit(payload))
+        if(!CaelixRayPayloadHasHit(payload))
         {
             path.T = K_T_MAX;
             break;
@@ -431,7 +431,7 @@ void MainRayGenShader()
     uint2 outputLaunchIndex = uint2(outputDispatchIndex.x, DispatchRaysDimensions().y - outputDispatchIndex.y - 1);
 
     // Get material info
-    if(VoxelisXRayPayloadHasHit(payload))
+    if(CaelixRayPayloadHasHit(payload))
     {
         int materialID = int((payload.materialID_voxelFaceHash >> 16) & 0xFFFFu);
         VoxelMaterial material = GET_MATERIAL(materialID);
@@ -450,7 +450,7 @@ void MainRayGenShader()
         // MotionVector
         float2 motionVector = float2(0, 0);
         float3 prevWorldHitPosition = primaryWorldHitPosition_PSR                               // TODO: Handle PSR (Set to 0)      
-            + VoxelisXUnpackFloat3FromHalf4(payload.packedPrevWorldOffset);
+            + CaelixUnpackFloat3FromHalf4(payload.packedPrevWorldOffset);
         float3 prevViewPosition = mul(g_PrevWorldToCamera, float4(prevWorldHitPosition, 1.0f)).xyz;
         float previousSurfaceViewDepth = -prevViewPosition.z;
 
@@ -478,7 +478,7 @@ void MainRayGenShader()
 
         // Normal
         float2 packedNormal = saturate(PackNormalOctQuadEncode(
-            VoxelisXUnpackWorldNormal(payload.packedWorldNormal)) * 0.5f + 0.5f);
+            CaelixUnpackWorldNormal(payload.packedWorldNormal)) * 0.5f + 0.5f);
         // .b = voxel face hash (spatial filters' edge guide), .a = linear roughness (denoiser guide).
         /// GBUFFER SET ////////////////////////////////////////////////////////////
         NormalTarget[outputLaunchIndex] = float4(
@@ -506,7 +506,7 @@ void MainRayGenShader()
         // Delta (reflected / refracted) miss
         if((path.bounceIndex & BOUNCEIDX_DETERM_MASK) > 0)
         {
-            float3 outColor = VoxelisXSampleSkyRadiance(ray.Direction);
+            float3 outColor = CaelixSampleSkyRadiance(ray.Direction);
             DeterministicRadianceTarget[outputLaunchIndex] = float4(path.throughput * outColor, 1.0f);
             g_CurrentDepthHistory[outputLaunchIndex] = K_T_MAX;
         }
@@ -531,13 +531,13 @@ void MainRayGenShader()
     // Further Bounces
     //////////////////////////////////////////////
 
-#if VOXELISXRT_BOUNCE
-    if(VoxelisXRayPayloadHasHit(payload))
+#if CAELIXRT_BOUNCE
+    if(CaelixRayPayloadHasHit(payload))
     {
         // Shade the surface the delta chain landed on — the one the G-buffer above describes.
         // Its lobe choice classifies the entire stochastic path.
-        VoxelisXShadeResult primaryShade;
-        VoxelisXShadeVoxelHit(payload, surfaceWorldPosition, surfaceRayDirection, path, primaryShade);
+        CaelixShadeResult primaryShade;
+        CaelixShadeVoxelHit(payload, surfaceWorldPosition, surfaceRayDirection, path, primaryShade);
 
         // Primary emission is deterministic (nothing was sampled to obtain it), so it bypasses
         // the denoiser. path.throughput carries the delta chain's transmission.
@@ -564,16 +564,16 @@ void MainRayGenShader()
         for(; (uint)PathBounceIndexStochastic(path) <= g_BounceCountOpaque;)
         {
             RayPayload bouncePayload;
-            VoxelisXClearRayPayload(bouncePayload);
+            CaelixClearRayPayload(bouncePayload);
             TraceRay(g_AccelStruct, RAY_FLAG_FORCE_OPAQUE, 0xFF, 0, 1, 0, bounceRay, bouncePayload);
 
             // Attenuate the segment by the medium it just crossed, before shading its hit.
             // On a miss payload.T is 0, so the sky term is unattenuated (same as the old shader).
-            throughput *= VoxelisXMediumExtinction(path.previousTransparentMaterial, bouncePayload.T);
+            throughput *= CaelixMediumExtinction(path.previousTransparentMaterial, bouncePayload.T);
 
-            if (!VoxelisXRayPayloadHasHit(bouncePayload))
+            if (!CaelixRayPayloadHasHit(bouncePayload))
             {
-                indirectIncidentRadiance += VoxelisXSampleSkyRadiance(bounceRay.Direction) * throughput;
+                indirectIncidentRadiance += CaelixSampleSkyRadiance(bounceRay.Direction) * throughput;
                 break;
             }
 
@@ -583,8 +583,8 @@ void MainRayGenShader()
                 firstSegment = false;
             }
 
-            VoxelisXShadeResult bounceShade;
-            VoxelisXShadeVoxelHit(
+            CaelixShadeResult bounceShade;
+            CaelixShadeVoxelHit(
                 bouncePayload,
                 bounceRay.Origin + bounceRay.Direction * bouncePayload.T,
                 bounceRay.Direction,
@@ -633,7 +633,7 @@ void MainRayGenShader()
     }
 #else
     // Flat debug signal: the denoise chain becomes an identity, so the composite shows albedo only.
-    if(VoxelisXRayPayloadHasHit(payload))
+    if(CaelixRayPayloadHasHit(payload))
     {
         DeterministicRadianceTarget[outputLaunchIndex] = float4(0.0f, 0.0f, 0.0f, 1.0f);
     }
@@ -645,5 +645,5 @@ void MainRayGenShader()
 [shader("miss")]
 void MainMissShader0(inout RayPayload payload: SV_RayPayload)
 {
-    VoxelisXApplyVoxelMiss(payload);
+    CaelixApplyVoxelMiss(payload);
 }

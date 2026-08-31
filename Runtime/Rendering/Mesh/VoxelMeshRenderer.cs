@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using Unity.Mathematics;
 using UnityEngine;
 
-namespace Voxelis.Rendering.Meshing
+namespace Caelix.Rendering.Meshing
 {
     /// <summary>
     /// Main coordinator for mesh-based voxel rendering.
