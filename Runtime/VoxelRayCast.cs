@@ -1,6 +1,5 @@
-﻿#define PROFILE
-
-using System;
+﻿using System;
+using Unity.Profiling;
 using Unity.Mathematics;
 using UnityEngine;
 using Caelix;
@@ -26,6 +25,9 @@ namespace Caelix
     [RequireComponent(typeof(Camera))]
     public class VoxelRayCast : MonoBehaviour
     {
+        private static readonly ProfilerMarker s_TickMarker = new("VoxelRayCast.Tick");
+        private static readonly ProfilerMarker s_PerformRaycastMarker = new("VoxelRayCast.PerformRaycast");
+
         private readonly struct EntityRaycastTarget : IVoxelRaycastTarget
         {
             private readonly VoxelEntity entity;
@@ -135,19 +137,16 @@ namespace Caelix
         /// </summary>
         public void Tick()
         {
-#if PROFILE
-            UnityEngine.Profiling.Profiler.BeginSample("VoxelRayCast.Tick");
-#endif
-            PerformRaycast();
-            UpdateVisuals();
-
-            if (hitted)
+            using (s_TickMarker.Auto())
             {
-                HandleInputs();
+                PerformRaycast();
+                UpdateVisuals();
+
+                if (hitted)
+                {
+                    HandleInputs();
+                }
             }
-#if PROFILE
-            UnityEngine.Profiling.Profiler.EndSample();
-#endif
         }
 
         #endregion
@@ -159,41 +158,38 @@ namespace Caelix
         /// </summary>
         private void PerformRaycast()
         {
-#if PROFILE
-            UnityEngine.Profiling.Profiler.BeginSample("VoxelRayCast.PerformRaycast");
-#endif
-            hitted = false;
-            float closestDistance = maxDistance;
-
-            // Create ray from camera center
-            Ray cameraRay = mainCamera.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0));
-
-            // Check each voxel entity in the world
-            foreach (var target in targetWorld.AllEntities)
+            using (s_PerformRaycastMarker.Auto())
             {
-                // Transform ray to entity local space
-                Ray localRay = new Ray(
-                    target.transform.InverseTransformPoint(cameraRay.origin),
-                    target.transform.InverseTransformDirection(cameraRay.direction)
-                );
+                hitted = false;
+                float closestDistance = maxDistance;
 
-                // Perform DDA traversal
-                if (RaycastVoxelEntity(target, localRay, closestDistance, out int3 hitPos, out int3 normal, out float distance))
+                // Create ray from camera center
+                Ray cameraRay = mainCamera.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0));
+
+                // Check each voxel entity in the world
+                foreach (var target in targetWorld.AllEntities)
                 {
-                    // Found a closer hit
-                    if (distance < closestDistance)
+                    // Transform ray to entity local space
+                    Ray localRay = new Ray(
+                        target.transform.InverseTransformPoint(cameraRay.origin),
+                        target.transform.InverseTransformDirection(cameraRay.direction)
+                    );
+
+                    // Perform DDA traversal
+                    if (RaycastVoxelEntity(target, localRay, closestDistance, out int3 hitPos, out int3 normal, out float distance))
                     {
-                        hitted = true;
-                        closestDistance = distance;
-                        hit = hitPos;
-                        hitNormal = normal;
-                        hitTarget = target;
+                        // Found a closer hit
+                        if (distance < closestDistance)
+                        {
+                            hitted = true;
+                            closestDistance = distance;
+                            hit = hitPos;
+                            hitNormal = normal;
+                            hitTarget = target;
+                        }
                     }
                 }
             }
-#if PROFILE
-            UnityEngine.Profiling.Profiler.EndSample();
-#endif
         }
 
         /// <summary>

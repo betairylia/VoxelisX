@@ -6,8 +6,8 @@ using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Mathematics;
+using Unity.Profiling;
 using UnityEngine;
-using UnityEngine.Profiling;
 using UnityEngine.Rendering;
 using Caelix.Utils;
 using Random = UnityEngine.Random;
@@ -27,6 +27,10 @@ namespace Caelix.Rendering
     /// </remarks>
     public partial class SectorRenderer : IDisposable
     {
+        private static readonly ProfilerMarker s_ExtendGpuBuffersMarker = new("ExtendGPUBuffers");
+        private static readonly ProfilerMarker s_UploadDataMarker = new("UploadData");
+        private static readonly ProfilerMarker s_HandleReallocMarker = new("Handle Realloc");
+
         /// <summary>
         /// Axis-aligned bounding box structure for ray tracing.
         /// </summary>
@@ -213,38 +217,36 @@ namespace Caelix.Rendering
         /// <returns>True if buffers were reallocated; false if existing buffers are sufficient.</returns>
         public bool ExtendGPUBuffers()
         {
-            Profiler.BeginSample("ExtendGPUBuffers");
-
-            int requestedCapacity = GetCapacity(BrickBufferSize);
-            if (requestedCapacity == currentGPUBrickBufferCapacity)
+            using (s_ExtendGpuBuffersMarker.Auto())
             {
-                Profiler.EndSample();
-                return false;
+                int requestedCapacity = GetCapacity(BrickBufferSize);
+                if (requestedCapacity == currentGPUBrickBufferCapacity)
+                {
+                    return false;
+                }
+
+                if (!GPUBufferInitialized)
+                {
+                    aabbBuffer?.Dispose();
+                    aabbBuffer = new GraphicsBuffer(
+                        GraphicsBuffer.Target.Structured,
+                        Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS, 24);
+                }
+
+                // Allocate our buffers on GPU side
+
+                var new_brickBuffer =
+                    new GraphicsBuffer(
+                        GraphicsBuffer.Target.Raw,
+                        requestedCapacity * BRICK_DATA_LENGTH, 4);
+
+                brickBuffer?.Dispose();
+
+                brickBuffer = new_brickBuffer;
+                currentGPUBrickBufferCapacity = requestedCapacity;
+
+                return true;
             }
-            
-            if (!GPUBufferInitialized)
-            {
-                aabbBuffer?.Dispose();
-                aabbBuffer = new GraphicsBuffer(
-                    GraphicsBuffer.Target.Structured,
-                    Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS, 24);
-            }
-            
-            // Allocate our buffers on GPU side
-
-            var new_brickBuffer =
-                new GraphicsBuffer(
-                    GraphicsBuffer.Target.Raw, 
-                    requestedCapacity * BRICK_DATA_LENGTH, 4);
-            
-            brickBuffer?.Dispose();
-
-            brickBuffer = new_brickBuffer;
-            currentGPUBrickBufferCapacity = requestedCapacity;
-            
-            Profiler.EndSample();
-
-            return true;
         }
         
         // Temp variables used in Render process
@@ -319,39 +321,38 @@ namespace Caelix.Rendering
 
             if (minModified <= maxModified)
             {
-                // Profiler.BeginSample($"UploadData ({maxModified - minModified + 1} Bricks)");
-                Profiler.BeginSample("UploadData");
-                // Partially update buffers
-                // TODO: This will not work since we need to realloc the full AABB buffer everytime.
-                // Therefore, always upload the full aabbBuffer unless later we can refit the AABB BLAS.
-                // aabbBuffer.SetData(hostAABBBuffer.AsArray(), minModified, minModified, maxModified - minModified + 1);
-                aabbBuffer.SetData(hostAABBBuffer.AsArray());
+                using (s_UploadDataMarker.Auto())
+                {
+                    // Partially update buffers
+                    // TODO: This will not work since we need to realloc the full AABB buffer everytime.
+                    // Therefore, always upload the full aabbBuffer unless later we can refit the AABB BLAS.
+                    // aabbBuffer.SetData(hostAABBBuffer.AsArray(), minModified, minModified, maxModified - minModified + 1);
+                    aabbBuffer.SetData(hostAABBBuffer.AsArray());
 
-                if (isRealloc)
-                {
-                    brickBuffer.SetData(hostBrickBuffer.AsArray());
+                    if (isRealloc)
+                    {
+                        brickBuffer.SetData(hostBrickBuffer.AsArray());
+                    }
+                    else
+                    {
+                        brickBuffer.SetData(hostBrickBuffer.AsArray(), minModified * BRICK_DATA_LENGTH, minModified * BRICK_DATA_LENGTH,
+                            (maxModified - minModified + 1) * BRICK_DATA_LENGTH);
+                    }
                 }
-                else
-                {
-                    brickBuffer.SetData(hostBrickBuffer.AsArray(), minModified * BRICK_DATA_LENGTH, minModified * BRICK_DATA_LENGTH,
-                        (maxModified - minModified + 1) * BRICK_DATA_LENGTH);
-                }
-                Profiler.EndSample();
             }
             
             if (shouldUpdateAABB || isRealloc)
             {
-                Profiler.BeginSample("Handle Realloc");
+                using (s_HandleReallocMarker.Auto())
+                {
+                    // Zeroing the config makes RenderModifyAS rebuild it with the current aabbCount.
+                    AABBconfig = default;
 
-                // Zeroing the config makes RenderModifyAS rebuild it with the current aabbCount.
-                AABBconfig = default;
-
-                // Only place brickBuffer can be replaced, so the only place the binding can go
-                // stale — RenderModifyAS relies on that and never re-binds it.
-                EnsureMaterialProperties().SetBuffer("g_bricks", brickBuffer);
-                isDirty = true;
-
-                Profiler.EndSample();
+                    // Only place brickBuffer can be replaced, so the only place the binding can go
+                    // stale — RenderModifyAS relies on that and never re-binds it.
+                    EnsureMaterialProperties().SetBuffer("g_bricks", brickBuffer);
+                    isDirty = true;
+                }
             }
 
             isRealloc = false;

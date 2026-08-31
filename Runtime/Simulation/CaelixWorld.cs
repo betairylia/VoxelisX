@@ -6,11 +6,11 @@ using Unity.Collections;
 using Unity.Entities;
 using Unity.Jobs;
 using Unity.Mathematics;
+using Unity.Profiling;
 #if UNITY_EDITOR
 using UnityEditor;
 #endif
 using UnityEngine;
-using UnityEngine.Profiling;
 using Caelix;
 using Caelix.IO;
 using Caelix.Rendering.Meshing;
@@ -23,6 +23,28 @@ namespace Caelix
 {
     public class CaelixWorld : CaelixCoreWorld
     {
+        private static readonly ProfilerMarker s_PlayerRayCastMarker = new("Player Ray Cast");
+        private static readonly ProfilerMarker s_FillTickBufferMarker = new("Fill TickBuffer");
+        private static readonly ProfilerMarker s_ActivateSectorSnapshotsMarker = new("Activate Sector Snapshots");
+        private static readonly ProfilerMarker s_CollectRequireUpdateBricksMarker = new("Collect RequireUpdate Bricks");
+        private static readonly ProfilerMarker s_BuildAlienReadContextMarker = new("Build Alien Read Context");
+        private static readonly ProfilerMarker s_AutomataStageScheduleMarker = new("Automata Stage Schedule");
+        private static readonly ProfilerMarker s_WorkDispatchMarker = new("Work Dispatch");
+        private static readonly ProfilerMarker s_ApplySectorSnapshotsMarker = new("Apply Sector Snapshots");
+        private static readonly ProfilerMarker s_DirtyPropagationMarker = new("Dirty Propagation");
+        private static readonly ProfilerMarker s_UpdateVelocityMarker = new("Update Velocity");
+        private static readonly ProfilerMarker s_ClearRequireUpdatesMarker = new("Clear Require Updates");
+        private static readonly ProfilerMarker s_PropagateDirtyFlagsMarker = new("Propagate Dirty Flags");
+        private static readonly ProfilerMarker s_BurstMarker = new("Burst");
+        private static readonly ProfilerMarker s_MarkNonEmptyBlocksMarker = new("Mark Non-empty Blocks");
+        private static readonly ProfilerMarker s_RecomputeBodyMassPropertiesMarker = new("Recompute body mass properties");
+        private static readonly ProfilerMarker s_ApplyBodyForceCommandsMarker = new("Apply Body Force Commands");
+        private static readonly ProfilerMarker s_PhysicsStepMarker = new("Physics Step");
+        private static readonly ProfilerMarker s_AlienPropagationMarker = new("Alien Propagation");
+        private static readonly ProfilerMarker s_ClearDirtyFlagsMarker = new("Clear Dirty Flags");
+        private static readonly ProfilerMarker s_BoundaryCopyBackMarker = new("Burst -> Managed Boundary Copy Back");
+        private static readonly ProfilerMarker s_RendererTickMarker = new("Renderer Tick");
+
         /// <summary>
         /// Exclusive CPU timing buckets from the last completed world tick. The brick graph
         /// bucket covers the whole post-physics alien propagation (query, graph build, and
@@ -171,9 +193,10 @@ namespace Caelix
             //   - Can communicate with the managed world (1 entity = 1 GameObj)
             /////////////////////////////////////////////////////////////////////////
             
-Profiler.BeginSample("Player Ray Cast");
-            rayCaster?.Tick();
-Profiler.EndSample();
+            using (s_PlayerRayCastMarker.Auto())
+            {
+                rayCaster?.Tick();
+            }
 
             /////////////////////////////////////////////////////////////////////////
             // T-V Boundary
@@ -185,48 +208,49 @@ Profiler.EndSample();
 
             // Fill native list by copying
             // TODO: Keep the unique instance in world and let VoxelEntity ref it?
-Profiler.BeginSample("Fill TickBuffer");
-            tickBuf.VoxelEntities.Clear();
-            tickBuf.VoxelBodies.Clear();
-
-            // Count dynamic body count
-            // TODO: Arrange this to manage body indices properly with persistence
-            tickBuf.nDynamicBodies = 0;
-            foreach (var kvp in entities)
+            using (s_FillTickBufferMarker.Auto())
             {
-                if (physicsWorld.Bodies.TryGetValue(kvp.Key, out var b))
+                tickBuf.VoxelEntities.Clear();
+                tickBuf.VoxelBodies.Clear();
+
+                // Count dynamic body count
+                // TODO: Arrange this to manage body indices properly with persistence
+                tickBuf.nDynamicBodies = 0;
+                foreach (var kvp in entities)
                 {
-                    if (!b.entity.IsStatic)
+                    if (physicsWorld.Bodies.TryGetValue(kvp.Key, out var b))
                     {
-                        tickBuf.nDynamicBodies++;
+                        if (!b.entity.IsStatic)
+                        {
+                            tickBuf.nDynamicBodies++;
+                        }
+                    }
+                }
+
+                int nDynamic = 0, nStatic = 0;
+                foreach(var kvp in entities)
+                {
+                    var e = kvp.Value;
+                    e.SyncTransformToData();
+                    tickBuf.VoxelEntities.Add(e.PersistentGuid, e.GetDataCopy());
+
+                    if (physicsWorld.Bodies.TryGetValue(kvp.Key, out var b))
+                    {
+                        var bodyData = b.GetDataCopy();
+                        if (e.IsStatic)
+                        {
+                            bodyData._cached_body_index = tickBuf.nDynamicBodies + nStatic;
+                            nStatic++;
+                        }
+                        else
+                        {
+                            bodyData._cached_body_index = nDynamic;
+                            nDynamic++;
+                        }
+                        tickBuf.VoxelBodies.Add(kvp.Key, bodyData);
                     }
                 }
             }
-
-            int nDynamic = 0, nStatic = 0;
-            foreach(var kvp in entities)
-            {
-                var e = kvp.Value;
-                e.SyncTransformToData();
-                tickBuf.VoxelEntities.Add(e.PersistentGuid, e.GetDataCopy());
-
-                if (physicsWorld.Bodies.TryGetValue(kvp.Key, out var b))
-                {
-                    var bodyData = b.GetDataCopy();
-                    if (e.IsStatic)
-                    {
-                        bodyData._cached_body_index = tickBuf.nDynamicBodies + nStatic;
-                        nStatic++;
-                    }
-                    else
-                    {
-                        bodyData._cached_body_index = nDynamic;
-                        nDynamic++;
-                    }
-                    tickBuf.VoxelBodies.Add(kvp.Key, bodyData);
-                }
-            }
-Profiler.EndSample();
 
             /////////////////////////////////////////////////////////////////////////
             // VOXEL STAGE
@@ -254,29 +278,33 @@ Profiler.EndSample();
             // Automata stage
             // TODO: Wrap this up and handle this properly
             // Activate sector snapshotting for modifications
-Profiler.BeginSample("Activate Sector Snapshots");
-            foreach (var e in entities.Values)
+            using (s_ActivateSectorSnapshotsMarker.Auto())
             {
-                foreach (var kvp in e.Sectors)
+                foreach (var e in entities.Values)
                 {
-                    if (kvp.Value.Get().sectorRequireUpdateFlags > 0)
-                        kvp.Value.ActivateSnapshot();
+                    foreach (var kvp in e.Sectors)
+                    {
+                        if (kvp.Value.Get().sectorRequireUpdateFlags > 0)
+                            kvp.Value.ActivateSnapshot();
+                    }
                 }
             }
-Profiler.EndSample();
 
             // Collect bricks to update
-Profiler.BeginSample("Collect RequireUpdate Bricks");
-            automataTickBuf.BricksRequiredUpdate.Clear();
-            BrickCollector.Collect(ref tickBuf.VoxelEntities, ref automataTickBuf.BricksRequiredUpdate);
-Profiler.EndSample();
-Profiler.BeginSample("Build Alien Read Context");
-            BuildAlienReadContext();
-Profiler.EndSample();
+            using (s_CollectRequireUpdateBricksMarker.Auto())
+            {
+                automataTickBuf.BricksRequiredUpdate.Clear();
+                BrickCollector.Collect(ref tickBuf.VoxelEntities, ref automataTickBuf.BricksRequiredUpdate);
+            }
+            using (s_BuildAlienReadContextMarker.Auto())
+            {
+                BuildAlienReadContext();
+            }
 
-Profiler.BeginSample("Automata Stage Schedule");
-            tickHandle = automataStage.Schedule(automataTickBuf, tickHandle);
-Profiler.EndSample();
+            using (s_AutomataStageScheduleMarker.Auto())
+            {
+                tickHandle = automataStage.Schedule(automataTickBuf, tickHandle);
+            }
 
             // Random access updating stage
 
@@ -292,21 +320,23 @@ Profiler.EndSample();
             /////// End Tick stage
             // Clear dirtiness and propagate RequireBrickUpdate to self & neighbors
 
-Profiler.BeginSample("Work Dispatch");
-            tickHandle.Complete();
-Profiler.EndSample();
+            using (s_WorkDispatchMarker.Auto())
+            {
+                tickHandle.Complete();
+            }
 
             // TODO: Wrap this up and handle this properly
             // Apply sector modifications
-Profiler.BeginSample("Apply Sector Snapshots");
-            foreach(var e in entities.Values)
+            using (s_ApplySectorSnapshotsMarker.Auto())
             {
-                foreach (var kvp in e.Sectors)
+                foreach(var e in entities.Values)
                 {
-                    kvp.Value.ApplySnapshot();
+                    foreach (var kvp in e.Sectors)
+                    {
+                        kvp.Value.ApplySnapshot();
+                    }
                 }
             }
-Profiler.EndSample();
 
             /////////////////////////////////////////////////////////////////////////
             // V-P Boundary
@@ -314,55 +344,61 @@ Profiler.EndSample();
             /////////////////////////////////////////////////////////////////////////
  
             // Dirty propagation — operates on tickBuf to preserve physics-exported transforms
-Profiler.BeginSample("Dirty Propagation");
-    Profiler.BeginSample("Update Velocity");
-            var entityKeys = tickBuf.VoxelEntities.GetKeyArray(Allocator.Temp);
-            for (int i = 0; i < entityKeys.Length; i++)
+            NativeArray<Guid128> entityKeys;
+            using (s_DirtyPropagationMarker.Auto())
             {
-                var entity = tickBuf.VoxelEntities[entityKeys[i]];
-                entity.ComputeVelocityForDirtyPropagation(deltaTime);
-                tickBuf.VoxelEntities[entityKeys[i]] = entity;
+                using (s_UpdateVelocityMarker.Auto())
+                {
+                    entityKeys = tickBuf.VoxelEntities.GetKeyArray(Allocator.Temp);
+                    for (int i = 0; i < entityKeys.Length; i++)
+                    {
+                        var entity = tickBuf.VoxelEntities[entityKeys[i]];
+                        entity.ComputeVelocityForDirtyPropagation(deltaTime);
+                        tickBuf.VoxelEntities[entityKeys[i]] = entity;
+                    }
+                }
+
+                using (s_ClearRequireUpdatesMarker.Auto())
+                {
+                    for (int i = 0; i < entityKeys.Length; i++)
+                    {
+                        var entity = tickBuf.VoxelEntities[entityKeys[i]];
+                        entity.ClearRequireUpdates();
+                        tickBuf.VoxelEntities[entityKeys[i]] = entity;
+                    }
+                }
+
+                using (s_PropagateDirtyFlagsMarker.Auto())
+                {
+                    JobHandle handle = new JobHandle();
+                    for (int i = 0; i < entityKeys.Length; i++)
+                    {
+                        var entity = tickBuf.VoxelEntities[entityKeys[i]];
+                        handle = JobHandle.CombineDependencies(handle, entity.PropagateDirtyFlags(DirtyFlags.All, true));
+
+                        // Persist sector growth from EnsureNeighborSectorsForDirtyBoundaries into the working
+                        // copy. This previously ran on the managed entities, whose sectors hashmap could
+                        // realloc and free the buffer that tickBuf — read just below by Alien Propagation and
+                        // by the final copy-back — still pointed at (a use-after-free that only surfaced when a
+                        // boundary brick spawned a new neighbor sector mid-tick). Operating on tickBuf keeps a
+                        // single consistent sectors map across the whole propagation phase.
+                        //
+                        // INVARIANT (load-bearing): the propagation phase may only ADD sectors to this working
+                        // copy — it must never free or relocate an existing Sector* — so the managed entity's
+                        // still-aliased pre-realloc sectors entries keep pointing at live Sector structs until
+                        // copy-back adopts the grown map. Don't introduce RemoveSectorAt / Sector disposal here.
+                        tickBuf.VoxelEntities[entityKeys[i]] = entity;
+                    }
+
+                    using (s_BurstMarker.Auto())
+                    {
+                        handle.Complete();
+                    }
+                }
+
+                // TODO: At least make the jobs below Complete() o(1) times by chaining them
+                // TODO: Refine the tick to job scheduling best practices
             }
-    Profiler.EndSample();
-
-    Profiler.BeginSample("Clear Require Updates");
-            for (int i = 0; i < entityKeys.Length; i++)
-            {
-                var entity = tickBuf.VoxelEntities[entityKeys[i]];
-                entity.ClearRequireUpdates();
-                tickBuf.VoxelEntities[entityKeys[i]] = entity;
-            }
-    Profiler.EndSample();
-
-    Profiler.BeginSample("Propagate Dirty Flags");
-            JobHandle handle = new JobHandle();
-            for (int i = 0; i < entityKeys.Length; i++)
-            {
-                var entity = tickBuf.VoxelEntities[entityKeys[i]];
-                handle = JobHandle.CombineDependencies(handle, entity.PropagateDirtyFlags(DirtyFlags.All, true));
-
-                // Persist sector growth from EnsureNeighborSectorsForDirtyBoundaries into the working
-                // copy. This previously ran on the managed entities, whose sectors hashmap could
-                // realloc and free the buffer that tickBuf — read just below by Alien Propagation and
-                // by the final copy-back — still pointed at (a use-after-free that only surfaced when a
-                // boundary brick spawned a new neighbor sector mid-tick). Operating on tickBuf keeps a
-                // single consistent sectors map across the whole propagation phase.
-                //
-                // INVARIANT (load-bearing): the propagation phase may only ADD sectors to this working
-                // copy — it must never free or relocate an existing Sector* — so the managed entity's
-                // still-aliased pre-realloc sectors entries keep pointing at live Sector structs until
-                // copy-back adopts the grown map. Don't introduce RemoveSectorAt / Sector disposal here.
-                tickBuf.VoxelEntities[entityKeys[i]] = entity;
-            }
-
-        Profiler.BeginSample("Burst");
-            handle.Complete();
-        Profiler.EndSample();
-    Profiler.EndSample();
-
-            // TODO: At least make the jobs below Complete() o(1) times by chaining them
-            // TODO: Refine the tick to job scheduling best practices
-Profiler.EndSample();
 
             // Dirty flags stay set through the physics step: alien propagation runs on the
             // stepped poses (see below) and selects its source bricks from them. entityKeys
@@ -370,27 +406,30 @@ Profiler.EndSample();
 
             // Mark non-empty blocks: rebuild the Block slot's occupancy aux from settled voxel data,
             // for every entity, before physics consumes it.
-Profiler.BeginSample("Mark Non-empty Blocks");
-            foreach (var e in tickBuf.VoxelEntities.GetValueArray(Allocator.Temp))
+            using (s_MarkNonEmptyBlocksMarker.Auto())
             {
-                e.RefreshNonEmptyMask();
+                foreach (var e in tickBuf.VoxelEntities.GetValueArray(Allocator.Temp))
+                {
+                    e.RefreshNonEmptyMask();
+                }
             }
-Profiler.EndSample();
 
             // Physics after dirty propagation
-Profiler.BeginSample("Recompute body mass properties");
-            foreach (var b in tickBuf.VoxelBodies.GetKeyArray(Allocator.Temp))
+            using (s_RecomputeBodyMassPropertiesMarker.Auto())
             {
-                var body = tickBuf.VoxelBodies[b];
-                var entityData = tickBuf.VoxelEntities[b];
-                body.ComputePhysicsProperties(entityData);
-                tickBuf.VoxelBodies[b] = body;
+                foreach (var b in tickBuf.VoxelBodies.GetKeyArray(Allocator.Temp))
+                {
+                    var body = tickBuf.VoxelBodies[b];
+                    var entityData = tickBuf.VoxelEntities[b];
+                    body.ComputePhysicsProperties(entityData);
+                    tickBuf.VoxelBodies[b] = body;
+                }
             }
-Profiler.EndSample();
 
-Profiler.BeginSample("Apply Body Force Commands");
-            physicsWorld.BodyForceCommands.ApplyTo(ref tickBuf, deltaTime);
-Profiler.EndSample();
+            using (s_ApplyBodyForceCommandsMarker.Auto())
+            {
+                physicsWorld.BodyForceCommands.ApplyTo(ref tickBuf, deltaTime);
+            }
 
             /////////////////////////////////////////////////////////////////////////
             // PHYSICS STAGE
@@ -400,12 +439,14 @@ Profiler.EndSample();
             //   - Modify voxel data
             /////////////////////////////////////////////////////////////////////////
 
-Profiler.BeginSample("Physics Step");
-            long physicsStartTicks = Stopwatch.GetTimestamp();
-            physicsWorld.SimulateStep(
-                deltaTime, tickBuf);
-            long physicsElapsedTicks = Stopwatch.GetTimestamp() - physicsStartTicks;
-Profiler.EndSample();
+            long physicsElapsedTicks;
+            using (s_PhysicsStepMarker.Auto())
+            {
+                long physicsStartTicks = Stopwatch.GetTimestamp();
+                physicsWorld.SimulateStep(
+                    deltaTime, tickBuf);
+                physicsElapsedTicks = Stopwatch.GetTimestamp() - physicsStartTicks;
+            }
 
             /////////////////////////////////////////////////////////////////////////
             // P-T Boundary
@@ -416,75 +457,83 @@ Profiler.EndSample();
             // Alien dirty propagation over the post-physics brick-overlap graph. The step
             // synchronized the collision world, so the BVH already describes the stepped poses
             // and needs no explicit rebuild.
-Profiler.BeginSample("Alien Propagation");
-            long alienStartTicks = Stopwatch.GetTimestamp();
-            LastBrickOverlapPropagationStats = default;
-            if (doAlienPropagation)
+            long alienElapsedTicks;
+            using (s_AlienPropagationMarker.Auto())
             {
-                var request = BrickOverlapQueryBuilder.Build(ref tickBuf, new BrickOverlapQuerySettings
+                long alienStartTicks = Stopwatch.GetTimestamp();
+                LastBrickOverlapPropagationStats = default;
+                if (doAlienPropagation)
                 {
-                    FlagsToPropagate = DirtyFlags.All,
-                    MotionDirtyMask = alienMotionDirtyMask,
-                    IncludeMovingBodies = alienIncludeMovingBricks
-                });
-
-                if (request.IsCreated)
-                {
-                    try
+                    var request = BrickOverlapQueryBuilder.Build(ref tickBuf, new BrickOverlapQuerySettings
                     {
-                        BrickOverlapGraph graph = physicsWorld.BuildBrickOverlapGraph(
-                            request.Batches, request.Bricks, rebuildBroadphase: false);
+                        FlagsToPropagate = DirtyFlags.All,
+                        MotionDirtyMask = alienMotionDirtyMask,
+                        IncludeMovingBodies = alienIncludeMovingBricks
+                    });
 
-                        LastBrickOverlapPropagationStats = BrickOverlapDirtyPropagation.Propagate(
-                            graph, request, ref tickBuf.VoxelEntities);
-                    }
-                    finally
+                    if (request.IsCreated)
                     {
-                        request.Dispose();
+                        try
+                        {
+                            BrickOverlapGraph graph = physicsWorld.BuildBrickOverlapGraph(
+                                request.Batches, request.Bricks, rebuildBroadphase: false);
+
+                            LastBrickOverlapPropagationStats = BrickOverlapDirtyPropagation.Propagate(
+                                graph, request, ref tickBuf.VoxelEntities);
+                        }
+                        finally
+                        {
+                            request.Dispose();
+                        }
                     }
                 }
+                alienElapsedTicks = Stopwatch.GetTimestamp() - alienStartTicks;
             }
-            long alienElapsedTicks = Stopwatch.GetTimestamp() - alienStartTicks;
-Profiler.EndSample();
 
             // End of the dirty lifetime: every consumer of this tick's dirty flags has run.
-Profiler.BeginSample("Clear Dirty Flags");
-            for (int i = 0; i < entityKeys.Length; i++)
+            using (s_ClearDirtyFlagsMarker.Auto())
             {
-                var entity = tickBuf.VoxelEntities[entityKeys[i]];
-                entity.ClearDirtyFlags();
-                tickBuf.VoxelEntities[entityKeys[i]] = entity;
+                for (int i = 0; i < entityKeys.Length; i++)
+                {
+                    var entity = tickBuf.VoxelEntities[entityKeys[i]];
+                    entity.ClearDirtyFlags();
+                    tickBuf.VoxelEntities[entityKeys[i]] = entity;
+                }
+                entityKeys.Dispose();
             }
-            entityKeys.Dispose();
-Profiler.EndSample();
 
             // Copy data back to VoxelEntities
-Profiler.BeginSample("Burst -> Managed Boundary Copy Back");
-            foreach(var kvp in entities)
+            using (s_BoundaryCopyBackMarker.Auto())
             {
-                kvp.Value.CopyDataFrom(tickBuf.VoxelEntities[kvp.Key]);
-                kvp.Value.SyncTransformFromData();
-
-                if (physicsWorld.Bodies.TryGetValue(kvp.Key, out var body))
+                foreach(var kvp in entities)
                 {
-                    body.CopyDataFrom(tickBuf.VoxelBodies[kvp.Key]);
+                    kvp.Value.CopyDataFrom(tickBuf.VoxelEntities[kvp.Key]);
+                    kvp.Value.SyncTransformFromData();
+
+                    if (physicsWorld.Bodies.TryGetValue(kvp.Key, out var body))
+                    {
+                        body.CopyDataFrom(tickBuf.VoxelBodies[kvp.Key]);
+                    }
                 }
             }
-Profiler.EndSample();
 
             /////////////////////////////////////////////////////////////////////////
             // Renderer (client) work
             /////////////////////////////////////////////////////////////////////////
             
             // Tick renderer
-Profiler.BeginSample("Renderer Tick");
-            bool usedRayTracing = rayTracedRenderer?.enabled ?? false;
-            bool usedMeshing = meshingRenderer?.enabled ?? false;
-            long renderingStartTicks = Stopwatch.GetTimestamp();
-            if (usedRayTracing) rayTracedRenderer.Tick();
-            if (usedMeshing) meshingRenderer.Tick();
-            long renderingElapsedTicks = Stopwatch.GetTimestamp() - renderingStartTicks;
-Profiler.EndSample();
+            bool usedRayTracing;
+            bool usedMeshing;
+            long renderingElapsedTicks;
+            using (s_RendererTickMarker.Auto())
+            {
+                usedRayTracing = rayTracedRenderer?.enabled ?? false;
+                usedMeshing = meshingRenderer?.enabled ?? false;
+                long renderingStartTicks = Stopwatch.GetTimestamp();
+                if (usedRayTracing) rayTracedRenderer.Tick();
+                if (usedMeshing) meshingRenderer.Tick();
+                renderingElapsedTicks = Stopwatch.GetTimestamp() - renderingStartTicks;
+            }
 
             long totalElapsedTicks = Stopwatch.GetTimestamp() - tickStartTicks;
             double totalMilliseconds = TicksToMilliseconds(totalElapsedTicks);
