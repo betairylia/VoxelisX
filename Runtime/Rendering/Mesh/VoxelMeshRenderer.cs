@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
 
@@ -49,15 +50,27 @@ namespace Caelix.Rendering.Meshing
             DiscoverEntities();
 
             // Phase 1: Schedule mesh generation jobs for all invalidated chunks
+            JobHandle meshJobs = default;
+            bool hasMeshJobs = false;
             foreach (var kvp in sectorRenderers)
             {
                 kvp.Value.ScheduleJobs();
+                if (kvp.Value.TryGetScheduledJobHandle(out JobHandle sectorJobs))
+                {
+                    meshJobs = JobHandle.CombineDependencies(meshJobs, sectorJobs);
+                    hasMeshJobs = true;
+                }
             }
 
-            // Phase 2: Complete jobs and apply meshes
+            if (hasMeshJobs)
+            {
+                meshJobs.Complete();
+            }
+
+            // Phase 2: Apply meshes after the combined barrier
             foreach (var kvp in sectorRenderers)
             {
-                kvp.Value.CompleteJobs();
+                kvp.Value.ApplyCompletedJobs();
             }
 
             // requireUpdate cleanup is owned by the world tick after consumers have read it.

@@ -36,7 +36,7 @@ namespace Caelix.Rendering.Meshing
 
         // Job tracking
         private readonly List<ChunkMeshData> meshDataList = new List<ChunkMeshData>();
-        private readonly List<JobHandle> jobHandles = new List<JobHandle>();
+        private JobHandle jobHandle;
         private readonly List<int> chunkIndices = new List<int>();
         private readonly HashSet<int> dirtyChunks = new HashSet<int>();
 
@@ -186,7 +186,7 @@ namespace Caelix.Rendering.Meshing
 
                 // Track
                 meshDataList.Add(meshData);
-                jobHandles.Add(handle);
+                jobHandle = JobHandle.CombineDependencies(jobHandle, handle);
                 chunkIndices.Add(chunkIdx);
             }
 
@@ -199,17 +199,29 @@ namespace Caelix.Rendering.Meshing
         /// </summary>
         public void CompleteJobs()
         {
-            if (jobHandles.Count == 0)
+            if (meshDataList.Count == 0)
                 return;
 
-            // Complete all jobs
-            foreach (var handle in jobHandles)
-            {
-                handle.Complete();
-            }
+            jobHandle.Complete();
+            ApplyCompletedJobs();
+        }
+
+        internal bool TryGetScheduledJobHandle(out JobHandle handle)
+        {
+            handle = jobHandle;
+            return meshDataList.Count > 0;
+        }
+
+        /// <summary>
+        /// Applies mesh data after the renderer coordinator has completed the combined job handle.
+        /// </summary>
+        internal void ApplyCompletedJobs()
+        {
+            if (meshDataList.Count == 0)
+                return;
 
             // Apply meshes
-            for (int i = 0; i < jobHandles.Count; i++)
+            for (int i = 0; i < meshDataList.Count; i++)
             {
                 int chunkIdx = chunkIndices[i];
                 ChunkMeshData meshData = meshDataList[i];
@@ -221,7 +233,7 @@ namespace Caelix.Rendering.Meshing
             }
 
             // Clear tracking
-            jobHandles.Clear();
+            jobHandle = default;
             meshDataList.Clear();
             chunkIndices.Clear();
 
@@ -328,17 +340,14 @@ namespace Caelix.Rendering.Meshing
         public void Dispose()
         {
             // Complete any pending jobs
-            if (jobHandles.Count > 0)
+            if (meshDataList.Count > 0)
             {
-                foreach (var handle in jobHandles)
-                {
-                    handle.Complete();
-                }
+                jobHandle.Complete();
                 foreach (var meshData in meshDataList)
                 {
                     meshData.Dispose();
                 }
-                jobHandles.Clear();
+                jobHandle = default;
                 meshDataList.Clear();
             }
 

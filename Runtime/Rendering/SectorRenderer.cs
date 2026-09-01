@@ -295,8 +295,26 @@ namespace Caelix.Rendering
                 return;
             }
 
-            // Let the job complete and copy buffers
             jobHandle.Complete();
+            ApplyCompletedRenderJob();
+        }
+
+        internal bool TryGetScheduledJobHandle(out JobHandle handle)
+        {
+            handle = jobHandle;
+            return jobScheduled;
+        }
+
+        /// <summary>
+        /// Uploads data after the renderer coordinator has completed the combined job handle.
+        /// </summary>
+        internal void ApplyCompletedRenderJob()
+        {
+            if (!jobScheduled)
+            {
+                return;
+            }
+
             jobScheduled = false;
             
             int minModified = rendererJob.syncRecord[0];

@@ -23,6 +23,8 @@ namespace Caelix
 {
     public class CaelixWorld : CaelixCoreWorld
     {
+        #region ProfilerMarkers
+
         private static readonly ProfilerMarker s_PlayerRayCastMarker = new("Player Ray Cast");
         private static readonly ProfilerMarker s_FillTickBufferMarker = new("Fill TickBuffer");
         private static readonly ProfilerMarker s_ActivateSectorSnapshotsMarker = new("Activate Sector Snapshots");
@@ -44,6 +46,8 @@ namespace Caelix
         private static readonly ProfilerMarker s_ClearDirtyFlagsMarker = new("Clear Dirty Flags");
         private static readonly ProfilerMarker s_BoundaryCopyBackMarker = new("Burst -> Managed Boundary Copy Back");
         private static readonly ProfilerMarker s_RendererTickMarker = new("Renderer Tick");
+
+        #endregion
 
         /// <summary>
         /// Exclusive CPU timing buckets from the last completed world tick. The brick graph

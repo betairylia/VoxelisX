@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using NUnit.Framework.Internal;
+using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -277,6 +278,8 @@ public class CaelixRenderer : MonoSingleton<CaelixRenderer>
     {
         frameId += 1;
         instanceCount = (int)voxelScene.GetInstanceCount();
+        JobHandle renderJobs = default;
+        bool hasRenderJobs = false;
 
         // Pass 1: Emit jobs & Remove unused sectors
         foreach (var e in world.entities.Values)
@@ -310,8 +313,19 @@ public class CaelixRenderer : MonoSingleton<CaelixRenderer>
                     sectorRenderers[key] = new SectorRenderer(e, sectorPos);
                 }
 
-                sectorRenderers[key].RenderEmitJob(kvp.Value, e.Neighbors[sectorPos]);
+                SectorRenderer renderer = sectorRenderers[key];
+                renderer.RenderEmitJob(kvp.Value, e.Neighbors[sectorPos]);
+                if (renderer.TryGetScheduledJobHandle(out JobHandle sectorJob))
+                {
+                    renderJobs = JobHandle.CombineDependencies(renderJobs, sectorJob);
+                    hasRenderJobs = true;
+                }
             }
+        }
+
+        if (hasRenderJobs)
+        {
+            renderJobs.Complete();
         }
 
         // Pass 2: Sync buffers
@@ -331,7 +345,7 @@ public class CaelixRenderer : MonoSingleton<CaelixRenderer>
                 var key = (e, sectorPos);
                 if (!sectorRenderers.ContainsKey(key)) continue;
 
-                sectorRenderers[key].Render();
+                sectorRenderers[key].ApplyCompletedRenderJob();
                 sectorRenderers[key].RenderModifyAS(ref _voxelScene, e, sectorPos);
 
                 // Call sector tick
