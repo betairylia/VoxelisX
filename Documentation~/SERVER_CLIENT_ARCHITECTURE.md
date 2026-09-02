@@ -202,9 +202,12 @@ Deferred:
 - **No Burst direct calls on the tick path.** `[BurstCompile]` static methods called from
   managed code compile synchronously in the Editor. Use a Burst job and `Run()` instead
   (`CollectBrickJob`, `PreviewBuilder`).
-- **Host frame order.** `CaelixHost.Update`: push inspector settings, server update
-  (first frame: exactly one forced tick), client update (apply messages, propagate
-  Geometry bits), raycast tick, renderer ticks, client end frame.
+- **Host frame order.** Server ticks run in `CaelixHost.FixedUpdate`, one per fixed
+  step; `driveFixedTimestep` sets `Time.fixedDeltaTime` from `targetTPS`. `Update`
+  runs the first forced tick if none ran yet, then client update (apply messages,
+  propagate Geometry bits), raycast tick, renderer ticks, client end frame. Render
+  frame rate and tick rate are independent; the client applies whatever ticks landed
+  since the last frame. No interpolation yet, so bodies show the latest tick's pose.
 - **Scene compatibility.** `CaelixHost.cs` and `PhysicsWorldConfig.cs` keep the script
   GUIDs of `CaelixWorld` and `CaelixPhysicsWorld`, and `VoxelEntity` / `VoxelBody` kept
   theirs across the assembly move, so existing scenes stay wired. `SimplePlayer` and

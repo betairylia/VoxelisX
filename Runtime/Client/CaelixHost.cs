@@ -33,6 +33,7 @@ namespace Caelix
             public bool UsedRayTracing;
             public bool UsedMeshing;
             public int ServerTicks;
+            public double ServerMilliseconds;
             public double TickMilliseconds;
             public double PhysicsMilliseconds;
             public double BrickGraphMilliseconds;
@@ -56,8 +57,13 @@ namespace Caelix
 
         // ---------------- SIMULATION ------------------
         [Header("Simulation")]
-        [Tooltip("Server ticks per second. The fixed step is 1 / TPS.")]
+        [Tooltip("Server ticks per second. The fixed step is 1 / TPS. Ticks run from FixedUpdate, " +
+                 "decoupled from the render frame rate.")]
         public float targetTPS = 100.0f;
+
+        [Tooltip("Sets Time.fixedDeltaTime to 1 / Target TPS so FixedUpdate runs one server tick per " +
+                 "fixed step. Turn off to keep the project's fixed timestep and tick at that rate instead.")]
+        public bool driveFixedTimestep = true;
 
         [Header("Alien Dirty Propagation")]
         [Tooltip("Propagate dirtiness between entities through the post-physics brick-overlap graph.")]
@@ -84,6 +90,8 @@ namespace Caelix
         private bool initialized;
         private bool destroyed;
         private bool firstFrameDone;
+        private int ticksSinceLastFrame;
+        private long serverTicksElapsed;
         private LocalChannel serverEnd;
         private LocalChannel clientEnd;
 
@@ -225,7 +233,17 @@ namespace Caelix
         /// <summary>Pushes inspector edits into the running server and world.</summary>
         private void PushSettings()
         {
-            Server.TickRate = targetTPS;
+            if (driveFixedTimestep && targetTPS > 0f)
+            {
+                float step = 1f / targetTPS;
+                if (!Mathf.Approximately(Time.fixedDeltaTime, step))
+                {
+                    Time.fixedDeltaTime = step;
+                }
+            }
+
+            // FixedUpdate defines the step; keep the server's own clock in agreement for Step().
+            Server.TickRate = Time.fixedDeltaTime > 0f ? 1f / Time.fixedDeltaTime : targetTPS;
             Server.Frozen = freeze;
 
             CaelixWorld world = World;
@@ -244,6 +262,25 @@ namespace Caelix
 
         #region Frame
 
+        /// <summary>
+        /// One server tick per fixed step. Unity clamps how many fixed steps run after a hitch
+        /// (Time.maximumDeltaTime), which is the backlog cap.
+        /// </summary>
+        private void FixedUpdate()
+        {
+            if (Server == null || Client == null || freeze)
+            {
+                return;
+            }
+
+            PushSettings();
+            long start = Stopwatch.GetTimestamp();
+            Server.Step();
+            serverTicksElapsed += Stopwatch.GetTimestamp() - start;
+            ticksSinceLastFrame++;
+            firstFrameDone = true;
+        }
+
         private void Update()
         {
             if (Server == null || Client == null)
@@ -254,21 +291,22 @@ namespace Caelix
             long frameStart = Stopwatch.GetTimestamp();
             PushSettings();
 
-            uint tickBefore = Server.TickIndex;
             if (!firstFrameDone)
             {
                 // The initial state reaches the client through replication, which runs inside a
                 // tick. A frozen scene therefore still gets exactly one tick, as it always did.
                 firstFrameDone = true;
+                long start = Stopwatch.GetTimestamp();
                 Server.Step();
-            }
-            else
-            {
-                Server.Update(Time.deltaTime);
+                serverTicksElapsed += Stopwatch.GetTimestamp() - start;
+                ticksSinceLastFrame++;
             }
 
             long serverEnd = Stopwatch.GetTimestamp();
-            int serverTicks = (int)(Server.TickIndex - tickBefore);
+            int serverTicks = ticksSinceLastFrame;
+            long serverElapsed = serverTicksElapsed;
+            ticksSinceLastFrame = 0;
+            serverTicksElapsed = 0;
 
             /////////////////////////////////////////////////////////////////////////
             // Client frame: apply replication, run input, render.
@@ -286,20 +324,22 @@ namespace Caelix
 
             Client.EndFrame();
 
+            // Server buckets are the LAST tick's split; ServerMilliseconds is the sum of every
+            // tick that ran since the previous frame (FixedUpdate may run several, or none).
             TickTimingStats worldTimings = World != null ? World.LastTickTimings : default;
-            double total = TicksToMilliseconds(Stopwatch.GetTimestamp() - frameStart);
             LastTickTimings = new HostTimingStats
             {
                 IsCreated = true,
                 UsedRayTracing = usedRayTracing,
                 UsedMeshing = usedMeshing,
                 ServerTicks = serverTicks,
+                ServerMilliseconds = TicksToMilliseconds(serverElapsed),
                 TickMilliseconds = serverTicks > 0 ? worldTimings.TickMilliseconds : 0.0,
                 PhysicsMilliseconds = serverTicks > 0 ? worldTimings.PhysicsMilliseconds : 0.0,
                 BrickGraphMilliseconds = serverTicks > 0 ? worldTimings.BrickGraphMilliseconds : 0.0,
                 ClientMilliseconds = TicksToMilliseconds(clientEnd - serverEnd),
                 RenderingMilliseconds = TicksToMilliseconds(renderEnd - clientEnd),
-                TotalMilliseconds = total,
+                TotalMilliseconds = TicksToMilliseconds(serverElapsed + (Stopwatch.GetTimestamp() - frameStart)),
             };
         }
 
