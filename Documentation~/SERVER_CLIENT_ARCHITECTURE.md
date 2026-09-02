@@ -139,7 +139,12 @@ Envelope: `u8 type, u16 worldId, u32 tick`. Then the payload.
 | C to S | Query | request id, guid, position, slot mask |
 
 Engine commands: `SetBlockCommand`, `SetEntityStaticCommand`,
-`VoxelBodyForceCommand`. Games register their own command and event types
+`VoxelBodyForceCommand` (one-shot forces, impulses, velocity changes),
+`DragCommand` and `ReleaseDragCommand`. A drag is held input, not a force: the
+server keeps one per client and body, computes the spring every tick from the
+body's own pose and velocity, and drops it on release or after
+`dragTimeoutSeconds` without a refresh. Clients send the target whenever it
+moves, at any rate. Games register their own command and event types
 through the type registries. Engine types are registered first, in a fixed
 order, on both sides.
 

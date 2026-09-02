@@ -35,6 +35,12 @@ namespace Caelix.Simulation
         /// <summary>Query every allocated brick of every non-static entity, not only the dirty ones.</summary>
         public bool alienIncludeMovingBricks;
 
+        /// <summary>
+        /// A held drag that a client has not refreshed for this long is released. Covers lost
+        /// release commands and disconnects.
+        /// </summary>
+        public float dragTimeoutSeconds;
+
         public static CaelixWorldConfig Default(ushort worldId = 0, string name = "World")
         {
             return new CaelixWorldConfig
@@ -46,6 +52,7 @@ namespace Caelix.Simulation
                 doAlienPropagation = false,
                 alienMotionDirtyMask = DirtyFlags.GeneralAutomata,
                 alienIncludeMovingBricks = true,
+                dragTimeoutSeconds = 0.5f,
             };
         }
     }
@@ -139,6 +146,17 @@ namespace Caelix.Simulation
 
         /// <summary>Events emitted since the last drain. The server drains them after every tick.</summary>
         internal readonly List<PendingEvent> PendingEvents = new();
+
+        private struct DragState
+        {
+            public DragCommand Command;
+            public uint RefreshedAtTick;
+        }
+
+        // Held drags, one per (client, body). Applied as a spring every tick until released or
+        // stale. Owner id 0 is reserved for in-process callers with no connection.
+        private readonly Dictionary<(int Owner, Guid128 Entity), DragState> drags = new();
+        private readonly List<(int Owner, Guid128 Entity)> dragScratch = new();
 
         private AutomataStageInputs automataTickBuf;
         private NativeList<AlienEntityView> alienEntityViews;
@@ -263,6 +281,18 @@ namespace Caelix.Simulation
             RemoveBody(guid);
             data.Dispose();
             Data.VoxelEntities.Remove(guid);
+
+            dragScratch.Clear();
+            foreach (var kvp in drags)
+            {
+                if (kvp.Key.Entity == guid) dragScratch.Add(kvp.Key);
+            }
+
+            for (int i = 0; i < dragScratch.Count; i++)
+            {
+                drags.Remove(dragScratch[i]);
+            }
+
             return true;
         }
 
@@ -407,6 +437,102 @@ namespace Caelix.Simulation
 
             data.SetSlot(slotId, position, value);
             return true;
+        }
+
+        #endregion
+
+        #region Drags
+
+        /// <summary>Number of held drags across all clients.</summary>
+        public int DragCount => drags.Count;
+
+        /// <summary>
+        /// Starts or refreshes a drag. Ignored for missing entities, entities without a body, and
+        /// protected entities. A frozen body keeps its drag and is pulled once it is released.
+        /// </summary>
+        public void SetDrag(int ownerId, in DragCommand command)
+        {
+            if (!TryGetEntity(command.Entity, out VoxelEntityData entity) || entity.isProtected || !HasBody(command.Entity))
+            {
+                return;
+            }
+
+            drags[(ownerId, command.Entity)] = new DragState { Command = command, RefreshedAtTick = TickIndex };
+        }
+
+        public bool ReleaseDrag(int ownerId, Guid128 entity)
+        {
+            return drags.Remove((ownerId, entity));
+        }
+
+        /// <summary>Releases every drag held by one client, for example on disconnect.</summary>
+        public void ReleaseDrags(int ownerId)
+        {
+            dragScratch.Clear();
+            foreach (var kvp in drags)
+            {
+                if (kvp.Key.Owner == ownerId) dragScratch.Add(kvp.Key);
+            }
+
+            for (int i = 0; i < dragScratch.Count; i++)
+            {
+                drags.Remove(dragScratch[i]);
+            }
+        }
+
+        /// <summary>
+        /// Turns every held drag into this tick's spring force, computed from the body's current
+        /// pose and velocity. Runs after mass properties are fresh and before force commands apply.
+        /// </summary>
+        private void ApplyDrags(float dt)
+        {
+            if (drags.Count == 0)
+            {
+                return;
+            }
+
+            uint timeoutTicks = (uint)math.max(1, (int)math.ceil(Config.dragTimeoutSeconds / math.max(dt, 1e-6f)));
+            dragScratch.Clear();
+
+            foreach (var kvp in drags)
+            {
+                if (TickIndex - kvp.Value.RefreshedAtTick > timeoutTicks)
+                {
+                    dragScratch.Add(kvp.Key);
+                    continue;
+                }
+
+                DragCommand cmd = kvp.Value.Command;
+                if (!TryGetEntity(cmd.Entity, out VoxelEntityData entity) ||
+                    !TryGetBody(cmd.Entity, out VoxelBodyData body) ||
+                    entity.isStatic || body.massProperties.mass <= 0f)
+                {
+                    continue;
+                }
+
+                float3 anchorWorld = math.transform(entity.transform, cmd.AnchorLocal);
+                float3 centerOfMassWorld = math.transform(entity.transform, body.massProperties.centerOfMass);
+                float3 angularVelocityWorld = math.rotate(entity.transform.rot, body.motionVelocity.AngularVelocity);
+                float3 anchorVelocity = body.motionVelocity.LinearVelocity +
+                                        math.cross(angularVelocityWorld, anchorWorld - centerOfMassWorld);
+
+                float3 acceleration = (cmd.TargetWorld - anchorWorld) * cmd.Spring - anchorVelocity * cmd.Damping;
+                if (cmd.MaxAcceleration > 0f)
+                {
+                    float length = math.length(acceleration);
+                    if (length > cmd.MaxAcceleration)
+                    {
+                        acceleration *= cmd.MaxAcceleration / length;
+                    }
+                }
+
+                Forces.AddForceAtPosition(cmd.Entity, acceleration, anchorWorld, VoxelBodyForceMode.Acceleration);
+            }
+
+            for (int i = 0; i < dragScratch.Count; i++)
+            {
+                drags.Remove(dragScratch[i]);
+            }
         }
 
         #endregion
@@ -622,6 +748,7 @@ namespace Caelix.Simulation
 
             using (s_ApplyBodyForceCommandsMarker.Auto())
             {
+                ApplyDrags(dt);
                 Forces.ApplyTo(ref Data, dt);
             }
 

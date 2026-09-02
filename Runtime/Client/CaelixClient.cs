@@ -303,6 +303,21 @@ namespace Caelix.Client
             SendCommand(in command, worldId);
         }
 
+        /// <summary>
+        /// Starts or refreshes a held drag. Send it whenever the target moves; the server keeps the
+        /// latest and applies the spring every tick. Resend within the world's drag timeout to keep
+        /// it alive.
+        /// </summary>
+        public void SetDrag(in DragCommand command, ushort worldId = 0)
+        {
+            SendCommand(in command, worldId);
+        }
+
+        public void ReleaseDrag(Guid128 entity, ushort worldId = 0)
+        {
+            SendCommand(new ReleaseDragCommand { Entity = entity }, worldId);
+        }
+
         /// <summary>Asks the server for one voxel's slot values. The callback runs when the reply arrives.</summary>
         public void QueryVoxel(Guid128 entity, int3 position, ushort slotMask, Action<VoxelQueryReply> callback, ushort worldId = 0)
         {

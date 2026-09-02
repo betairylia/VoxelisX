@@ -170,6 +170,44 @@ namespace Caelix
             Send(VoxelBodyForceCommand.ForceAtPosition(PersistentGuid, ToFloat3(force), ToFloat3(worldPosition), mode));
         }
 
+        /// <summary>
+        /// Holds this body by <paramref name="anchorLocal"/> and pulls it toward
+        /// <paramref name="targetWorld"/> with a spring the server computes every tick. Call again
+        /// whenever the target moves, and at least once per half second to keep the drag alive.
+        /// </summary>
+        public void SetDrag(Vector3 anchorLocal, Vector3 targetWorld, float spring, float damping, float maxAcceleration)
+        {
+            CaelixHost host = entity.Host != null ? entity.Host : CaelixHost.Any;
+            if (host == null || host.Client == null)
+            {
+                return;
+            }
+
+            ushort worldId = World != null ? World.Id : (ushort)0;
+            host.Client.SetDrag(new DragCommand
+            {
+                Entity = PersistentGuid,
+                AnchorLocal = ToFloat3(anchorLocal),
+                TargetWorld = ToFloat3(targetWorld),
+                Spring = spring,
+                Damping = damping,
+                MaxAcceleration = maxAcceleration,
+            }, worldId);
+        }
+
+        /// <summary>Ends this client's drag on the body.</summary>
+        public void ReleaseDrag()
+        {
+            CaelixHost host = entity.Host != null ? entity.Host : CaelixHost.Any;
+            if (host == null || host.Client == null)
+            {
+                return;
+            }
+
+            ushort worldId = World != null ? World.Id : (ushort)0;
+            host.Client.ReleaseDrag(PersistentGuid, worldId);
+        }
+
         private void Send(in VoxelBodyForceCommand command)
         {
             CaelixHost host = entity.Host != null ? entity.Host : CaelixHost.Any;

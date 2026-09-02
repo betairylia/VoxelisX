@@ -182,6 +182,53 @@ namespace Caelix.Tests
         }
 
         [Test]
+        public void Drag_PullsBodyTowardTargetAndTimesOut()
+        {
+            using var rig = new Rig();
+            rig.World.Config.physics.gravity = float3.zero;
+            rig.World.CreateEntity(EntityA, RigidTransform.identity, isStatic: false);
+            rig.World.AddBody(EntityA);
+            rig.World.SetBlock(EntityA, new int3(0, 0, 0), new Block(0x8001));
+            rig.Exchange();
+
+            rig.Client.SetDrag(new DragCommand
+            {
+                Entity = EntityA,
+                AnchorLocal = new float3(0.5f, 0.5f, 0.5f),
+                TargetWorld = new float3(5.5f, 0.5f, 0.5f),
+                Spring = 50f,
+                Damping = 10f,
+                MaxAcceleration = 100f,
+            });
+
+            rig.Server.Step(30); // 0.3 s at 100 TPS, inside the 0.5 s timeout
+            Assert.That(rig.World.DragCount, Is.EqualTo(1));
+            float3 pulled = rig.World.GetEntity(EntityA).transform.pos;
+            Assert.That(pulled.x, Is.GreaterThan(0.05f), "spring pulls toward +X");
+            Assert.That(math.abs(pulled.y) + math.abs(pulled.z), Is.LessThan(0.05f), "no off-axis drift");
+
+            rig.Server.Step(60); // no refresh: past the timeout, the drag is dropped
+            Assert.That(rig.World.DragCount, Is.EqualTo(0));
+
+            rig.Client.ReleaseDrag(EntityA);
+            rig.Server.Step();
+            Assert.That(rig.World.DragCount, Is.EqualTo(0));
+        }
+
+        [Test]
+        public void Drag_IgnoresProtectedEntities()
+        {
+            using var rig = new Rig();
+            rig.World.CreateEntity(EntityA, RigidTransform.identity, isStatic: false, isProtected: true);
+            rig.World.AddBody(EntityA);
+            rig.Exchange();
+
+            rig.Client.SetDrag(new DragCommand { Entity = EntityA, TargetWorld = new float3(5f, 0f, 0f), Spring = 50f });
+            rig.Server.Step();
+            Assert.That(rig.World.DragCount, Is.EqualTo(0));
+        }
+
+        [Test]
         public void Events_ReachRegisteredClientHandler()
         {
             using var rig = new Rig();

@@ -129,7 +129,17 @@ namespace Caelix.Simulation
 
         public bool RemoveConnection(ServerConnection connection)
         {
-            return connections.Remove(connection);
+            if (!connections.Remove(connection))
+            {
+                return false;
+            }
+
+            for (int i = 0; i < worlds.Count; i++)
+            {
+                worlds[i].ReleaseDrags(connection.Id);
+            }
+
+            return true;
         }
 
         private void SendHello(ServerConnection connection)
