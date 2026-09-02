@@ -141,9 +141,7 @@ namespace Caelix.Tests
 
             rig.Client.SetBlock(EntityA, new int3(2, 2, 2), new Block(0x8004));
             rig.Client.SetEntityStatic(EntityA, true);
-            rig.Exchange(); // ProcessIncoming is part of Update, not Step: pump explicitly below
-            rig.Server.ProcessIncoming();
-            rig.Exchange();
+            rig.Exchange(); // Step drains the inbox before ticking
 
             Assert.That(rig.World.GetBlock(EntityA, new int3(2, 2, 2)), Is.EqualTo(new Block(0x8004)));
             Assert.That(rig.World.GetEntity(EntityA).isStatic, Is.True);

@@ -295,9 +295,15 @@ namespace Caelix.Simulation
             }
         }
 
-        /// <summary>Runs exactly one tick of every world and replicates the result. Works while frozen.</summary>
+        /// <summary>
+        /// Runs exactly one tick of every world and replicates the result. Works while frozen.
+        /// Pending commands and queries are applied first, so a command sent before this call
+        /// takes effect in this tick.
+        /// </summary>
         public void Step()
         {
+            ProcessIncoming();
+
             for (int c = 0; c < connections.Count; c++)
             {
                 if (!connections[c].HelloSent && connections[c].IsConnected)
