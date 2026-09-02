@@ -18,7 +18,8 @@
         "GUID:8a1c450fd8e067e4d9bf03b7bf85843c",
         "GUID:ed204854e10122a43aebf832b20c0635",
         "Unity.Splines",
-        "Caelix.Physics"
+        "Caelix.Physics",
+        "Caelix.Simulation"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

@@ -11,6 +11,9 @@ namespace Caelix.Rendering.Meshing
     [AddComponentMenu("Caelix/Voxel Mesh Renderer")]
     public class VoxelMeshRendererComponent : MonoBehaviour
     {
+        [Tooltip("The host whose client world this renderer draws. Found in the scene when empty.")]
+        [SerializeField] private CaelixHost host;
+
         [Header("Mesh Settings")]
         [Tooltip("Size of each mesh chunk (default 32). Sectors are subdivided into chunks of this size.")]
         [Range(8, 128)]
@@ -109,6 +112,14 @@ namespace Caelix.Rendering.Meshing
                 Debug.LogError("VoxelMeshRendererComponent: MeshRenderer is null. Reinitializing...", this);
                 Initialize();
                 return;
+            }
+
+            if (meshRenderer.Source == null)
+            {
+                if (host == null) host = CaelixHost.Any;
+                if (host == null) return;
+                host.EnsureInitialized();
+                meshRenderer.Source = host.ClientWorld;
             }
 
             // Handle regenerate request

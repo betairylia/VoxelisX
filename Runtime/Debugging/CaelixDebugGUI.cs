@@ -21,8 +21,7 @@ public class CaelixDebugGUI : MonoBehaviour
     [Header("References")]
     [SerializeField] private CaelixRenderer rayTracingRenderer;
     [SerializeField] private VoxelMeshRendererComponent meshRendererComponent;
-    [SerializeField] private CaelixPhysicsWorld physicsWorld;
-    [SerializeField] private CaelixWorld voxelWorld;
+    [SerializeField] private CaelixHost voxelWorld;
 
     [Header("Debug Visualization")]
     [SerializeField] private bool showSectorBorders = false;
@@ -106,17 +105,12 @@ public class CaelixDebugGUI : MonoBehaviour
         // Auto-find references if not set
         if (rayTracingRenderer == null)
         {
-            rayTracingRenderer = CaelixRenderer.instance;
-        }
-
-        if (physicsWorld == null)
-        {
-            physicsWorld = FindAnyObjectByType<CaelixPhysicsWorld>();
+            rayTracingRenderer = FindAnyObjectByType<CaelixRenderer>();
         }
 
         if (voxelWorld == null)
         {
-            voxelWorld = FindAnyObjectByType<CaelixWorld>();
+            voxelWorld = FindAnyObjectByType<CaelixHost>();
         }
 
         meshRendererComponent = FindAnyObjectByType<VoxelMeshRendererComponent>();
@@ -324,26 +318,24 @@ public class CaelixDebugGUI : MonoBehaviour
         {
             GUILayout.Label("<b>Ray Tracing:</b>", labelStyle);
 
-            var world = CaelixCoreWorld.instance;
+            Caelix.Simulation.CaelixWorld world = voxelWorld != null ? voxelWorld.World : null;
             if (world != null)
             {
                 ulong hostMemory = 0;
                 int totalSectors = 0;
                 int totalBricks = 0;
 
-                foreach (var entity in world.entities.Values)
+                foreach (var entry in world.Entities)
                 {
-                    if (entity != null)
-                    {
-                        hostMemory += entity.GetHostMemoryUsageKB();
-                        totalSectors += entity.Sectors.Count;
+                    VoxelEntityData entity = entry.Value;
+                    hostMemory += entity.GetHostMemoryUsageKB();
+                    totalSectors += entity.sectors.Count;
 
-                        // Count total bricks
-                        foreach (var kvp in entity.Sectors)
-                        {
-                            ref Sector sector = ref kvp.Value.Get();
-                            totalBricks += sector.NonEmptyBrickCount;
-                        }
+                    // Count total bricks
+                    foreach (var kvp in entity.sectors)
+                    {
+                        ref Sector sector = ref kvp.Value.Get();
+                        totalBricks += sector.NonEmptyBrickCount;
                     }
                 }
 
@@ -423,7 +415,7 @@ public class CaelixDebugGUI : MonoBehaviour
             return;
         }
 
-        CaelixWorld.TickTimingStats timings = voxelWorld.LastTickTimings;
+        CaelixHost.HostTimingStats timings = voxelWorld.LastTickTimings;
         if (!timings.IsCreated)
         {
             GUILayout.Label("  Status: Waiting for first completed tick", labelStyle);
@@ -438,7 +430,7 @@ public class CaelixDebugGUI : MonoBehaviour
         GUILayout.Label($"  Total: {timings.TotalMilliseconds:F3} ms", labelStyle);
     }
 
-    private static string GetTimedRenderingMode(CaelixWorld.TickTimingStats timings)
+    private static string GetTimedRenderingMode(CaelixHost.HostTimingStats timings)
     {
         if (timings.UsedRayTracing && timings.UsedMeshing) return "RT + Meshing";
         if (timings.UsedRayTracing) return "RT";
@@ -450,20 +442,20 @@ public class CaelixDebugGUI : MonoBehaviour
     {
         GUILayout.Label("<b>Brick Overlap Graph:</b>", labelStyle);
 
-        if (physicsWorld == null)
+        if (voxelWorld == null || voxelWorld.World == null)
         {
             GUILayout.Label("  Status: <color=#ffaa00>Physics world unavailable</color>", labelStyle);
             return;
         }
 
-        BrickOverlapGraph graph = physicsWorld.BrickOverlapGraph;
+        BrickOverlapGraph graph = voxelWorld.BrickOverlapGraph;
         if (!graph.IsCreated)
         {
             GUILayout.Label("  Status: Waiting for first physics step", labelStyle);
             return;
         }
 
-        BrickOverlapGraphStats stats = physicsWorld.BrickOverlapGraphStats;
+        BrickOverlapGraphStats stats = voxelWorld.World.Physics.BrickOverlapGraphStats;
         string buildPath = stats.RawCandidates == 0 || stats.NumBodies == 0
             ? "Empty"
             : stats.UsedSerialPath ? "Serial" : "Parallel";
@@ -646,7 +638,7 @@ public class CaelixDebugGUI : MonoBehaviour
         // if (!isVisible) return;
         if (!showSectorBorders && !showBrickBorders) return;
 
-        var world = CaelixCoreWorld.instance;
+        Caelix.Client.ClientWorld world = voxelWorld != null ? voxelWorld.ClientWorld : null;
         if (world == null) return;
 
         // Camera.current is the camera currently rendering, so the scene view and game view each
@@ -661,20 +653,20 @@ public class CaelixDebugGUI : MonoBehaviour
         GL.Begin(GL.LINES);
 
         // Draw sector and brick borders
-        foreach (var entity in world.entities.Values)
+        foreach (Caelix.Client.EntityView entity in world.Views)
         {
-            if (entity == null) continue;
+            if (entity.Transform == null) continue;
 
-            // Get entity's transform matrix (includes position, rotation, and scale)
-            Matrix4x4 entityMatrix = entity.transform.localToWorldMatrix;
+            // Get entity's transform matrix (position and rotation; entity scale is always 1)
+            Matrix4x4 entityMatrix = entity.LocalToWorld;
 
             // Which sector the camera occupies, in this entity's own local voxel space. Resolved once
             // per entity rather than per sector, since each entity has its own transform.
             int3 cameraSectorPos = canDrawBrickBorders
-                ? WorldToSectorPos(entity.transform, viewCamera.transform.position)
+                ? WorldToSectorPos(entity.Transform, viewCamera.transform.position)
                 : default;
 
-            foreach (var kvp in entity.Sectors)
+            foreach (var kvp in entity.Data.sectors)
             {
                 int3 sectorPos = kvp.Key;
                 ref Sector sector = ref kvp.Value.Get();

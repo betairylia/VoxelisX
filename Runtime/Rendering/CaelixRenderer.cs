@@ -1,41 +1,41 @@
 using System;
 using System.Collections.Generic;
-using NUnit.Framework.Internal;
 using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Rendering;
-using UnityEngine.Rendering.Universal;
+using UnityEngine.Serialization;
 using Random = UnityEngine.Random;
-
 using Caelix;
+using Caelix.Client;
 using Caelix.Rendering;
 using Caelix.Utils;
 
 /// <summary>
 /// Main rendering system for Caelix. Manages ray tracing acceleration structures
-/// and coordinates rendering of all voxel entities in the scene.
+/// and coordinates rendering of all voxel entity views of a client world.
 /// </summary>
 /// <remarks>
 /// This renderer uses Unity's ray tracing pipeline to render voxel data efficiently.
 /// It maintains a ray tracing acceleration structure (RTAS) containing all voxel sectors,
-/// and coordinates the update process for all registered voxel entities.
-/// Rendering state is managed separately from entity data.
+/// and coordinates the update process for every <see cref="EntityView"/> of its source
+/// <see cref="ClientWorld"/>. Rendering state is managed separately from entity data.
 /// </remarks>
 // [ExecuteInEditMode]
-public class CaelixRenderer : MonoSingleton<CaelixRenderer>
+public class CaelixRenderer : MonoBehaviour
 {
-    public CaelixCoreWorld world;
-    
-    /// <summary>
-    /// Maps (entity, sectorPos) → SectorRenderer for tracking rendering state independently from entity data.
-    /// </summary>
-    private Dictionary<(VoxelEntity entity, int3 sectorPos), SectorRenderer> sectorRenderers = new();
+    /// <summary>The host whose client world this renderer draws. Found in the scene when empty.</summary>
+    [FormerlySerializedAs("world")]
+    [SerializeField] private CaelixHost host;
+
+    private ClientWorld source;
 
     /// <summary>
-    /// Test world reference (for testing purposes).
+    /// Maps (view, sectorPos) → SectorRenderer for tracking rendering state independently from entity data.
     /// </summary>
-    public TestWorld test;
+    private Dictionary<(EntityView entity, int3 sectorPos), SectorRenderer> sectorRenderers = new();
+
+    private readonly List<(EntityView entity, int3 sectorPos)> removalScratch = new();
 
     /// <summary>
     /// Gets the ray tracing acceleration structure containing all voxel geometry.
@@ -49,6 +49,7 @@ public class CaelixRenderer : MonoSingleton<CaelixRenderer>
             return _voxelScene;
         }
     }
+
     private RayTracingAccelerationStructure _voxelScene;
 
     /// <summary>
@@ -77,6 +78,9 @@ public class CaelixRenderer : MonoSingleton<CaelixRenderer>
     /// </summary>
     [Header("Debug Utils")] public int instanceCount;
 
+    /// <summary>The client world this renderer draws, once resolved.</summary>
+    public ClientWorld Source => source;
+
     /// <summary>
     /// Creates the ray tracing acceleration structure for voxel rendering.
     /// </summary>
@@ -87,22 +91,64 @@ public class CaelixRenderer : MonoSingleton<CaelixRenderer>
             RayTracingAccelerationStructure.Settings settings = new RayTracingAccelerationStructure.Settings();
             settings.rayTracingModeMask = RayTracingAccelerationStructure.RayTracingModeMask.Everything;
             settings.managementMode = RayTracingAccelerationStructure.ManagementMode.Manual;
-            // settings.managementMode = RayTracingAccelerationStructure.ManagementMode.Automatic;
             settings.layerMask = -1;
-
             _voxelScene = new RayTracingAccelerationStructure(settings);
             Debug.Log($"voxAS: {_voxelScene}");
         }
     }
 
-    /// <summary>
-    /// Initializes the renderer on scene start.
-    /// </summary>
-    public override void Init() 
+    private void Awake()
     {
         SectorRenderer.sectorMaterial = brickMat;
-        world = CaelixCoreWorld.instance;
         ReloadAS();
+    }
+
+    /// <summary>Binds to the host's client world. Safe to call every frame.</summary>
+    private bool EnsureSource()
+    {
+        if (source != null)
+        {
+            return true;
+        }
+
+        if (host == null)
+        {
+            host = CaelixHost.Any;
+        }
+
+        if (host == null)
+        {
+            return false;
+        }
+
+        host.EnsureInitialized();
+        source = host.ClientWorld;
+        if (source != null)
+        {
+            source.ViewDespawning += OnViewDespawning;
+        }
+
+        return source != null;
+    }
+
+    private void OnViewDespawning(EntityView view)
+    {
+        removalScratch.Clear();
+        foreach (var kvp in sectorRenderers)
+        {
+            if (kvp.Key.entity == view)
+            {
+                removalScratch.Add(kvp.Key);
+            }
+        }
+
+        for (int i = 0; i < removalScratch.Count; i++)
+        {
+            SectorRenderer renderer = sectorRenderers[removalScratch[i]];
+            renderer.MarkRemove();
+            renderer.RemoveMe(ref _voxelScene);
+            sectorRenderers.Remove(removalScratch[i]);
+        }
     }
 
     /// <summary>
@@ -113,53 +159,50 @@ public class CaelixRenderer : MonoSingleton<CaelixRenderer>
     public void ReloadAS()
     {
         CreateRayTracingAccelerationStructure();
-
         frameId = 0;
     }
 
     /// <summary>
-    /// Finds all voxel entities and rebuilds the acceleration structure with all sectors.
+    /// Rebuilds the acceleration structure with every sector of every view.
     /// Can be called from the context menu in the Unity Editor.
     /// </summary>
     [ContextMenu("Render all")]
     public void RenderAll()
     {
         SectorRenderer.sectorMaterial = brickMat;
-
-        foreach (var e in FindObjectsByType<VoxelEntity>(FindObjectsSortMode.None))
+        if (!EnsureSource())
         {
-            world.AddEntity(e);
+            return;
         }
 
         _voxelScene.ClearInstances();
-
-        foreach (var e in world.entities.Values)
+        IReadOnlyList<EntityView> views = source.Views;
+        for (int v = 0; v < views.Count; v++)
         {
-            foreach (var kvp in e.Sectors)
+            EntityView view = views[v];
+            foreach (var kvp in view.Data.sectors)
             {
                 int3 sectorPos = kvp.Key;
-
-                var key = (e, sectorPos);
+                var key = (view, sectorPos);
                 if (!sectorRenderers.ContainsKey(key))
                 {
-                    sectorRenderers[key] = new SectorRenderer(e, sectorPos);
+                    sectorRenderers[key] = new SectorRenderer(view, sectorPos);
                 }
 
-                sectorRenderers[key].RenderModifyAS(ref _voxelScene, e, sectorPos);
+                sectorRenderers[key].RenderModifyAS(ref _voxelScene, view, sectorPos);
             }
 
-            e._shouldResetMotionVectors = false;
+            view.ShouldResetMotionVectors = false;
         }
 
         _voxelScene.Build();
     }
 
     private GraphicsBuffer aabbBuffer;
-
     public int numAABB;
     public Vector2Int repeat;
     public bool useRandomAABB = false;
-    
+
     [ContextMenu("Test")]
     public void Test()
     {
@@ -167,7 +210,7 @@ public class CaelixRenderer : MonoSingleton<CaelixRenderer>
         {
             aabbBuffer.Release();
         }
-        
+
         aabbBuffer =
             new GraphicsBuffer(GraphicsBuffer.Target.Structured, GraphicsBuffer.UsageFlags.None, numAABB, 24);
 
@@ -181,16 +224,16 @@ public class CaelixRenderer : MonoSingleton<CaelixRenderer>
             }
             else
             {
-                int cY = i / Sector.SIZE_IN_BRICKS_SQUARED; // 1,024
-                int cX = i % Sector.SIZE_IN_BRICKS;  //   128
-                int cZ = (i / Sector.SIZE_IN_BRICKS) % Sector.SIZE_IN_BRICKS; // 128
-
+                int cY = i / Sector.SIZE_IN_BRICKS_SQUARED;
+                int cX = i % Sector.SIZE_IN_BRICKS;
+                int cZ = (i / Sector.SIZE_IN_BRICKS) % Sector.SIZE_IN_BRICKS;
                 rnd = new Vector3(cX, cY, cZ);
             }
-            
+
             data.Add(rnd);
             data.Add(rnd + Vector3.one);
         }
+
         aabbBuffer.SetData(data);
 
         RayTracingAABBsInstanceConfig AABBconfig = new RayTracingAABBsInstanceConfig(aabbBuffer, numAABB, false, brickMat);
@@ -200,29 +243,18 @@ public class CaelixRenderer : MonoSingleton<CaelixRenderer>
         {
             for (int j = 0; j < repeat.y; j++)
             {
-                if (useRandomAABB)
-                {
-                    handles.Add(
-                        new TestSector()
-                        {
-                            handle = _voxelScene.AddInstance(AABBconfig,
-                                Matrix4x4.Translate(Vector3.forward * 50 * i + Vector3.left * 50 * j)),
-                            mat = Matrix4x4.Translate(Vector3.forward * 50 * i + Vector3.left * 50 * j)
-                        });
-                }
-                else
-                {
-                    handles.Add(
-                        new TestSector()
-                        {
-                            handle = _voxelScene.AddInstance(AABBconfig,
-                                Matrix4x4.Translate(Vector3.forward * Sector.SIZE_IN_BRICKS * i + Vector3.left * Sector.SIZE_IN_BRICKS * j)),
-                            mat = Matrix4x4.Translate(Vector3.forward * Sector.SIZE_IN_BRICKS * i + Vector3.left * Sector.SIZE_IN_BRICKS * j)
-                        });
-                }
+                Vector3 offset = useRandomAABB
+                    ? Vector3.forward * 50 * i + Vector3.left * 50 * j
+                    : Vector3.forward * Sector.SIZE_IN_BRICKS * i + Vector3.left * Sector.SIZE_IN_BRICKS * j;
+                handles.Add(
+                    new TestSector()
+                    {
+                        handle = _voxelScene.AddInstance(AABBconfig, Matrix4x4.Translate(offset)),
+                        mat = Matrix4x4.Translate(offset)
+                    });
             }
         }
-        
+
         _voxelScene.Build();
     }
 
@@ -235,10 +267,16 @@ public class CaelixRenderer : MonoSingleton<CaelixRenderer>
     }
 
     /// <summary>
-    /// Releases all GPU resources and disposes all entities.
+    /// Releases all GPU resources.
     /// </summary>
     void ReleaseResources()
     {
+        if (source != null)
+        {
+            source.ViewDespawning -= OnViewDespawning;
+            source = null;
+        }
+
         if (aabbBuffer != null && aabbBuffer.IsValid())
         {
             aabbBuffer.Release();
@@ -249,7 +287,9 @@ public class CaelixRenderer : MonoSingleton<CaelixRenderer>
             kvp.Value.Dispose();
         }
 
+        sectorRenderers.Clear();
         _voxelScene?.Dispose();
+        _voxelScene = null;
     }
 
     /// <summary>
@@ -257,16 +297,13 @@ public class CaelixRenderer : MonoSingleton<CaelixRenderer>
     /// </summary>
     [SerializeField] private bool autoTick = false;
 
-    /// <summary>
-    /// Called every frame. If autoTick is enabled, calls Tick().
-    /// </summary>
     void Update()
     {
         if(autoTick){ Tick(); }
     }
 
     /// <summary>
-    /// Performs one render update tick for all voxel entities.
+    /// Performs one render update tick for all voxel entity views.
     /// </summary>
     /// <remarks>
     /// This method runs in two passes:
@@ -276,45 +313,53 @@ public class CaelixRenderer : MonoSingleton<CaelixRenderer>
     /// </remarks>
     public void Tick()
     {
+        if (!EnsureSource())
+        {
+            return;
+        }
+
+        if (_voxelScene == null)
+        {
+            ReloadAS();
+        }
+
         frameId += 1;
         instanceCount = (int)voxelScene.GetInstanceCount();
         JobHandle renderJobs = default;
         bool hasRenderJobs = false;
 
+        IReadOnlyList<EntityView> views = source.Views;
+
         // Pass 1: Emit jobs & Remove unused sectors
-        foreach (var e in world.entities.Values)
+        for (int v = 0; v < views.Count; v++)
         {
-            if(e == null)
-            {
-                Debug.LogError("Use either backward for loop or another list");
-                world.RemoveEntity(e);
-                break;
-            }
+            EntityView view = views[v];
 
             // Handle sector removal
-            while (e.sectorsToRemove.TryDequeue(out int3 sectorPos))
+            while (view.SectorsToRemove.TryDequeue(out int3 sectorPos))
             {
-                var key = (e, sectorPos);
-                if (sectorRenderers.ContainsKey(key))
+                var key = (view, sectorPos);
+                if (sectorRenderers.TryGetValue(key, out SectorRenderer removed))
                 {
-                    sectorRenderers[key].RemoveMe(ref _voxelScene);
+                    removed.MarkRemove();
+                    removed.RemoveMe(ref _voxelScene);
                     sectorRenderers.Remove(key);
                 }
             }
 
             // Emit render jobs for all sectors
-            foreach (var kvp in e.Sectors)
+            foreach (var kvp in view.Data.sectors)
             {
                 int3 sectorPos = kvp.Key;
 
-                var key = (e, sectorPos);
+                var key = (view, sectorPos);
                 if (!sectorRenderers.ContainsKey(key))
                 {
-                    sectorRenderers[key] = new SectorRenderer(e, sectorPos);
+                    sectorRenderers[key] = new SectorRenderer(view, sectorPos);
                 }
 
                 SectorRenderer renderer = sectorRenderers[key];
-                renderer.RenderEmitJob(kvp.Value, e.Neighbors[sectorPos]);
+                renderer.RenderEmitJob(kvp.Value, view.Data.sectorNeighbors[sectorPos]);
                 if (renderer.TryGetScheduledJobHandle(out JobHandle sectorJob))
                 {
                     renderJobs = JobHandle.CombineDependencies(renderJobs, sectorJob);
@@ -329,57 +374,27 @@ public class CaelixRenderer : MonoSingleton<CaelixRenderer>
         }
 
         // Pass 2: Sync buffers
-        foreach (var e in world.entities.Values)
+        for (int v = 0; v < views.Count; v++)
         {
-            if (e == null)
-            {
-                // "Entities" array should not be modified between passes
-                throw new InvalidOperationException();
-            }
+            EntityView view = views[v];
 
-            foreach (var kvp in e.Sectors)
+            foreach (var kvp in view.Data.sectors)
             {
                 int3 sectorPos = kvp.Key;
                 ref Sector sector = ref kvp.Value.Get();
 
-                var key = (e, sectorPos);
+                var key = (view, sectorPos);
                 if (!sectorRenderers.ContainsKey(key)) continue;
 
                 sectorRenderers[key].ApplyCompletedRenderJob();
-                sectorRenderers[key].RenderModifyAS(ref _voxelScene, e, sectorPos);
+                sectorRenderers[key].RenderModifyAS(ref _voxelScene, view, sectorPos);
 
                 // Call sector tick
                 sector.ReorderBricks();
             }
 
-            // Every sector of this entity has consumed the reset; its motion vectors are settled.
-            e._shouldResetMotionVectors = false;
+            // Every sector of this view has consumed the reset; its motion vectors are settled.
+            view.ShouldResetMotionVectors = false;
         }
     }
-
-    /*
-    private void OnGUI()
-    {
-        GUILayout.BeginVertical();
-
-        ulong hostMemory = 0;
-        ulong deviceMemory = 0;
-        foreach (var e in world.entities)
-        {
-            hostMemory += e.GetHostMemoryUsageKB();
-        }
-
-        // Calculate GPU memory from renderers
-        foreach (var renderer in sectorRenderers.Values)
-        {
-            deviceMemory += renderer.VRAMUsage / 1024;
-        }
-
-        GUILayout.Box($"AS: {_voxelScene.GetSize() / 1024 / 1024} MB\n" +
-                      $"hRAM: {hostMemory / 1024} MB\n" +
-                      $"vRAM: {deviceMemory / 1024} MB");
-
-        GUILayout.EndVertical();
-    }
-    */
 }

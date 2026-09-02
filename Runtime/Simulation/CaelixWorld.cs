@@ -1,32 +1,78 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
-using System.IO;
-using Simulation.Utils;
 using Unity.Collections;
-using Unity.Entities;
+using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Profiling;
-#if UNITY_EDITOR
-using UnityEditor;
-#endif
 using UnityEngine;
-using Caelix;
 using Caelix.IO;
-using Caelix.Rendering.Meshing;
-using Caelix.Simulation;
 using Caelix.Tick;
 using Caelix.Utils;
 using Stopwatch = System.Diagnostics.Stopwatch;
 
-namespace Caelix
+namespace Caelix.Simulation
 {
-    public class CaelixWorld : CaelixCoreWorld
+    /// <summary>
+    /// Construction-time and live-tunable settings of one <see cref="CaelixWorld"/>.
+    /// </summary>
+    [Serializable]
+    public struct CaelixWorldConfig
+    {
+        public ushort worldId;
+        public string name;
+        public PhysicsWorldSettings physics;
+
+        /// <summary>One bit per slot id. Only these slots are sent to clients. Default: Block only.</summary>
+        public ushort replicatedSlotMask;
+
+        /// <summary>Propagate dirtiness between entities through the post-physics brick-overlap graph.</summary>
+        public bool doAlienPropagation;
+
+        /// <summary>Flags a moving (non-static) entity's bricks hand to their alien neighbors.</summary>
+        public DirtyFlags alienMotionDirtyMask;
+
+        /// <summary>Query every allocated brick of every non-static entity, not only the dirty ones.</summary>
+        public bool alienIncludeMovingBricks;
+
+        public static CaelixWorldConfig Default(ushort worldId = 0, string name = "World")
+        {
+            return new CaelixWorldConfig
+            {
+                worldId = worldId,
+                name = name,
+                physics = PhysicsWorldSettings.Default,
+                replicatedSlotMask = Sector.DefaultReplicatedSlotMask,
+                doAlienPropagation = false,
+                alienMotionDirtyMask = DirtyFlags.GeneralAutomata,
+                alienIncludeMovingBricks = true,
+            };
+        }
+    }
+
+    /// <summary>
+    /// Exclusive CPU timing buckets from the last completed world tick. Tick excludes the other
+    /// two, so the three times sum to TotalMilliseconds.
+    /// </summary>
+    public struct TickTimingStats
+    {
+        public bool IsCreated;
+        public double TickMilliseconds;
+        public double PhysicsMilliseconds;
+        public double BrickGraphMilliseconds;
+        public double TotalMilliseconds;
+    }
+
+    /// <summary>
+    /// One authoritative simulation world: entities, bodies, automata, physics, save and load.
+    /// A plain class with no GameObject. The entity and body maps are the source of truth and
+    /// are updated in place. See <c>Documentation~/SERVER_CLIENT_ARCHITECTURE.md</c>.
+    /// </summary>
+    public sealed class CaelixWorld : IDisposable, IWorldLoadTarget
     {
         #region ProfilerMarkers
 
-        private static readonly ProfilerMarker s_PlayerRayCastMarker = new("Player Ray Cast");
-        private static readonly ProfilerMarker s_FillTickBufferMarker = new("Fill TickBuffer");
+        private static readonly ProfilerMarker s_PrepareTickMarker = new("Prepare Tick");
         private static readonly ProfilerMarker s_ActivateSectorSnapshotsMarker = new("Activate Sector Snapshots");
         private static readonly ProfilerMarker s_CollectRequireUpdateBricksMarker = new("Collect RequireUpdate Bricks");
         private static readonly ProfilerMarker s_BuildAlienReadContextMarker = new("Build Alien Read Context");
@@ -44,321 +90,477 @@ namespace Caelix
         private static readonly ProfilerMarker s_PhysicsStepMarker = new("Physics Step");
         private static readonly ProfilerMarker s_AlienPropagationMarker = new("Alien Propagation");
         private static readonly ProfilerMarker s_ClearDirtyFlagsMarker = new("Clear Dirty Flags");
-        private static readonly ProfilerMarker s_BoundaryCopyBackMarker = new("Burst -> Managed Boundary Copy Back");
-        private static readonly ProfilerMarker s_RendererTickMarker = new("Renderer Tick");
 
         #endregion
 
-        /// <summary>
-        /// Exclusive CPU timing buckets from the last completed world tick. The brick graph
-        /// bucket covers the whole post-physics alien propagation (query, graph build, and
-        /// marking), and Tick excludes the other three, so the four times sum to
-        /// TotalMilliseconds.
-        /// </summary>
-        public struct TickTimingStats
-        {
-            public bool IsCreated;
-            public bool UsedRayTracing;
-            public bool UsedMeshing;
-            public double TickMilliseconds;
-            public double PhysicsMilliseconds;
-            public double BrickGraphMilliseconds;
-            public double RenderingMilliseconds;
-            public double TotalMilliseconds;
-        }
-
-        public TickStage<AutomataStageInputs> automataStage;
-
-        // ---------------- COMPONENTS ------------------
-        [Header("Components")]
-        [SerializeField] protected CaelixPhysicsWorld physicsWorld;
-
-        [SerializeField] protected VoxelRayCast rayCaster;
-        [SerializeField] protected CaelixRenderer rayTracedRenderer;
-        [SerializeField] protected VoxelMeshRendererComponent meshingRenderer;
-
-        /// <summary>
-        /// Read-only view of the brick-overlap graph published by the alien propagation stage,
-        /// which runs right after the physics step. Earlier Tick stages therefore see the graph
-        /// of the previous tick. Empty (IsCreated false) until the first publish, which needs
-        /// <see cref="doAlienPropagation"/>.
-        /// </summary>
-        public BrickOverlapGraph BrickOverlapGraph =>
-            physicsWorld != null ? physicsWorld.BrickOverlapGraph : default;
-
-        /// <summary>Exclusive CPU timing buckets from the last completed world tick.</summary>
-        public TickTimingStats LastTickTimings { get; private set; }
-
-        // ---------------- PERFORMANCE ------------------
-        [Header("Performance")]
-        public float targetTPS = 100.0f;
-        public float slowmo = 1.0f;
-
-        // ---------------- ALIEN DIRTY PROPAGATION ------------------
-        [Header("Alien Dirty Propagation")]
-        [Tooltip("Propagate dirtiness between entities through the post-physics brick-overlap graph.")]
-        public bool doAlienPropagation = false;
-
-        [Tooltip("Flags a moving (non-static) entity's bricks hand to their alien neighbors.")]
-        [SerializeField] private DirtyFlags alienMotionDirtyMask = DirtyFlags.GeneralAutomata;
-
-        [Tooltip("Query every allocated brick of every non-static entity, not only the dirty ones. " +
-                 "This is the heaviest input the graph can get; keep it on to benchmark motion.")]
-        [SerializeField] private bool alienIncludeMovingBricks = true;
-
-        /// <summary> Counters of the last alien propagation pass. </summary>
-        public BrickOverlapPropagationStats LastBrickOverlapPropagationStats { get; private set; }
-
-
-        // ---------------- DEBUG ------------------
-        [Header("Debug")]
-        public bool freeze = true;
-        public bool isFirst = true;
-
-        private float timer = 0.0f;
-
-        private const string DefaultSaveLoadFileName = "caelix-world.cxw";
-
-        // ---------------- SAVE / LOAD ------------------
-        [Header("Save / Load")]
-        [SerializeField] private bool autoLoadOnStart = false;
-        [SerializeField] private string saveLoadPath = DefaultSaveLoadFileName;
-        
         public struct AutomataStageInputs
         {
             public NativeHashMap<Guid128, VoxelEntityData> VoxelEntities;
             public NativeList<BrickInfo> BricksRequiredUpdate;
             public AutomataReadContext ReadContext;
         }
-        
-        // Ticking
-        private PhysicsStepInputs tickBuf;
+
+        internal struct PendingEvent
+        {
+            public Type Type;
+            public byte[] Payload;
+        }
+
+        public ushort Id => Config.worldId;
+        public string Name => Config.name;
+
+        /// <summary>Live-tunable settings. Physics settings are pushed into <see cref="Physics"/> at every tick.</summary>
+        public CaelixWorldConfig Config;
+
+        /// <summary>
+        /// The world's entities and bodies. Public so physics jobs can take it by reference.
+        /// Mutate entities through the methods on this class; the maps themselves must not be
+        /// replaced.
+        /// </summary>
+        public PhysicsStepInputs Data;
+
+        public VoxelPhysicsWorld Physics { get; }
+        public TickStage<AutomataStageInputs> AutomataStage { get; }
+        public VoxelBodyForceCommandStream Forces => Physics.BodyForceCommands;
+
+        /// <summary>Number of completed ticks.</summary>
+        public uint TickIndex { get; private set; }
+
+        public bool IsDisposed => disposed;
+
+        public TickTimingStats LastTickTimings { get; private set; }
+        public BrickOverlapPropagationStats LastBrickOverlapPropagationStats { get; private set; }
+
+        /// <summary>
+        /// Read-only view of the brick-overlap graph published by the alien propagation stage.
+        /// Earlier tick stages see the graph of the previous tick.
+        /// </summary>
+        public BrickOverlapGraph BrickOverlapGraph => Physics.BrickOverlapGraph;
+
+        /// <summary>Events emitted since the last drain. The server drains them after every tick.</summary>
+        internal readonly List<PendingEvent> PendingEvents = new();
+
         private AutomataStageInputs automataTickBuf;
         private NativeList<AlienEntityView> alienEntityViews;
-        public override void Init()
+        private bool disposed;
+
+        public CaelixWorld(CaelixWorldConfig config)
         {
-            base.Init();
+            Config = config;
+            if (Config.replicatedSlotMask == 0)
+            {
+                Config.replicatedSlotMask = Sector.DefaultReplicatedSlotMask;
+            }
 
-            automataStage = new();
+            Data.VoxelEntities = new NativeHashMap<Guid128, VoxelEntityData>(1, Allocator.Persistent);
+            Data.VoxelBodies = new NativeHashMap<Guid128, VoxelBodyData>(1, Allocator.Persistent);
+            Data.nDynamicBodies = 0;
 
-            tickBuf.VoxelEntities = new NativeHashMap<Guid128, VoxelEntityData>(1, Allocator.Persistent);
-            tickBuf.VoxelBodies = new NativeHashMap<Guid128, VoxelBodyData>(1, Allocator.Persistent);
             automataTickBuf.BricksRequiredUpdate = new NativeList<BrickInfo>(Allocator.Persistent);
             alienEntityViews = new NativeList<AlienEntityView>(Allocator.Persistent);
+
+            Physics = new VoxelPhysicsWorld(config.physics);
+            AutomataStage = new TickStage<AutomataStageInputs>();
         }
 
-        protected void Start()
+        public void Dispose()
         {
-            if(autoLoadOnStart)
+            if (disposed) return;
+            disposed = true;
+
+            using (var keys = Data.VoxelEntities.GetKeyArray(Allocator.Temp))
             {
-                Load();
+                for (int i = 0; i < keys.Length; i++)
+                {
+                    RemoveEntity(keys[i]);
+                }
             }
-        }
 
-        protected override void ReleaseResources()
-        {
-            tickBuf.VoxelEntities.Dispose();
-            tickBuf.VoxelBodies.Dispose();
+            Data.VoxelEntities.Dispose();
+            Data.VoxelBodies.Dispose();
             automataTickBuf.BricksRequiredUpdate.Dispose();
             alienEntityViews.Dispose();
-            base.ReleaseResources();
+            AutomataStage.Dispose();
+            Physics.Dispose();
         }
 
-        public override void Tick()
+        #region Entities
+
+        public int EntityCount => Data.VoxelEntities.Count;
+
+        /// <summary>Read-only enumeration of the entity map. Do not hold across a mutation.</summary>
+        public NativeHashMap<Guid128, VoxelEntityData>.ReadOnly Entities => Data.VoxelEntities.AsReadOnly();
+
+        public NativeArray<Guid128> GetEntityKeys(Allocator allocator) => Data.VoxelEntities.GetKeyArray(allocator);
+
+        public bool HasEntity(Guid128 guid) => Data.VoxelEntities.ContainsKey(guid);
+
+        public bool TryGetEntity(Guid128 guid, out VoxelEntityData data) => Data.VoxelEntities.TryGetValue(guid, out data);
+
+        public VoxelEntityData GetEntity(Guid128 guid)
         {
-            // TEMP CODE -- Tick logic
-            if ((!isFirst) && freeze) return;
+            if (!Data.VoxelEntities.TryGetValue(guid, out VoxelEntityData data))
+            {
+                throw new KeyNotFoundException($"Entity {guid} is not in world {Name}.");
+            }
+
+            return data;
+        }
+
+        /// <summary>
+        /// Writes scalar fields (transform, flags) back. The sector maps inside the record are
+        /// shared storage, so writes through a copy are already visible; only scalars need this.
+        /// </summary>
+        public void SetEntity(Guid128 guid, in VoxelEntityData data)
+        {
+            if (!Data.VoxelEntities.ContainsKey(guid))
+            {
+                throw new KeyNotFoundException($"Entity {guid} is not in world {Name}.");
+            }
+
+            Data.VoxelEntities[guid] = data;
+        }
+
+        /// <summary>Creates an entity with empty sector storage. Returns false if the guid is taken.</summary>
+        public bool CreateEntity(
+            Guid128 guid,
+            RigidTransform transform,
+            bool isStatic,
+            bool isProtected = false,
+            bool excludeFromSave = false)
+        {
+            if (guid.IsZero)
+            {
+                throw new ArgumentException("Entity guid must not be zero.", nameof(guid));
+            }
+
+            if (Data.VoxelEntities.ContainsKey(guid))
+            {
+                return false;
+            }
+
+            var data = new VoxelEntityData(Allocator.Persistent)
+            {
+                Guid = guid,
+                transform = transform,
+                previousTransform = transform,
+                isStatic = isStatic,
+                isProtected = isProtected,
+                excludeFromSave = excludeFromSave,
+            };
+            Data.VoxelEntities.Add(guid, data);
+            return true;
+        }
+
+        /// <summary>Removes an entity and its body, disposing all sector storage.</summary>
+        public bool RemoveEntity(Guid128 guid)
+        {
+            if (!Data.VoxelEntities.TryGetValue(guid, out VoxelEntityData data))
+            {
+                return false;
+            }
+
+            RemoveBody(guid);
+            data.Dispose();
+            Data.VoxelEntities.Remove(guid);
+            return true;
+        }
+
+        /// <summary>
+        /// Moves an entity. With <paramref name="teleport"/> the previous transform is overwritten
+        /// too, so dirty propagation does not see a sweep from the old pose.
+        /// </summary>
+        public void SetEntityTransform(Guid128 guid, RigidTransform transform, bool teleport = true)
+        {
+            VoxelEntityData data = GetEntity(guid);
+            data.transform = transform;
+            if (teleport)
+            {
+                data.previousTransform = transform;
+            }
+
+            Data.VoxelEntities[guid] = data;
+        }
+
+        /// <summary>Freezes or releases an entity. Freezing also stops its body.</summary>
+        public void SetEntityStatic(Guid128 guid, bool isStatic)
+        {
+            VoxelEntityData data = GetEntity(guid);
+            if (data.isStatic == isStatic)
+            {
+                return;
+            }
+
+            data.isStatic = isStatic;
+            Data.VoxelEntities[guid] = data;
+
+            if (isStatic)
+            {
+                SetBodyVelocity(guid, float3.zero, float3.zero);
+            }
+        }
+
+        public void SetEntityProtected(Guid128 guid, bool isProtected)
+        {
+            VoxelEntityData data = GetEntity(guid);
+            data.isProtected = isProtected;
+            Data.VoxelEntities[guid] = data;
+        }
+
+        #endregion
+
+        #region Bodies
+
+        public bool HasBody(Guid128 guid) => Data.VoxelBodies.ContainsKey(guid);
+
+        public bool TryGetBody(Guid128 guid, out VoxelBodyData body) => Data.VoxelBodies.TryGetValue(guid, out body);
+
+        public void SetBody(Guid128 guid, in VoxelBodyData body)
+        {
+            if (!Data.VoxelBodies.ContainsKey(guid))
+            {
+                throw new KeyNotFoundException($"Body {guid} is not in world {Name}.");
+            }
+
+            Data.VoxelBodies[guid] = body;
+        }
+
+        /// <summary>Adds a body to an existing entity. Returns false if the entity is missing or already has one.</summary>
+        public bool AddBody(Guid128 guid, bool accuratePhysics = true)
+        {
+            if (!Data.VoxelEntities.ContainsKey(guid) || Data.VoxelBodies.ContainsKey(guid))
+            {
+                return false;
+            }
+
+            Data.VoxelBodies.Add(guid, VoxelBodyData.Create(Allocator.Persistent, accuratePhysics));
+            return true;
+        }
+
+        public bool RemoveBody(Guid128 guid)
+        {
+            if (!Data.VoxelBodies.TryGetValue(guid, out VoxelBodyData body))
+            {
+                return false;
+            }
+
+            body.Dispose();
+            Data.VoxelBodies.Remove(guid);
+            return true;
+        }
+
+        public void SetBodyAccuratePhysics(Guid128 guid, bool accuratePhysics)
+        {
+            if (Data.VoxelBodies.TryGetValue(guid, out VoxelBodyData body) && body.accuratePhysics != accuratePhysics)
+            {
+                body.accuratePhysics = accuratePhysics;
+                Data.VoxelBodies[guid] = body;
+            }
+        }
+
+        /// <summary>Overwrites a body's velocity. No-op for entities without a body.</summary>
+        public void SetBodyVelocity(Guid128 guid, float3 linearVelocity, float3 angularVelocity)
+        {
+            if (!Data.VoxelBodies.TryGetValue(guid, out VoxelBodyData body))
+            {
+                return;
+            }
+
+            body.motionVelocity.LinearVelocity = linearVelocity;
+            body.motionVelocity.AngularVelocity = angularVelocity;
+            Data.VoxelBodies[guid] = body;
+        }
+
+        #endregion
+
+        #region Voxels
+
+        public Block GetBlock(Guid128 guid, int3 position)
+        {
+            return Data.VoxelEntities.TryGetValue(guid, out VoxelEntityData data) ? data.GetBlock(position) : Block.Empty;
+        }
+
+        public T GetSlot<T>(Guid128 guid, SectorSlotId slotId, int3 position) where T : unmanaged
+        {
+            return Data.VoxelEntities.TryGetValue(guid, out VoxelEntityData data) ? data.GetSlot<T>(slotId, position) : default;
+        }
+
+        /// <summary>Writes one block. Sector storage is shared, so no write-back is needed.</summary>
+        public bool SetBlock(Guid128 guid, int3 position, Block block)
+        {
+            if (!Data.VoxelEntities.TryGetValue(guid, out VoxelEntityData data))
+            {
+                return false;
+            }
+
+            data.SetBlock(position, block);
+            return true;
+        }
+
+        public bool SetSlot<T>(Guid128 guid, SectorSlotId slotId, int3 position, T value)
+            where T : unmanaged, IEquatable<T>
+        {
+            if (!Data.VoxelEntities.TryGetValue(guid, out VoxelEntityData data))
+            {
+                return false;
+            }
+
+            data.SetSlot(slotId, position, value);
+            return true;
+        }
+
+        #endregion
+
+        #region Events
+
+        /// <summary>
+        /// Queues a blittable event for every connected client. The type must be registered on both
+        /// ends (see <see cref="CaelixServer.Types"/>). Main thread only.
+        /// </summary>
+        public unsafe void EmitEvent<T>(T evt) where T : unmanaged
+        {
+            int size = UnsafeUtility.SizeOf<T>();
+            var payload = new byte[size];
+            fixed (byte* dst = payload)
+            {
+                UnsafeUtility.CopyStructureToPtr(ref evt, dst);
+            }
+
+            PendingEvents.Add(new PendingEvent { Type = typeof(T), Payload = payload });
+        }
+
+        #endregion
+
+        #region Tick
+
+        /// <summary>Runs one complete tick: simulate, then clear the dirty lifetime.</summary>
+        public void Tick(float dt)
+        {
+            TickSimulate(dt);
+            EndTick();
+        }
+
+        /// <summary>
+        /// Everything in a tick up to, but not including, the dirty-flag clear. Between this and
+        /// <see cref="EndTick"/> the dirty flags describe exactly what changed this tick, which is
+        /// when replication reads them.
+        /// </summary>
+        public void TickSimulate(float dt)
+        {
             long tickStartTicks = Stopwatch.GetTimestamp();
 
-            // TODO: FIXME: Check entity prevTransform lifespan; currently maybe treated as moved to current location from 0,0,0 in first frame, causing severe performance issues
-            isFirst = false;
+            Physics.Settings = Config.physics;
 
-            float deltaTime = targetTPS > 0f ? 1.0f / targetTPS : Time.deltaTime;
-            
-            // timer -= Time.deltaTime;
-            // if (timer > 0)
-            // {
-            //     return;
-            // }
-            // else
-            // {
-            //     timer = slowmo * 1.0f / targetTPS;
-            // }
+            NativeHashMap<Guid128, VoxelEntityData> entities = Data.VoxelEntities;
+            NativeHashMap<Guid128, VoxelBodyData> bodies = Data.VoxelBodies;
 
-            // Ticking
-            // TODO: FIXME: Currently inf loaders will not work due to no proper sector loading transition
-            // TickWorldLoaders();
-            
             /////////////////////////////////////////////////////////////////////////
-            // TOPOLOGY STAGE
-            //  DO
-            //   - Add / Remove VoxelEntities
-            //   - Switch entities' `IsStatic`
-            //   - Can communicate with the managed world (1 entity = 1 GameObj)
+            // TOPOLOGY BOUNDARY
+            //  Entity add/remove and static flips happen between ticks. From here on
+            //  the entity set is fixed for the tick.
             /////////////////////////////////////////////////////////////////////////
-            
-            using (s_PlayerRayCastMarker.Auto())
+
+            NativeArray<Guid128> entityKeys;
+            using (s_PrepareTickMarker.Auto())
             {
-                rayCaster?.Tick();
-            }
-
-            /////////////////////////////////////////////////////////////////////////
-            // T-V Boundary
-            //  Fix entity ordering
-            //  Handover to unmanaged world / tickBuf
-            //
-            // DO NOT modify entity topology after here
-            /////////////////////////////////////////////////////////////////////////
-
-            // Fill native list by copying
-            // TODO: Keep the unique instance in world and let VoxelEntity ref it?
-            using (s_FillTickBufferMarker.Auto())
-            {
-                tickBuf.VoxelEntities.Clear();
-                tickBuf.VoxelBodies.Clear();
-
-                // Count dynamic body count
-                // TODO: Arrange this to manage body indices properly with persistence
-                tickBuf.nDynamicBodies = 0;
-                foreach (var kvp in entities)
+                entityKeys = entities.GetKeyArray(Allocator.Temp);
+                for (int i = 0; i < entityKeys.Length; i++)
                 {
-                    if (physicsWorld.Bodies.TryGetValue(kvp.Key, out var b))
-                    {
-                        if (!b.entity.IsStatic)
-                        {
-                            tickBuf.nDynamicBodies++;
-                        }
-                    }
+                    VoxelEntityData e = entities[entityKeys[i]];
+                    e.previousTransform = e.transform;
+                    entities[entityKeys[i]] = e;
                 }
 
-                int nDynamic = 0, nStatic = 0;
-                foreach(var kvp in entities)
+                // Body index assignment: dynamic bodies first, then static ones.
+                int nDynamic = 0;
+                using (NativeArray<Guid128> bodyKeys = bodies.GetKeyArray(Allocator.Temp))
                 {
-                    var e = kvp.Value;
-                    e.SyncTransformToData();
-                    tickBuf.VoxelEntities.Add(e.PersistentGuid, e.GetDataCopy());
-
-                    if (physicsWorld.Bodies.TryGetValue(kvp.Key, out var b))
+                    for (int i = 0; i < bodyKeys.Length; i++)
                     {
-                        var bodyData = b.GetDataCopy();
-                        if (e.IsStatic)
+                        if (entities.TryGetValue(bodyKeys[i], out VoxelEntityData e) && !e.isStatic)
                         {
-                            bodyData._cached_body_index = tickBuf.nDynamicBodies + nStatic;
-                            nStatic++;
-                        }
-                        else
-                        {
-                            bodyData._cached_body_index = nDynamic;
                             nDynamic++;
                         }
-                        tickBuf.VoxelBodies.Add(kvp.Key, bodyData);
+                    }
+
+                    Data.nDynamicBodies = nDynamic;
+
+                    int dynamicIndex = 0, staticIndex = 0;
+                    for (int i = 0; i < bodyKeys.Length; i++)
+                    {
+                        VoxelBodyData body = bodies[bodyKeys[i]];
+                        bool isStatic = !entities.TryGetValue(bodyKeys[i], out VoxelEntityData e) || e.isStatic;
+                        body._cached_body_index = isStatic ? nDynamic + staticIndex++ : dynamicIndex++;
+                        bodies[bodyKeys[i]] = body;
                     }
                 }
             }
 
             /////////////////////////////////////////////////////////////////////////
-            // VOXEL STAGE
-            //  random access voxel stage
-            //  TODO
+            // VOXEL STAGE (automata)
+            //  DO   modify voxel data within the 1-voxel/tick propagation limit, add forces
+            //  DON'T add/remove entities, toggle isStatic, move transforms
             /////////////////////////////////////////////////////////////////////////
 
-            // Tick
-            JobHandle tickHandle = new JobHandle();
-
-            /////// Voxel update stage
-            // Random tick stage
-            
-            /////////////////////////////////////////////////////////////////////////
-            // VOXEL STAGE
-            //  automata stage
-            //  DO
-            //   - Modify voxel data within 1-voxel/t information propagation limit
-            //   - Add forces to body
-            //  DON'T
-            //   - Add / remove / toggle `IsStatic` of VoxelEntities
-            //   - Move entities transform
-            /////////////////////////////////////////////////////////////////////////
-
-            // Automata stage
-            // TODO: Wrap this up and handle this properly
-            // Activate sector snapshotting for modifications
             using (s_ActivateSectorSnapshotsMarker.Auto())
             {
-                foreach (var e in entities.Values)
+                foreach (var kvp in entities)
                 {
-                    foreach (var kvp in e.Sectors)
+                    foreach (var sector in kvp.Value.sectors)
                     {
-                        if (kvp.Value.Get().sectorRequireUpdateFlags > 0)
-                            kvp.Value.ActivateSnapshot();
+                        if (sector.Value.Get().sectorRequireUpdateFlags > 0)
+                            sector.Value.ActivateSnapshot();
                     }
                 }
             }
 
-            // Collect bricks to update
             using (s_CollectRequireUpdateBricksMarker.Auto())
             {
+                automataTickBuf.VoxelEntities = entities;
                 automataTickBuf.BricksRequiredUpdate.Clear();
-                BrickCollector.Collect(ref tickBuf.VoxelEntities, ref automataTickBuf.BricksRequiredUpdate);
+                BrickCollector.Collect(ref Data.VoxelEntities, ref automataTickBuf.BricksRequiredUpdate);
             }
+
             using (s_BuildAlienReadContextMarker.Auto())
             {
                 BuildAlienReadContext();
             }
 
+            JobHandle tickHandle;
             using (s_AutomataStageScheduleMarker.Auto())
             {
-                tickHandle = automataStage.Schedule(automataTickBuf, tickHandle);
+                tickHandle = AutomataStage.Schedule(automataTickBuf, default);
             }
-
-            // Random access updating stage
-
-            // Propagate dirtiness up, from brick(sector) to VoxelEntityData
-            // Update physics info (MassProperties, VoxelType (Corner/Edge/Surface))
-
-            /////// Physics update stage
-
-            // Resolve voxel contact events into Sectors (AlienVoxelPairs)
-
-            /////// Rendering update stage
-
-            /////// End Tick stage
-            // Clear dirtiness and propagate RequireBrickUpdate to self & neighbors
 
             using (s_WorkDispatchMarker.Auto())
             {
                 tickHandle.Complete();
             }
 
-            // TODO: Wrap this up and handle this properly
-            // Apply sector modifications
             using (s_ApplySectorSnapshotsMarker.Auto())
             {
-                foreach(var e in entities.Values)
+                foreach (var kvp in entities)
                 {
-                    foreach (var kvp in e.Sectors)
+                    foreach (var sector in kvp.Value.sectors)
                     {
-                        kvp.Value.ApplySnapshot();
+                        sector.Value.ApplySnapshot();
                     }
                 }
             }
 
             /////////////////////////////////////////////////////////////////////////
-            // V-P Boundary
-            //  Dirty propagation
+            // V-P BOUNDARY: dirty propagation
             /////////////////////////////////////////////////////////////////////////
- 
-            // Dirty propagation — operates on tickBuf to preserve physics-exported transforms
-            NativeArray<Guid128> entityKeys;
+
             using (s_DirtyPropagationMarker.Auto())
             {
                 using (s_UpdateVelocityMarker.Auto())
                 {
-                    entityKeys = tickBuf.VoxelEntities.GetKeyArray(Allocator.Temp);
                     for (int i = 0; i < entityKeys.Length; i++)
                     {
-                        var entity = tickBuf.VoxelEntities[entityKeys[i]];
-                        entity.ComputeVelocityForDirtyPropagation(deltaTime);
-                        tickBuf.VoxelEntities[entityKeys[i]] = entity;
+                        VoxelEntityData e = entities[entityKeys[i]];
+                        e.ComputeVelocityForDirtyPropagation(dt);
+                        entities[entityKeys[i]] = e;
                     }
                 }
 
@@ -366,32 +568,24 @@ namespace Caelix
                 {
                     for (int i = 0; i < entityKeys.Length; i++)
                     {
-                        var entity = tickBuf.VoxelEntities[entityKeys[i]];
-                        entity.ClearRequireUpdates();
-                        tickBuf.VoxelEntities[entityKeys[i]] = entity;
+                        VoxelEntityData e = entities[entityKeys[i]];
+                        e.ClearRequireUpdates();
+                        entities[entityKeys[i]] = e;
                     }
                 }
 
                 using (s_PropagateDirtyFlagsMarker.Auto())
                 {
-                    JobHandle handle = new JobHandle();
+                    JobHandle handle = default;
                     for (int i = 0; i < entityKeys.Length; i++)
                     {
-                        var entity = tickBuf.VoxelEntities[entityKeys[i]];
-                        handle = JobHandle.CombineDependencies(handle, entity.PropagateDirtyFlags(DirtyFlags.All, true));
+                        VoxelEntityData e = entities[entityKeys[i]];
+                        handle = JobHandle.CombineDependencies(handle, e.PropagateDirtyFlags(DirtyFlags.All, true));
 
-                        // Persist sector growth from EnsureNeighborSectorsForDirtyBoundaries into the working
-                        // copy. This previously ran on the managed entities, whose sectors hashmap could
-                        // realloc and free the buffer that tickBuf — read just below by Alien Propagation and
-                        // by the final copy-back — still pointed at (a use-after-free that only surfaced when a
-                        // boundary brick spawned a new neighbor sector mid-tick). Operating on tickBuf keeps a
-                        // single consistent sectors map across the whole propagation phase.
-                        //
-                        // INVARIANT (load-bearing): the propagation phase may only ADD sectors to this working
-                        // copy — it must never free or relocate an existing Sector* — so the managed entity's
-                        // still-aliased pre-realloc sectors entries keep pointing at live Sector structs until
-                        // copy-back adopts the grown map. Don't introduce RemoveSectorAt / Sector disposal here.
-                        tickBuf.VoxelEntities[entityKeys[i]] = entity;
+                        // INVARIANT (load-bearing): the propagation phase may only ADD sectors to an
+                        // entity's map — it must never free or relocate an existing Sector* — because
+                        // the read-only views handed to the jobs above still point at them.
+                        entities[entityKeys[i]] = e;
                     }
 
                     using (s_BurstMarker.Auto())
@@ -399,91 +593,77 @@ namespace Caelix
                         handle.Complete();
                     }
                 }
-
-                // TODO: At least make the jobs below Complete() o(1) times by chaining them
-                // TODO: Refine the tick to job scheduling best practices
             }
 
             // Dirty flags stay set through the physics step: alien propagation runs on the
-            // stepped poses (see below) and selects its source bricks from them. entityKeys
-            // stays alive until that clear.
+            // stepped poses and selects its source bricks from them, and replication reads them
+            // after this method returns. EndTick clears them.
 
-            // Mark non-empty blocks: rebuild the Block slot's occupancy aux from settled voxel data,
-            // for every entity, before physics consumes it.
             using (s_MarkNonEmptyBlocksMarker.Auto())
             {
-                foreach (var e in tickBuf.VoxelEntities.GetValueArray(Allocator.Temp))
+                using NativeArray<VoxelEntityData> values = entities.GetValueArray(Allocator.Temp);
+                for (int i = 0; i < values.Length; i++)
                 {
-                    e.RefreshNonEmptyMask();
+                    values[i].RefreshNonEmptyMask();
                 }
             }
 
-            // Physics after dirty propagation
             using (s_RecomputeBodyMassPropertiesMarker.Auto())
             {
-                foreach (var b in tickBuf.VoxelBodies.GetKeyArray(Allocator.Temp))
+                using NativeArray<Guid128> bodyKeys = bodies.GetKeyArray(Allocator.Temp);
+                for (int i = 0; i < bodyKeys.Length; i++)
                 {
-                    var body = tickBuf.VoxelBodies[b];
-                    var entityData = tickBuf.VoxelEntities[b];
+                    VoxelBodyData body = bodies[bodyKeys[i]];
+                    VoxelEntityData entityData = entities[bodyKeys[i]];
                     body.ComputePhysicsProperties(entityData);
-                    tickBuf.VoxelBodies[b] = body;
+                    bodies[bodyKeys[i]] = body;
                 }
             }
 
             using (s_ApplyBodyForceCommandsMarker.Auto())
             {
-                physicsWorld.BodyForceCommands.ApplyTo(ref tickBuf, deltaTime);
+                Forces.ApplyTo(ref Data, dt);
             }
 
             /////////////////////////////////////////////////////////////////////////
             // PHYSICS STAGE
-            //  DO
-            //   - Move entities
-            //  DON'T
-            //   - Modify voxel data
             /////////////////////////////////////////////////////////////////////////
 
             long physicsElapsedTicks;
             using (s_PhysicsStepMarker.Auto())
             {
                 long physicsStartTicks = Stopwatch.GetTimestamp();
-                physicsWorld.SimulateStep(
-                    deltaTime, tickBuf);
+                Physics.SimulateStep(dt, ref Data);
                 physicsElapsedTicks = Stopwatch.GetTimestamp() - physicsStartTicks;
             }
 
             /////////////////////////////////////////////////////////////////////////
-            // P-T Boundary
-            //  Collect key overlapping bricks for alien propagation / reading
-            //  Back to managed world
+            // P-T BOUNDARY: alien propagation over the stepped poses
             /////////////////////////////////////////////////////////////////////////
 
-            // Alien dirty propagation over the post-physics brick-overlap graph. The step
-            // synchronized the collision world, so the BVH already describes the stepped poses
-            // and needs no explicit rebuild.
             long alienElapsedTicks;
             using (s_AlienPropagationMarker.Auto())
             {
                 long alienStartTicks = Stopwatch.GetTimestamp();
                 LastBrickOverlapPropagationStats = default;
-                if (doAlienPropagation)
+                if (Config.doAlienPropagation)
                 {
-                    var request = BrickOverlapQueryBuilder.Build(ref tickBuf, new BrickOverlapQuerySettings
+                    var request = BrickOverlapQueryBuilder.Build(ref Data, new BrickOverlapQuerySettings
                     {
                         FlagsToPropagate = DirtyFlags.All,
-                        MotionDirtyMask = alienMotionDirtyMask,
-                        IncludeMovingBodies = alienIncludeMovingBricks
+                        MotionDirtyMask = Config.alienMotionDirtyMask,
+                        IncludeMovingBodies = Config.alienIncludeMovingBricks
                     });
 
                     if (request.IsCreated)
                     {
                         try
                         {
-                            BrickOverlapGraph graph = physicsWorld.BuildBrickOverlapGraph(
+                            BrickOverlapGraph graph = Physics.BuildBrickOverlapGraph(
                                 request.Batches, request.Bricks, rebuildBroadphase: false);
 
                             LastBrickOverlapPropagationStats = BrickOverlapDirtyPropagation.Propagate(
-                                graph, request, ref tickBuf.VoxelEntities);
+                                graph, request, ref Data.VoxelEntities);
                         }
                         finally
                         {
@@ -491,76 +671,41 @@ namespace Caelix
                         }
                     }
                 }
+
                 alienElapsedTicks = Stopwatch.GetTimestamp() - alienStartTicks;
             }
 
-            // End of the dirty lifetime: every consumer of this tick's dirty flags has run.
-            using (s_ClearDirtyFlagsMarker.Auto())
-            {
-                for (int i = 0; i < entityKeys.Length; i++)
-                {
-                    var entity = tickBuf.VoxelEntities[entityKeys[i]];
-                    entity.ClearDirtyFlags();
-                    tickBuf.VoxelEntities[entityKeys[i]] = entity;
-                }
-                entityKeys.Dispose();
-            }
-
-            // Copy data back to VoxelEntities
-            using (s_BoundaryCopyBackMarker.Auto())
-            {
-                foreach(var kvp in entities)
-                {
-                    kvp.Value.CopyDataFrom(tickBuf.VoxelEntities[kvp.Key]);
-                    kvp.Value.SyncTransformFromData();
-
-                    if (physicsWorld.Bodies.TryGetValue(kvp.Key, out var body))
-                    {
-                        body.CopyDataFrom(tickBuf.VoxelBodies[kvp.Key]);
-                    }
-                }
-            }
-
-            /////////////////////////////////////////////////////////////////////////
-            // Renderer (client) work
-            /////////////////////////////////////////////////////////////////////////
-            
-            // Tick renderer
-            bool usedRayTracing;
-            bool usedMeshing;
-            long renderingElapsedTicks;
-            using (s_RendererTickMarker.Auto())
-            {
-                usedRayTracing = rayTracedRenderer?.enabled ?? false;
-                usedMeshing = meshingRenderer?.enabled ?? false;
-                long renderingStartTicks = Stopwatch.GetTimestamp();
-                if (usedRayTracing) rayTracedRenderer.Tick();
-                if (usedMeshing) meshingRenderer.Tick();
-                renderingElapsedTicks = Stopwatch.GetTimestamp() - renderingStartTicks;
-            }
+            entityKeys.Dispose();
 
             long totalElapsedTicks = Stopwatch.GetTimestamp() - tickStartTicks;
             double totalMilliseconds = TicksToMilliseconds(totalElapsedTicks);
             double physicsMilliseconds = TicksToMilliseconds(physicsElapsedTicks);
-            double renderingMilliseconds = TicksToMilliseconds(renderingElapsedTicks);
-            // The brick graph is built outside the physics step now, so its cost is already
-            // excluded from physicsMilliseconds and only has to come out of the tick bucket.
             double brickGraphMilliseconds = TicksToMilliseconds(alienElapsedTicks);
-
             LastTickTimings = new TickTimingStats
             {
                 IsCreated = true,
-                UsedRayTracing = usedRayTracing,
-                UsedMeshing = usedMeshing,
-                TickMilliseconds = Math.Max(
-                    0.0,
-                    totalMilliseconds - physicsMilliseconds - renderingMilliseconds -
-                    brickGraphMilliseconds),
+                TickMilliseconds = Math.Max(0.0, totalMilliseconds - physicsMilliseconds - brickGraphMilliseconds),
                 PhysicsMilliseconds = physicsMilliseconds,
                 BrickGraphMilliseconds = brickGraphMilliseconds,
-                RenderingMilliseconds = renderingMilliseconds,
                 TotalMilliseconds = totalMilliseconds
             };
+        }
+
+        /// <summary>End of the dirty lifetime: every consumer of this tick's dirty flags has run.</summary>
+        public void EndTick()
+        {
+            using (s_ClearDirtyFlagsMarker.Auto())
+            {
+                using NativeArray<Guid128> keys = Data.VoxelEntities.GetKeyArray(Allocator.Temp);
+                for (int i = 0; i < keys.Length; i++)
+                {
+                    VoxelEntityData e = Data.VoxelEntities[keys[i]];
+                    e.ClearDirtyFlags();
+                    Data.VoxelEntities[keys[i]] = e;
+                }
+            }
+
+            TickIndex++;
         }
 
         private static double TicksToMilliseconds(long ticks)
@@ -572,7 +717,7 @@ namespace Caelix
         {
             alienEntityViews.Clear();
 
-            foreach(var kvp in tickBuf.VoxelEntities)
+            foreach (var kvp in Data.VoxelEntities)
             {
                 VoxelEntityData entity = kvp.Value;
                 float4x4 localToWorldMatrix = float4x4.TRS(entity.transform.pos, entity.transform.rot, 1f);
@@ -613,7 +758,7 @@ namespace Caelix
                     EntityId = kvp.Key,
                     LocalToWorld = entity.transform,
                     WorldToLocal = worldToLocal,
-                    Sectors = entity.sectors.AsReadOnly(),
+                    Sectors = entity.sectors,
                     WorldAabbMin = worldAabbMin,
                     WorldAabbMax = worldAabbMax
                 });
@@ -628,185 +773,67 @@ namespace Caelix
             };
         }
 
-        /// <summary>
-        /// Saves every registered <see cref="VoxelEntity"/> to a <c>.cxw</c> file at <paramref name="path"/>.
-        /// Each entity's current Unity transform is synced into its native data prior to serialization.
-        /// </summary>
+        #endregion
+
+        #region Save / Load
+
+        /// <summary>Saves every entity of this world (except those excluded from save) to a <c>.cxw</c> file.</summary>
         public void Save(string path)
         {
-            path = EnsureWorldSaveExtension(path);
-            var list = new List<(Guid128, VoxelEntity, bool, float3, float3)>(entities.Count);
-            foreach(var e in entities.Values)
+            var records = new List<EntitySaveRecord>(Data.VoxelEntities.Count);
+            foreach (var kvp in Data.VoxelEntities)
             {
-                // TODO: FIXME: Subtle bug -- will this break tick continuity? (this overwrites prevTransform)
-                e.SyncTransformToData();
-                var (hasBody, linearVelocity, angularVelocity) = CaptureBodyState(e);
-                list.Add((e.PersistentGuid, e, hasBody, linearVelocity, angularVelocity));
-            }
-            WorldSaver.Save(path, list);
-        }
+                bool hasBody = Data.VoxelBodies.TryGetValue(kvp.Key, out VoxelBodyData body);
+                float3 linearVelocity = float3.zero;
+                float3 angularVelocity = float3.zero;
+                if (hasBody && !kvp.Value.isStatic)
+                {
+                    linearVelocity = body.motionVelocity.LinearVelocity;
+                    angularVelocity = body.motionVelocity.AngularVelocity;
+                }
 
-        /// <summary>
-        /// Captures the part of an entity's physics state that lives on <see cref="VoxelBody"/>:
-        /// whether an enabled component is present, and (for a moving entity) its velocity.
-        /// Staticness is not captured here — it belongs to the entity and <see cref="WorldSaver"/>
-        /// reads it from <see cref="VoxelEntityData.isStatic"/>.
-        /// physicsEnabled is deliberately NOT consulted: it only controls Unity Rigidbody
-        /// creation in VoxelBody.Awake — participation in the voxel physics world is purely
-        /// registration (enabled component) + the entity's isStatic, and static colliders are
-        /// typically authored with physicsEnabled = false.
-        /// Uses GetComponent rather than the Physics body registry so bodies on
-        /// entities that are not currently registered are still captured.
-        /// </summary>
-        private static (bool HasBody, float3 LinearVelocity, float3 AngularVelocity) CaptureBodyState(VoxelEntity e)
-        {
-            if (!e.TryGetComponent<VoxelBody>(out var body) || !body.enabled)
-            {
-                Debug.LogWarning($"Captured no VoxelBody for {e.name}");
-                return (false, float3.zero, float3.zero);
+                records.Add(new EntitySaveRecord(kvp.Key, kvp.Value, hasBody, linearVelocity, angularVelocity));
             }
 
-            if (e.IsStatic)
-            {
-                // Static entities never move; velocity is meaningless, so persist zero.
-                return (true, float3.zero, float3.zero);
-            }
-
-            // Persist the current physics velocity so the body resumes its motion on load rather
-            // than restarting from rest. GetDataCopy reflects the latest tick's exported velocity.
-            var motionVelocity = body.GetDataCopy().motionVelocity;
-            return (true, motionVelocity.LinearVelocity, motionVelocity.AngularVelocity);
+            WorldSaver.Save(path, records);
         }
 
         /// <summary>
-        /// Saves the world using the inspector-configured save/load path.
-        /// </summary>
-        [InspectorButton("Save World", PlayModeOnly = true)]
-        public void Save()
-        {
-            string path = ResolveSaveLoadPath();
-            Save(path);
-            Debug.Log($"Saved Caelix world to {path}", this);
-        }
-
-        /// <summary>
-        /// Loads the world using the inspector-configured save/load path.
-        /// </summary>
-        [InspectorButton("Load World", PlayModeOnly = true)]
-        public void Load()
-        {
-            Load(ResolveSaveLoadPath());
-        }
-
-        /// <summary>
-        /// Loads every <see cref="VoxelEntity"/> stored in the <c>.cxw</c> or legacy <c>.vxw</c> file at <paramref name="path"/>.
-        /// Mirrors <see cref="Save(string)"/> so callers (e.g. tooling / a dev console) can target an
-        /// arbitrary path instead of the inspector-configured one.
+        /// Loads every entity stored in a <c>.cxw</c> file into this world. An entity whose guid
+        /// already exists is replaced.
         /// </summary>
         public void Load(string path)
         {
-            path = EnsureWorldSaveExtension(path);
-            WorldLoader.Load(path, rec =>
-            {
-                var go = new GameObject($"VoxelEntity_{rec.Guid}");
-
-                go.SetActive(false);
-
-                var e = go.AddComponent<VoxelEntity>();
-                if (e != null)
-                {
-                    e.PersistentGuid = rec.Guid;
-                    // Restore the protected designation so interaction tools keep refusing to
-                    // unfreeze/drag this entity after load (keyed by GUID, not a stale scene ref).
-                    e.IsProtected = rec.Protected;
-                    e.IsStatic = rec.IsStatic;
-                }
-
-                Debug.Log($"{rec.Guid}: {rec.Flags}");
-
-                if (rec.HasBody)
-                {
-                    // Fields must be assigned while the GameObject is still inactive:
-                    // VoxelBody.Awake consumes physicsEnabled (Rigidbody creation).
-                    // physicsEnabled must stay OFF: it only makes VoxelBody.Awake spawn a Unity
-                    // Rigidbody, which the voxel physics never reads (participation is registration
-                    // + the entity's isStatic). Authoring (e.g. CreateAlignedDetachedEntity) leaves it
-                    // false and lets the voxel sim drive the body. Deriving it as `Dynamic -> true` here
-                    // spawned a rogue PhysX Rigidbody that free-fell under gravity and fought the sim's
-                    // per-frame transform writes, so loaded dynamic bodies drifted off and looked
-                    // like they "failed to load" while static bodies (no Rigidbody) stayed put.
-                    var body = go.AddComponent<VoxelBody>();
-                    body.physicsEnabled = false;
-
-                    // Leave this on regardless of the save file. It is not persisted yet.
-                    body.accuratePhysics = true;
-                }
-
-                go.SetActive(true);
-
-                // Restore physics velocity AFTER activation — VoxelBody.Awake reinitializes its data
-                // (motionVelocity back to zero), so this must run once the component is live. Only
-                // dynamic bodies carry meaningful velocity; the solver ignores a static body's.
-                if (rec.HasBody && !rec.IsStatic && go.TryGetComponent<VoxelBody>(out var loadedBody))
-                {
-                    loadedBody.SetVelocity(rec.LinearVelocity, rec.AngularVelocity);
-                }
-
-                return e;
-            });
-
-            Debug.Log($"Loaded Caelix world from {path}", this);
+            WorldLoader.Load(path, this);
         }
 
-        [InspectorButton("Choose Save/Load Path")]
-        private void ChooseSaveLoadPath()
+        bool IWorldLoadTarget.TryCreateEntity(in EntityRecord record, out VoxelEntityData data)
         {
-#if UNITY_EDITOR
-            string currentPath = ResolveSaveLoadPath();
-            string directory = Path.GetDirectoryName(currentPath);
-            if (string.IsNullOrEmpty(directory))
+            if (HasEntity(record.Guid))
             {
-                directory = Application.persistentDataPath;
+                RemoveEntity(record.Guid);
             }
 
-            string fileName = Path.GetFileName(currentPath);
-            if (string.IsNullOrEmpty(fileName))
-            {
-                fileName = DefaultSaveLoadFileName;
-            }
-
-            string selectedPath = EditorUtility.SaveFilePanel(
-                "Choose Caelix world file",
-                directory,
-                fileName,
-                "cxw");
-
-            if (string.IsNullOrEmpty(selectedPath))
-            {
-                return;
-            }
-
-            saveLoadPath = selectedPath;
-            EditorUtility.SetDirty(this);
-#endif
+            var transform = new RigidTransform(record.Transform.Rotation, record.Transform.Position);
+            CreateEntity(record.Guid, transform, record.IsStatic, record.Protected);
+            data = GetEntity(record.Guid);
+            return true;
         }
 
-        private string ResolveSaveLoadPath()
+        void IWorldLoadTarget.CommitEntity(in EntityRecord record, in VoxelEntityData data)
         {
-            string path = string.IsNullOrWhiteSpace(saveLoadPath)
-                ? DefaultSaveLoadFileName
-                : saveLoadPath;
-
-            path = EnsureWorldSaveExtension(path);
-
-            return Path.IsPathRooted(path)
-                ? path
-                : Path.Combine(Application.persistentDataPath, path);
+            SetEntity(record.Guid, in data);
+            if (record.HasBody)
+            {
+                // The accurate-physics flag is not persisted; loaded bodies use the direct solver.
+                AddBody(record.Guid, accuratePhysics: true);
+                if (!record.IsStatic)
+                {
+                    SetBodyVelocity(record.Guid, record.LinearVelocity, record.AngularVelocity);
+                }
+            }
         }
 
-        private static string EnsureWorldSaveExtension(string path)
-        {
-            return string.IsNullOrEmpty(Path.GetExtension(path)) ? path + ".cxw" : path;
-        }
+        #endregion
     }
 }

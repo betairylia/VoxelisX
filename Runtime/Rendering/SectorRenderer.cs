@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using Unity.Burst;
@@ -9,6 +9,7 @@ using Unity.Mathematics;
 using Unity.Profiling;
 using UnityEngine;
 using UnityEngine.Rendering;
+using Caelix.Client;
 using Caelix.Utils;
 using Random = UnityEngine.Random;
 
@@ -98,7 +99,7 @@ namespace Caelix.Rendering
         /// The identity is captured here (rather than taken per call) so that the per-instance
         /// property block has a single creation point — see <see cref="EnsureMaterialProperties"/>.
         /// </remarks>
-        public SectorRenderer(VoxelEntity entity, int3 sectorPos)
+        public SectorRenderer(EntityView entity, int3 sectorPos)
         {
             sectorHashSeed = unchecked((int)ComputeSectorHashSeed(entity, sectorPos));
         }
@@ -270,10 +271,10 @@ namespace Caelix.Rendering
             return value;
         }
 
-        private static uint ComputeSectorHashSeed(VoxelEntity entity, int3 sectorPos)
+        private static uint ComputeSectorHashSeed(EntityView entity, int3 sectorPos)
         {
             // Unity 6.5 made Object.GetInstanceID() an obsolete-as-error; GetEntityId() replaces it.
-            uint seed = (uint)entity.GetEntityId().GetHashCode();
+            uint seed = (uint)entity.Guid.GetHashCode();
             seed ^= (uint)sectorPos.x * 0x9E3779B9u;
             seed ^= (uint)sectorPos.y * 0x85EBCA6Bu;
             seed ^= (uint)sectorPos.z * 0xC2B2AE35u;
@@ -401,17 +402,17 @@ namespace Caelix.Rendering
         ///   turns static and its motion vectors must settle): push transform + property block;
         /// - otherwise: nothing, which is how static entities stay free after their first frame.
         /// </remarks>
-        public void RenderModifyAS(ref RayTracingAccelerationStructure AS, VoxelEntity entity, int3 sectorPos)
+        public void RenderModifyAS(ref RayTracingAccelerationStructure AS, EntityView entity, int3 sectorPos)
         {
             Matrix4x4 objectToWorld =
-                entity.transform.localToWorldMatrix *
+                entity.LocalToWorld *
                 Matrix4x4.Translate((sectorPos * Sector.SECTOR_SIZE_IN_BLOCKS).ToVector3Int());
 
             // Set for the frame an entity flips to static (including the initial flip on a
             // born-static body). Collapsing prev onto the current transform zeroes the motion
             // vectors once, so the denoiser stops reprojecting a body that will never move again.
             // CaelixRenderer clears the flag after every sector of the entity has consumed it.
-            bool resetsMotionVectors = entity._shouldResetMotionVectors;
+            bool resetsMotionVectors = entity.ShouldResetMotionVectors;
             Matrix4x4 prevObjectToWorld = (hasPreviousObjectToWorld && !resetsMotionVectors)
                 ? previousObjectToWorld
                 : objectToWorld;

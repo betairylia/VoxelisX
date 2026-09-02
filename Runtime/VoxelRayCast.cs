@@ -1,8 +1,10 @@
-﻿using System;
+using System;
+using System.Collections.Generic;
 using Unity.Profiling;
 using Unity.Mathematics;
 using UnityEngine;
 using Caelix;
+using Caelix.Client;
 using Caelix.Utils;
 
 namespace Caelix
@@ -30,16 +32,16 @@ namespace Caelix
 
         private readonly struct EntityRaycastTarget : IVoxelRaycastTarget
         {
-            private readonly VoxelEntity entity;
+            private readonly EntityView view;
 
-            public EntityRaycastTarget(VoxelEntity entity)
+            public EntityRaycastTarget(EntityView view)
             {
-                this.entity = entity;
+                this.view = view;
             }
 
             public bool IsSolid(int3 position)
             {
-                return !entity.GetBlock(position).isEmpty;
+                return !view.Data.GetBlock(position).isEmpty;
             }
         }
 
@@ -52,10 +54,10 @@ namespace Caelix
         public Transform pointed;
 
         /// <summary>
-        /// The voxel world renderer containing all voxel entities to raycast against.
+        /// The host whose client world is raycast against. Edits are sent to its server as commands.
         /// </summary>
-        [Tooltip("Reference to the Caelix world renderer")]
-        public CaelixCoreWorld targetWorld;
+        [Tooltip("Reference to the Caelix host")]
+        public CaelixHost targetWorld;
 
         /// <summary>
         /// The block type ID currently held by the player for placement.
@@ -104,6 +106,11 @@ namespace Caelix
         /// The voxel entity that was hit.
         /// </summary>
         protected VoxelEntity hitTarget;
+
+        /// <summary>
+        /// The client view that was hit. Read blocks from this; it is the replica the ray tested.
+        /// </summary>
+        protected EntityView hitView;
 
         /// <summary>
         /// Cached camera component.
@@ -163,17 +170,30 @@ namespace Caelix
                 hitted = false;
                 float closestDistance = maxDistance;
 
+                ClientWorld world = targetWorld != null ? targetWorld.ClientWorld : null;
+                if (world == null)
+                {
+                    return;
+                }
+
                 // Create ray from camera center
                 Ray cameraRay = mainCamera.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0));
 
-                // Check each voxel entity in the world
-                foreach (var target in targetWorld.AllEntities)
+                // Check each voxel entity view in the world
+                IReadOnlyList<EntityView> views = world.Views;
+                for (int i = 0; i < views.Count; i++)
                 {
-                    // Transform ray to entity local space
-                    Ray localRay = new Ray(
-                        target.transform.InverseTransformPoint(cameraRay.origin),
-                        target.transform.InverseTransformDirection(cameraRay.direction)
-                    );
+                    EntityView target = views[i];
+                    if (target.Component == null)
+                    {
+                        continue;
+                    }
+
+                    // Transform ray to entity local space using the replicated pose
+                    RigidTransform localFromWorld = math.inverse(target.Data.transform);
+                    float3 localOrigin = math.transform(localFromWorld, (float3)cameraRay.origin);
+                    float3 localDirection = math.rotate(localFromWorld.rot, (float3)cameraRay.direction);
+                    Ray localRay = new Ray(localOrigin, localDirection);
 
                     // Perform DDA traversal
                     if (RaycastVoxelEntity(target, localRay, closestDistance, out int3 hitPos, out int3 normal, out float distance))
@@ -185,7 +205,8 @@ namespace Caelix
                             closestDistance = distance;
                             hit = hitPos;
                             hitNormal = normal;
-                            hitTarget = target;
+                            hitTarget = target.Component;
+                            hitView = target;
                         }
                     }
                 }
@@ -204,7 +225,7 @@ namespace Caelix
         /// <param name="distance">Output: the distance to the hit</param>
         /// <returns>True if a solid voxel was hit</returns>
         private static bool RaycastVoxelEntity(
-            VoxelEntity entity,
+            EntityView entity,
             Ray ray,
             float maxDist,
             out int3 hitPosition,
@@ -428,22 +449,34 @@ namespace Caelix
 
         #region Input Handling
 
+        /// <summary>Left click: break the targeted block. Sent to the server as a command.</summary>
         protected virtual void HandleLeftClick()
         {
-            hitTarget.SetBlock(hit, Block.Empty);
+            targetWorld.Client.SetBlock(hitTarget.PersistentGuid, hit, Block.Empty, targetWorld.ClientWorld.Id);
         }
 
+        /// <summary>Right click: place the held block on the targeted face. Sent to the server as a command.</summary>
         protected virtual void HandleRightClick()
         {
             int3 placePosition = hit + hitNormal;
-            hitTarget.SetBlock(placePosition, new Block(handblock));
+            targetWorld.Client.SetBlock(hitTarget.PersistentGuid, placePosition, new Block(handblock), targetWorld.ClientWorld.Id);
         }
 
+        /// <summary>
+        /// Middle click: pick the targeted block from the replica, and ask the server for the
+        /// voxel's other slots (they are not replicated) for the log.
+        /// </summary>
         protected virtual void HandleMiddleClick()
         {
-            Block block = hitTarget.GetBlock(hit);
+            Block block = hitView.Data.GetBlock(hit);
             handblock = block.data;
             Debug.Log($"Picked block: {block.data}");
+
+            int3 queried = hit;
+            targetWorld.Client.QueryVoxel(hitTarget.PersistentGuid, hit, 0xFFFF, reply =>
+            {
+                Debug.Log($"Voxel query {queried}: found={reply.Found}, slots={reply.Slots.Count}");
+            }, targetWorld.ClientWorld.Id);
         }
 
         // TODO: Modern interface

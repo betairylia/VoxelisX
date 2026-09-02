@@ -1,26 +1,24 @@
 {
-    "name": "Caelix.Editor",
-    "rootNamespace": "Caelix.Editor",
+    "name": "Caelix.Simulation",
+    "rootNamespace": "Caelix.Simulation",
     "references": [
         "Caelix.Core",
-        "Caelix",
+        "Caelix.Physics",
+        "Caelix.Physics.LowLevel",
+        "Unity.Burst",
+        "Unity.Collections",
+        "Unity.Mathematics",
+        "Unity.Entities",
         "Unity.Numerics.Linear",
         "Unity.Numerics.Linear.Dense",
         "Unity.Numerics.Linear.Solvers.Lowlevel",
         "Unity.Numerics.Linear.Sparse",
         "Unity.Numerics.Memory",
-        "Unity.Numerics.Random",
-        "Unity.Splines",
-        "Unity.Splines.Editor",
-        "Caelix.Physics.LowLevel",
-        "Caelix.Physics",
-        "Caelix.Simulation"
+        "Unity.Numerics.Random"
     ],
-    "includePlatforms": [
-        "Editor"
-    ],
+    "includePlatforms": [],
     "excludePlatforms": [],
-    "allowUnsafeCode": false,
+    "allowUnsafeCode": true,
     "overrideReferences": false,
     "precompiledReferences": [],
     "autoReferenced": true,

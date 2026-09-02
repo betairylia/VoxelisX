@@ -188,3 +188,32 @@ Deferred:
 - Edit-mode voxel assets and rendering.
 - Titania split into server-side and client-side assemblies.
 - Stage-major batching of the physics step across worlds.
+
+## 10. Implementation notes (v1, 2026-09-03)
+
+- **`SharedHashMap` is load-bearing.** `VoxelEntityData` is copied by value everywhere:
+  the world store, `GetDataCopy`, views, jobs. Its sector and neighbor maps therefore
+  need handle semantics. `UnsafeHashMap` embeds its hash helper by value, so a copy has
+  its own count and free index and, after a resize, a dangling buffer pointer. The
+  wrapper allocates the map on the heap once and every copy points at it. The old
+  copy-in / copy-back tick existed only to work around this. Do not replace the wrapper
+  with a plain `UnsafeHashMap`; the symptom is a silent infinite loop in map
+  enumeration on the second tick.
+- **No Burst direct calls on the tick path.** `[BurstCompile]` static methods called from
+  managed code compile synchronously in the Editor. Use a Burst job and `Run()` instead
+  (`CollectBrickJob`, `PreviewBuilder`).
+- **Host frame order.** `CaelixHost.Update`: push inspector settings, server update
+  (first frame: exactly one forced tick), client update (apply messages, propagate
+  Geometry bits), raycast tick, renderer ticks, client end frame.
+- **Scene compatibility.** `CaelixHost.cs` and `PhysicsWorldConfig.cs` keep the script
+  GUIDs of `CaelixWorld` and `CaelixPhysicsWorld`, and `VoxelEntity` / `VoxelBody` kept
+  theirs across the assembly move, so existing scenes stay wired. `SimplePlayer` and
+  `TemporaryCharacterCollider` were deleted; scenes that had them show a missing-script
+  warning until the component is removed in the editor.
+- **Titania.** Automata hooks register on `host.World.AutomataStage`. WireWorld chimes
+  are `ChimeNoteEvent` events emitted by the server and played by a client handler in
+  `TitaniaCore`. Interaction tools still write through the `VoxelEntity` component,
+  which in Host role is a direct server write.
+- **Not done in v1:** the rendering assembly is not yet excluded from Dedicated Server
+  builds; `InfiniteLoader` is not ticked; guids on authored entities are runtime-random
+  unless set through `PersistentGuid`.

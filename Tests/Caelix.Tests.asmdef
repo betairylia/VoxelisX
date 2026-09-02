@@ -19,7 +19,8 @@
         "GUID:734d92eba21c94caba915361bd5ac177",
         "Unity.Splines",
         "Caelix.Core.Tests",
-        "Caelix.Physics"
+        "Caelix.Physics",
+        "Caelix.Simulation"
     ],
     "includePlatforms": [
         "Editor"

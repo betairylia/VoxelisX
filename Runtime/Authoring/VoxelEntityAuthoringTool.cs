@@ -179,7 +179,6 @@ namespace Caelix.Authoring
 
             VoxelEntity bakedEntity = bakedObject.AddComponent<VoxelEntity>();
             VoxelBody bakedBody = bakedObject.AddComponent<VoxelBody>();
-            bakedBody.physicsEnabled = false;
             bakedBody.accuratePhysics = true;
 
             bakedObject.SetActive(true);
@@ -265,7 +264,6 @@ namespace Caelix.Authoring
             VoxelBody body = GetComponent<VoxelBody>();
             if (body != null)
             {
-                body.physicsEnabled = false;
                 body.accuratePhysics = true;
             }
         }
