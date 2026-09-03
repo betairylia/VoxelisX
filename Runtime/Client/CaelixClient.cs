@@ -40,6 +40,9 @@ namespace Caelix.Client
         }
     }
 
+    /// <summary>Receives a typed query reply. The reader holds the trailing payload; <c>Remaining</c> is its length.</summary>
+    public delegate void QueryReplyHandler<TReply>(ushort worldId, in TReply reply, ref NetMessageReader payload) where TReply : unmanaged;
+
     /// <summary>
     /// The client end of the boundary: pumps the channel, applies replication into
     /// <see cref="ClientWorld"/> replicas, and sends commands and queries. Owns no simulation.
@@ -48,11 +51,14 @@ namespace Caelix.Client
     {
         private delegate void EventHandler(ushort worldId, ref NetMessageReader reader);
 
+        private delegate void TypedReplyDispatch(ushort worldId, ushort typeId, ref NetMessageReader reader);
+
         private readonly INetChannel channel;
         private readonly Dictionary<ushort, ClientWorld> worlds = new();
         private readonly List<ClientWorld> worldList = new();
         private readonly Dictionary<ushort, EventHandler> eventHandlers = new();
         private readonly Dictionary<uint, Action<VoxelQueryReply>> pendingQueries = new();
+        private readonly Dictionary<uint, TypedReplyDispatch> pendingTypedQueries = new();
         private readonly NetMessageWriter writer = new(4096);
         private uint nextRequestId = 1;
         private bool disposed;
@@ -267,6 +273,17 @@ namespace Caelix.Client
 
                     break;
                 }
+                case NetMessageType.TypedQueryReply:
+                {
+                    var h = reader.Read<TypedQueryHeader>();
+                    if (pendingTypedQueries.TryGetValue(h.RequestId, out TypedReplyDispatch dispatch))
+                    {
+                        pendingTypedQueries.Remove(h.RequestId);
+                        dispatch(header.WorldId, h.TypeId, ref reader);
+                    }
+
+                    break;
+                }
                 default:
                     Debug.LogWarning($"[CaelixClient] Unexpected message type {header.Type}.");
                     break;
@@ -288,6 +305,55 @@ namespace Caelix.Client
             channel.Send(NetDelivery.Reliable, writer.AsSpan());
         }
 
+        /// <summary>
+        /// Sends a registered command with trailing payload bytes. The server handler registered
+        /// with <c>CaelixServer.RegisterCommand&lt;T&gt;(PayloadCommandHandler&lt;T&gt;)</c> reads them.
+        /// </summary>
+        public void SendCommand<T>(in T command, ReadOnlySpan<byte> payload, ushort worldId = 0) where T : unmanaged
+        {
+            ushort typeId = Types.GetId<T>();
+            writer.Reset();
+            NetHeader.Write(writer, NetMessageType.Command, worldId, LastServerTick);
+            writer.Write(new TypedPayloadHeader { TypeId = typeId });
+            writer.Write(command);
+            writer.WriteBytes(payload);
+            channel.Send(NetDelivery.Reliable, writer.AsSpan());
+        }
+
+        /// <summary>
+        /// Sends a typed query and calls <paramref name="onReply"/> when the reply arrives during a
+        /// later <see cref="Update"/>. Both the request and the reply may carry a trailing payload.
+        /// </summary>
+        public void SendQuery<TRequest, TReply>(
+            in TRequest request,
+            ReadOnlySpan<byte> payload,
+            QueryReplyHandler<TReply> onReply,
+            ushort worldId = 0)
+            where TRequest : unmanaged where TReply : unmanaged
+        {
+            uint requestId = nextRequestId++;
+            pendingTypedQueries[requestId] = (ushort replyWorldId, ushort typeId, ref NetMessageReader reader) =>
+            {
+                if (typeId != Types.GetId<TReply>())
+                {
+                    Debug.LogError(
+                        $"[CaelixClient] Query reply type id {typeId} does not match the expected " +
+                        $"{typeof(TReply).FullName}; dropped.");
+                    return;
+                }
+
+                TReply reply = reader.Read<TReply>();
+                onReply?.Invoke(replyWorldId, in reply, ref reader);
+            };
+
+            writer.Reset();
+            NetHeader.Write(writer, NetMessageType.TypedQuery, worldId, LastServerTick);
+            writer.Write(new TypedQueryHeader { TypeId = Types.GetId<TRequest>(), RequestId = requestId });
+            writer.Write(request);
+            writer.WriteBytes(payload);
+            channel.Send(NetDelivery.Reliable, writer.AsSpan());
+        }
+
         public void SetBlock(Guid128 entity, int3 position, Block block, ushort worldId = 0)
         {
             SendCommand(new SetBlockCommand { Entity = entity, Position = position, Block = block }, worldId);
@@ -296,6 +362,23 @@ namespace Caelix.Client
         public void SetEntityStatic(Guid128 entity, bool isStatic, ushort worldId = 0)
         {
             SendCommand(new SetEntityStaticCommand { Entity = entity, IsStatic = (byte)(isStatic ? 1 : 0) }, worldId);
+        }
+
+        /// <summary>
+        /// Asks the server to create an empty entity with a guid this client chose, so that commands
+        /// sent in the same frame can already address it. Refused when the guid is already in use.
+        /// </summary>
+        public void SpawnEntity(Guid128 guid, RigidTransform transform, bool isStatic, bool hasBody, ushort worldId = 0)
+        {
+            SendCommand(
+                new SpawnEntityCommand
+                {
+                    Guid = guid,
+                    Transform = transform,
+                    IsStatic = (byte)(isStatic ? 1 : 0),
+                    HasBody = (byte)(hasBody ? 1 : 0),
+                },
+                worldId);
         }
 
         public void AddForce(in VoxelBodyForceCommand command, ushort worldId = 0)

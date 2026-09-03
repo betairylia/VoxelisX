@@ -6,6 +6,16 @@ using Caelix.Utils;
 
 namespace Caelix.Simulation
 {
+    /// <summary>Handler for a command followed by a payload. The reader holds the payload bytes; <c>Remaining</c> is their length.</summary>
+    public delegate void PayloadCommandHandler<T>(ServerConnection connection, CaelixWorld world, in T command, ref NetMessageReader payload) where T : unmanaged;
+
+    /// <summary>
+    /// Handler for a typed query. Returns the reply struct; bytes written to <paramref name="replyPayload"/>
+    /// follow it on the wire. The writer is reset before the call.
+    /// </summary>
+    public delegate TReply QueryHandler<TRequest, TReply>(ServerConnection connection, CaelixWorld world, in TRequest request, ref NetMessageReader requestPayload, NetMessageWriter replyPayload)
+        where TRequest : unmanaged where TReply : unmanaged;
+
     /// <summary>
     /// Owns the worlds, the fixed-step clock they share, the client connections, command
     /// dispatch, and replication. All worlds tick in lockstep. No GameObject; a bootstrap
@@ -15,10 +25,14 @@ namespace Caelix.Simulation
     {
         private delegate void CommandHandler(ServerConnection connection, CaelixWorld world, ref NetMessageReader reader);
 
+        private delegate void QueryDispatch(ServerConnection connection, CaelixWorld world, uint requestId, ref NetMessageReader reader);
+
         private readonly List<CaelixWorld> worlds = new();
         private readonly List<ServerConnection> connections = new();
         private readonly Dictionary<ushort, CommandHandler> commandHandlers = new();
+        private readonly Dictionary<ushort, QueryDispatch> queryHandlers = new();
         private readonly NetMessageWriter writer = new(64 * 1024);
+        private readonly NetMessageWriter replyPayloadWriter = new(64 * 1024);
         private readonly HashSet<Type> unregisteredEventTypesWarned = new();
         private float accumulator;
         private int nextConnectionId = 1;
@@ -175,6 +189,47 @@ namespace Caelix.Simulation
             };
         }
 
+        /// <summary>
+        /// Registers a command type whose message carries trailing payload bytes. The handler reads
+        /// them from the reader it is given; <c>Remaining</c> is how many are left.
+        /// </summary>
+        public void RegisterCommand<T>(PayloadCommandHandler<T> handler) where T : unmanaged
+        {
+            if (handler == null) throw new ArgumentNullException(nameof(handler));
+            ushort id = Types.Register<T>();
+            commandHandlers[id] = (ServerConnection connection, CaelixWorld world, ref NetMessageReader reader) =>
+            {
+                T command = reader.Read<T>();
+                handler(connection, world, in command, ref reader);
+            };
+        }
+
+        /// <summary>
+        /// Registers a query type and its reply type, in that order, together with the handler that
+        /// answers it. The reply struct and whatever the handler wrote to the reply payload writer
+        /// are sent back to the asking connection.
+        /// </summary>
+        public void RegisterQuery<TRequest, TReply>(QueryHandler<TRequest, TReply> handler)
+            where TRequest : unmanaged where TReply : unmanaged
+        {
+            if (handler == null) throw new ArgumentNullException(nameof(handler));
+            ushort requestTypeId = Types.Register<TRequest>();
+            Types.Register<TReply>();
+            queryHandlers[requestTypeId] = (ServerConnection connection, CaelixWorld world, uint requestId, ref NetMessageReader reader) =>
+            {
+                TRequest request = reader.Read<TRequest>();
+                replyPayloadWriter.Reset();
+                TReply reply = handler(connection, world, in request, ref reader, replyPayloadWriter);
+
+                writer.Reset();
+                NetHeader.Write(writer, NetMessageType.TypedQueryReply, world.Id, world.TickIndex);
+                writer.Write(new TypedQueryHeader { TypeId = Types.GetId<TReply>(), RequestId = requestId });
+                writer.Write(reply);
+                writer.WriteBytes(replyPayloadWriter.AsSpan());
+                connection.Send(NetDelivery.Reliable, writer);
+            };
+        }
+
         /// <summary>Drains every connection's inbox and dispatches commands and queries.</summary>
         public void ProcessIncoming()
         {
@@ -225,6 +280,20 @@ namespace Caelix.Simulation
                 {
                     var query = reader.Read<VoxelQueryMessage>();
                     AnswerVoxelQuery(connection, world, in query);
+                    break;
+                }
+                case NetMessageType.TypedQuery:
+                {
+                    var h = reader.Read<TypedQueryHeader>();
+                    if (queryHandlers.TryGetValue(h.TypeId, out QueryDispatch dispatch))
+                    {
+                        dispatch(connection, world, h.RequestId, ref reader);
+                    }
+                    else
+                    {
+                        Debug.LogWarning($"[CaelixServer] Unhandled query type id {h.TypeId}.");
+                    }
+
                     break;
                 }
                 default:

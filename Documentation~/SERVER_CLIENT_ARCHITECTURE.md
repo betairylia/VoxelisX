@@ -135,18 +135,32 @@ Envelope: `u8 type, u16 worldId, u32 tick`. Then the payload.
 | S to C | BrickData | guid, sector position, brick index, flags, slot records |
 | S to C | Event | registered type id, blittable payload |
 | S to C | QueryReply | request id, slot records for one voxel |
+| S to C | TypedQueryReply | request id, registered reply type id, reply struct, trailing payload |
 | C to S | Command | registered type id, blittable payload |
 | C to S | Query | request id, guid, position, slot mask |
+| C to S | TypedQuery | request id, registered request type id, request struct, trailing payload |
+
+A command may also carry a trailing payload: send it with
+`CaelixClient.SendCommand(in T, ReadOnlySpan<byte>)` and receive it with
+`CaelixServer.RegisterCommand<T>(PayloadCommandHandler<T>)`. A typed query pairs a
+request struct with a reply struct, and both may carry a payload
+(`CaelixClient.SendQuery` / `CaelixServer.RegisterQuery`). In every case the
+payload length is whatever remains in the message, so a handler reads the count
+from its own struct.
 
 Engine commands: `SetBlockCommand`, `SetEntityStaticCommand`,
 `VoxelBodyForceCommand` (one-shot forces, impulses, velocity changes),
-`DragCommand` and `ReleaseDragCommand`. A drag is held input, not a force: the
+`DragCommand`, `ReleaseDragCommand` and `SpawnEntityCommand` (create an empty
+entity with a client-chosen guid, so commands sent in the same frame can already
+address it). A drag is held input, not a force: the
 server keeps one per client and body, computes the spring every tick from the
 body's own pose and velocity, and drops it on release or after
 `dragTimeoutSeconds` without a refresh. Clients send the target whenever it
-moves, at any rate. Games register their own command and event types
-through the type registries. Engine types are registered first, in a fixed
-order, on both sides.
+moves, at any rate. `DragCommand.AnchorAtCenterOfMass` holds the body by its
+centre of mass instead of `AnchorLocal`, which is the stable hold for a scripted
+grab and the only one a client cannot compute exactly. Games register their own
+command and event types through the type registries. Engine types are registered
+first, in a fixed order, on both sides.
 
 ## 7. Transport
 
@@ -220,8 +234,12 @@ Deferred:
   warning until the component is removed in the editor.
 - **Titania.** Automata hooks register on `host.World.AutomataStage`. WireWorld chimes
   are `ChimeNoteEvent` events emitted by the server and played by a client handler in
-  `TitaniaCore`. Interaction tools still write through the `VoxelEntity` component,
-  which in Host role is a direct server write.
+  `TitaniaCore`. Interaction tools send commands and queries. Titania's own types live in
+  `Assets/Scripts/Interaction/TitaniaNetTypes.cs` (`WriteVoxelsCommand` with a `VoxelRecord`
+  payload, `EntityVoxelsQuery`/`EntityVoxelsReply`, `ChimeNoteEvent`), registered after the
+  engine types on both ends by `TitaniaNetTypes.EnsureRegistered(host)`. That file is the
+  reference for game-defined messages. The tools read the client replica (`EntityView`),
+  never server data.
 - **Not done in v1:** the rendering assembly is not yet excluded from Dedicated Server
   builds; `InfiniteLoader` is not ticked; guids on authored entities are runtime-random
   unless set through `PersistentGuid`.

@@ -29,6 +29,13 @@ namespace Caelix.Simulation
     {
         public Guid128 Entity;
         public float3 AnchorLocal;
+
+        /// <summary>
+        /// When set, the server holds the body by its centre of mass and ignores AnchorLocal for the
+        /// spring. A client that draws the spring still sends its best estimate in AnchorLocal.
+        /// </summary>
+        public byte AnchorAtCenterOfMass;
+
         public float3 TargetWorld;
         public float Spring;
         public float Damping;
@@ -39,6 +46,18 @@ namespace Caelix.Simulation
     public struct ReleaseDragCommand
     {
         public Guid128 Entity;
+    }
+
+    /// <summary>
+    /// Client request: create an empty entity with a client-chosen guid, so that commands sent in the
+    /// same frame can already address it. Refused when the guid is zero or already in use.
+    /// </summary>
+    public struct SpawnEntityCommand
+    {
+        public Guid128 Guid;
+        public RigidTransform Transform;
+        public byte IsStatic;
+        public byte HasBody;
     }
 
     /// <summary>
@@ -54,6 +73,7 @@ namespace Caelix.Simulation
             registry.Register<VoxelBodyForceCommand>();
             registry.Register<DragCommand>();
             registry.Register<ReleaseDragCommand>();
+            registry.Register<SpawnEntityCommand>();
         }
 
         internal static void RegisterServerHandlers(CaelixServer server)
@@ -92,6 +112,24 @@ namespace Caelix.Simulation
             server.RegisterCommand<ReleaseDragCommand>((connection, world, cmd) =>
             {
                 world.ReleaseDrag(connection.Id, cmd.Entity);
+            });
+
+            server.RegisterCommand<SpawnEntityCommand>((connection, world, cmd) =>
+            {
+                if (cmd.Guid.IsZero)
+                {
+                    return;
+                }
+
+                if (!world.CreateEntity(cmd.Guid, cmd.Transform, cmd.IsStatic != 0))
+                {
+                    return;
+                }
+
+                if (cmd.HasBody != 0)
+                {
+                    world.AddBody(cmd.Guid);
+                }
             });
         }
     }

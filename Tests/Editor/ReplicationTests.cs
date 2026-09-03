@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using NUnit.Framework;
 using Unity.Mathematics;
 using UnityEngine;
@@ -19,6 +21,21 @@ namespace Caelix.Tests
         {
             public int Value;
             public float3 Position;
+        }
+
+        private struct TestBatchCommand
+        {
+            public int Count;
+        }
+
+        private struct TestQuery
+        {
+            public int Wanted;
+        }
+
+        private struct TestReply
+        {
+            public int Count;
         }
 
         private sealed class Rig : System.IDisposable
@@ -52,6 +69,7 @@ namespace Caelix.Tests
         }
 
         private static readonly Guid128 EntityA = new(0x11111111u, 0x22222222u, 0x33333333u, 0x44444444u);
+        private static readonly Guid128 EntityB = new(0x55555555u, 0x66666666u, 0x77777777u, 0x88888888u);
 
         [Test]
         public void InitialSync_ReplicatesEntitiesSectorsAndBlocks()
@@ -152,6 +170,94 @@ namespace Caelix.Tests
         }
 
         [Test]
+        public void PayloadCommand_ReachesHandlerWithTrailingBytes()
+        {
+            using var rig = new Rig();
+            int sum = 0;
+            int seenRemaining = -1;
+            rig.Server.RegisterCommand<TestBatchCommand>(
+                (ServerConnection connection, CaelixWorld world, in TestBatchCommand cmd, ref NetMessageReader payload) =>
+                {
+                    seenRemaining = payload.Remaining;
+                    ReadOnlySpan<int> values =
+                        MemoryMarshal.Cast<byte, int>(payload.ReadSpan(cmd.Count * sizeof(int)));
+                    for (int i = 0; i < values.Length; i++)
+                    {
+                        sum += values[i];
+                    }
+                });
+
+            var records = new[] { 1, 2, 3, 4 };
+            rig.Client.SendCommand(
+                new TestBatchCommand { Count = records.Length },
+                MemoryMarshal.AsBytes(new ReadOnlySpan<int>(records)));
+            rig.Server.ProcessIncoming();
+
+            Assert.That(seenRemaining, Is.EqualTo(16), "the payload is exactly the trailing bytes");
+            Assert.That(sum, Is.EqualTo(10));
+        }
+
+        [Test]
+        public void TypedQuery_ReturnsReplyAndPayload()
+        {
+            using var rig = new Rig();
+            rig.Server.RegisterQuery<TestQuery, TestReply>(
+                (ServerConnection connection, CaelixWorld world, in TestQuery request,
+                    ref NetMessageReader requestPayload, NetMessageWriter replyPayload) =>
+                {
+                    for (int i = 0; i < request.Wanted; i++)
+                    {
+                        replyPayload.Write(i);
+                    }
+
+                    return new TestReply { Count = request.Wanted };
+                });
+
+            int replyCount = -1;
+            int[] replyValues = null;
+            rig.Client.SendQuery<TestQuery, TestReply>(
+                new TestQuery { Wanted = 5 },
+                ReadOnlySpan<byte>.Empty,
+                (ushort worldId, in TestReply reply, ref NetMessageReader payload) =>
+                {
+                    replyCount = reply.Count;
+                    replyValues = MemoryMarshal.Cast<byte, int>(payload.ReadSpan(reply.Count * sizeof(int))).ToArray();
+                });
+
+            rig.Server.ProcessIncoming();
+            rig.Client.Update();
+            rig.Client.EndFrame();
+
+            Assert.That(replyCount, Is.EqualTo(5));
+            Assert.That(replyValues, Is.EqualTo(new[] { 0, 1, 2, 3, 4 }));
+        }
+
+        [Test]
+        public void SpawnEntityCommand_CreatesEntityWithBodyAndAcceptsSameFrameWrites()
+        {
+            using var rig = new Rig();
+            rig.Client.SpawnEntity(EntityB, RigidTransform.identity, isStatic: false, hasBody: true);
+            rig.Client.SetBlock(EntityB, new int3(1, 1, 1), new Block(0x8001));
+            rig.Exchange();
+
+            Assert.That(rig.World.HasEntity(EntityB), Is.True);
+            Assert.That(rig.World.HasBody(EntityB), Is.True);
+            Assert.That(rig.World.GetBlock(EntityB, new int3(1, 1, 1)), Is.EqualTo(new Block(0x8001)));
+
+            Assert.That(rig.Client.World.TryGetView(EntityB, out EntityView view), Is.True);
+            Assert.That(view.HasBody, Is.True);
+            Assert.That(view.IsClientSpawned, Is.True);
+            Assert.That(view.Data.GetBlock(new int3(1, 1, 1)), Is.EqualTo(new Block(0x8001)));
+
+            // The guid is taken: a second spawn must not replace the entity that is already there.
+            int entityCount = rig.World.EntityCount;
+            rig.Client.SpawnEntity(EntityB, RigidTransform.identity, isStatic: true, hasBody: true);
+            rig.Exchange();
+            Assert.That(rig.World.EntityCount, Is.EqualTo(entityCount));
+            Assert.That(rig.World.GetEntity(EntityB).isStatic, Is.False);
+        }
+
+        [Test]
         public void ProtectedEntity_RefusesUnfreezeCommand()
         {
             using var rig = new Rig();
@@ -213,6 +319,34 @@ namespace Caelix.Tests
             rig.Client.ReleaseDrag(EntityA);
             rig.Server.Step();
             Assert.That(rig.World.DragCount, Is.EqualTo(0));
+        }
+
+        [Test]
+        public void Drag_AnchorAtCenterOfMass_PullsTowardTarget()
+        {
+            using var rig = new Rig();
+            rig.World.Config.physics.gravity = float3.zero;
+            rig.World.CreateEntity(EntityA, RigidTransform.identity, isStatic: false);
+            rig.World.AddBody(EntityA);
+            rig.World.SetBlock(EntityA, new int3(0, 0, 0), new Block(0x8001));
+            rig.Exchange();
+
+            rig.Client.SetDrag(new DragCommand
+            {
+                Entity = EntityA,
+                AnchorLocal = float3.zero, // deliberately wrong; the flag must make the server ignore it
+                AnchorAtCenterOfMass = 1,
+                TargetWorld = new float3(5.5f, 0.5f, 0.5f),
+                Spring = 50f,
+                Damping = 10f,
+                MaxAcceleration = 100f,
+            });
+
+            rig.Server.Step(30);
+            Assert.That(rig.World.DragCount, Is.EqualTo(1));
+            float3 pulled = rig.World.GetEntity(EntityA).transform.pos;
+            Assert.That(pulled.x, Is.GreaterThan(0.05f), "spring pulls toward +X");
+            Assert.That(math.abs(pulled.y) + math.abs(pulled.z), Is.LessThan(0.05f), "no off-axis drift");
         }
 
         [Test]

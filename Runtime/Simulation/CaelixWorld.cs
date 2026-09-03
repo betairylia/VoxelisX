@@ -510,7 +510,12 @@ namespace Caelix.Simulation
                     continue;
                 }
 
-                float3 anchorWorld = math.transform(entity.transform, cmd.AnchorLocal);
+                // The centre-of-mass anchor is the stable hold for a scripted grab: it neither spins
+                // the body nor depends on which face a camera happens to see.
+                float3 anchorLocal = cmd.AnchorAtCenterOfMass != 0
+                    ? body.massProperties.centerOfMass
+                    : cmd.AnchorLocal;
+                float3 anchorWorld = math.transform(entity.transform, anchorLocal);
                 float3 centerOfMassWorld = math.transform(entity.transform, body.massProperties.centerOfMass);
                 float3 angularVelocityWorld = math.rotate(entity.transform.rot, body.motionVelocity.AngularVelocity);
                 float3 anchorVelocity = body.motionVelocity.LinearVelocity +
