@@ -1,6 +1,8 @@
 # Caelix server-client architecture
 
-**Status:** v1 in progress (branch `dev/fable/server-client-v1`, started 2026-09-03).
+**Status:** v1 landed (branch `dev/fable/server-client-v1`, started 2026-09-03,
+commits `532b157` to `aa97d84`; later branches carry it forward). Section 10 lists what
+is still open. Last checked against the code on 2026-09-04.
 **Decided by:** owner, after the design discussion recorded in the family `CLAUDE.md` notes.
 
 This document is the boundary contract. Code that crosses it without going
@@ -35,14 +37,23 @@ Rejected alternatives, and why:
 ## 2. Worlds
 
 - `Caelix.Simulation.CaelixWorld` is a plain class. It is constructed from a
-  `CaelixWorldConfig` (id, gravity, physics settings, replicated slot mask,
-  alien propagation flags). It owns its entity map, body map,
-  `VoxelPhysicsWorld`, automata stage, force command stream, and outgoing
-  event queue.
-- `CaelixServer` owns a list of worlds, one fixed-step accumulator shared by
-  all of them, the connections, command dispatch, and replication. **All
-  worlds tick at the same rate, in lockstep.** The loop is stage-major so
-  that a cross-world stage can be inserted between per-world stages later.
+  `CaelixWorldConfig` (id, name, physics settings including gravity,
+  replicated slot mask, alien propagation flags, drag timeout). It owns its
+  entity map, body map, `VoxelPhysicsWorld` (which owns the force command
+  stream), automata stage, and outgoing event queue.
+- `CaelixServer` owns a list of worlds, the tick clock, the connections,
+  command dispatch, and replication. **All worlds tick at the same rate, in
+  lockstep.** `Step()` runs one tick of every world. The loop inside `Step()`
+  is world-major today: for each world, simulate, replicate, end tick. A
+  stage-major loop, where a cross-world stage can sit between per-world
+  stages, is deferred (section 9).
+- Two ways to drive the clock. `CaelixHost` calls `Step()` once per Unity
+  fixed step (section 10). `CaelixServer.Update(deltaTime)` is a self-clocked
+  driver with its own accumulator and a `MaxTicksPerUpdate` backlog cap, kept
+  for a loop that has no fixed step of its own, such as a headless server.
+  Nothing calls it yet.
+- A connection receives every world by default. `ServerConnection.SubscribedWorlds`
+  restricts it to a subset.
 - An entity lives in exactly one world. The wire address of an entity is
   world id plus `Guid128`. The address of a brick is world id, guid, sector
   position, brick index.
@@ -81,11 +92,20 @@ bound as the client view for the same guid when the replication spawn message
 arrives. Importers and generators that write blocks through the component
 keep working, because in a process that runs the server the component's data
 API is a direct write into the server world. In a process that does not run
-the server those calls throw.
+the server the API splits: `SetBlock` and `IsStatic` send a command, `GetBlock`
+and `GetSlot` read the view, and the sector-level API (`SetSlot`, sector
+add/remove, dirty-flag calls) throws.
 
 The guid is serialized on the component (generated once in the editor). A
 prefab instance needs a fresh guid on first placement. That handling is
 deferred.
+
+> **Divergence (2026-09-04).** The implementation does not generate the guid
+> in the editor. `VoxelEntity.ResolveGuid` draws a random guid at runtime when
+> the serialized value is zero and does not store it, so an authored entity
+> gets a new guid every play session unless code sets `PersistentGuid`. The
+> design above and the implementation are both on the table; which one to
+> keep is an open decision.
 
 Edit-mode visibility of handmade entities is a later feature. It needs a
 voxel asset type and an edit-mode renderer driver. The view-source design of
@@ -111,13 +131,16 @@ the renderer is what makes it possible.
   discards it.
 - **Client apply.** `Sector.ApplyReplicatedBrick` copies the raw brick, marks
   `Geometry | GeometryWithLocalNeighbor | BlockBrickAdded` as needed, and
-  widens the block AABB to the brick bounds. The client tick is: clear
-  require-update, apply messages, propagate Geometry bits only, render, clear
-  dirty. Geometry bits cannot allocate sectors, so the client never grows
-  phantom sectors.
-- **Frozen worlds.** Replication runs inside the tick. A frozen world sends
-  nothing. The host always runs one tick on its first frame so a frozen scene
-  still gets its initial state.
+  widens the block AABB to the brick bounds. The client frame is: clear
+  require-update, apply messages, propagate the render flags (`Geometry`,
+  `GeometryWithLocalNeighbor`, `BlockBrickAdded`, `BlockBrickRemoved`),
+  render, clear dirty. None of these four bits is in
+  `DirtyPropagationSettings.DirtyFlagsCanAllocateLocalBricks`, so the client
+  never grows phantom sectors.
+- **Frozen server.** Replication runs inside the tick. Freeze is a server-level
+  switch (`CaelixServer.Frozen`, driven by the host's `freeze` field), not a
+  per-world flag; a frozen server sends nothing. The host always runs one tick
+  on its first frame so a frozen scene still gets its initial state.
 
 ## 6. Messages, v1
 
@@ -125,20 +148,27 @@ Envelope: `u8 type, u16 worldId, u32 tick`. Then the payload.
 
 | Direction | Message | Payload |
 |---|---|---|
-| S to C | Hello | replicated slot mask, tick rate, registry hash |
+| S to C | Hello | replicated slot mask, tick rate, registry hash, world count |
 | S to C | EntitySpawn | guid, transform, isStatic, isProtected, hasBody |
 | S to C | EntityDespawn | guid |
-| S to C | EntityState | guid, isStatic, isProtected |
-| S to C | EntityTransform | guid, position, rotation |
+| S to C | EntityState | guid, isStatic, isProtected, hasBody |
+| S to C | EntityTransform | guid, transform (rotation, position) |
 | S to C | SectorAdd | guid, sector position |
 | S to C | SectorRemove | guid, sector position |
-| S to C | BrickData | guid, sector position, brick index, flags, slot records |
+| S to C | BrickData | guid, sector position, brick count; then per brick: brick index, dirty flags, slot records |
 | S to C | Event | registered type id, blittable payload |
-| S to C | QueryReply | request id, slot records for one voxel |
+| S to C | QueryReply | request id, guid, position, found; then slot records for one voxel |
 | S to C | TypedQueryReply | request id, registered reply type id, reply struct, trailing payload |
 | C to S | Command | registered type id, blittable payload |
 | C to S | Query | request id, guid, position, slot mask |
 | C to S | TypedQuery | request id, registered request type id, request struct, trailing payload |
+
+`BrickData` is one message per sector per tick: a new sector sends every
+allocated brick, a known sector sends only the bricks whose dirty flags meet
+the replication mask. The client ignores the per-brick dirty flags; they are
+informational. `Hello` goes out on the first `Step()` after the connection is
+accepted, not at accept time, so game types registered during scene start are
+part of the registry hash.
 
 A command may also carry a trailing payload: send it with
 `CaelixClient.SendCommand(in T, ReadOnlySpan<byte>)` and receive it with
@@ -174,14 +204,19 @@ were rejected; see the family notes and `ECS_vs_NonECS_Decision.md`.
 | Assembly | Repo | Contents | References |
 |---|---|---|---|
 | `Caelix.Core` | Core | `VoxelEntityData`, `Sector`, serializer, dirty propagation, neighborhood reader, tick primitives, `BrickInfo`, `Caelix.Net` codec, channel, registries | Burst, Collections, Mathematics |
-| `Caelix.Physics` | Physics | `VoxelBodyData`, `VoxelPhysicsWorld`, `PhysicsWorldConfig` (scene settings holder), setup jobs, force commands | Core, low-level fork |
-| `Caelix.Simulation` | Caelix | `CaelixWorld`, `CaelixServer`, replication, engine net types, brick collector | Core, Physics |
+| `Caelix.Physics` | Physics | `VoxelBodyData`, `VoxelPhysicsWorld`, `PhysicsWorldConfig` (scene settings holder), setup jobs, force commands | Core, low-level fork, Entities, Numerics |
+| `Caelix.Simulation` | Caelix | `CaelixWorld`, `CaelixServer`, `ServerConnection`, replication, engine net types, brick collector | Core, Physics, low-level fork, Entities, Numerics |
 | `Caelix` | Caelix | `VoxelEntity`, `VoxelBody`, `CaelixHost`, `CaelixClient`, `ClientWorld`, renderers, raycast, importers, authoring | Simulation, URP |
 | `Caelix.Transport.Utp` | Caelix | Unity Transport channel | Core, com.unity.transport. Later |
 
 `PhysicsWorldConfig` stays in the physics package only because it keeps the
 scene's serialized solver settings alive. It is a settings holder, not a
 simulation object.
+
+Namespaces do not follow assemblies. Most of `Caelix.Physics` declares
+`namespace Caelix.Simulation` (only `PhysicsStepInputs` is in `Caelix`), the
+same namespace as the Simulation assembly. Look at the asmdef, not the
+namespace, to find which assembly owns a type.
 
 ## 9. v1 scope
 
@@ -233,13 +268,14 @@ Deferred:
   `TemporaryCharacterCollider` were deleted; scenes that had them show a missing-script
   warning until the component is removed in the editor.
 - **Titania.** Automata hooks register on `host.World.AutomataStage`. WireWorld chimes
-  are `ChimeNoteEvent` events emitted by the server and played by a client handler in
-  `TitaniaCore`. Interaction tools send commands and queries. Titania's own types live in
+  are `ChimeNoteEvent` events (declared in `Assets/Scripts/Dynamics/WireWorld.cs`) emitted by
+  the server and played by a client handler in `TitaniaCore`. Interaction tools send commands
+  and queries. Titania's own message types live in
   `Assets/Scripts/Interaction/TitaniaNetTypes.cs` (`WriteVoxelsCommand` with a `VoxelRecord`
-  payload, `EntityVoxelsQuery`/`EntityVoxelsReply`, `ChimeNoteEvent`), registered after the
-  engine types on both ends by `TitaniaNetTypes.EnsureRegistered(host)`. That file is the
-  reference for game-defined messages. The tools read the client replica (`EntityView`),
-  never server data.
+  payload, `EntityVoxelsQuery`/`EntityVoxelsReply`); that file also registers `ChimeNoteEvent`.
+  All are registered after the engine types on both ends by
+  `TitaniaNetTypes.EnsureRegistered(host)`. That file is the reference for game-defined
+  messages. The tools read the client replica (`EntityView`), never server data.
 - **Not done in v1:** the rendering assembly is not yet excluded from Dedicated Server
   builds; `InfiniteLoader` is not ticked; guids on authored entities are runtime-random
   unless set through `PersistentGuid`.

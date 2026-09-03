@@ -51,7 +51,11 @@ namespace Caelix.Simulation
         /// <summary>While frozen, <see cref="Update"/> runs no ticks. <see cref="Step"/> still works.</summary>
         public bool Frozen { get; set; }
 
-        /// <summary>Upper bound on ticks per <see cref="Update"/>; the backlog is dropped past it.</summary>
+        /// <summary>
+        /// Upper bound on ticks per <see cref="Update"/>; the backlog is dropped past it. Only the
+        /// accumulator path uses this; a host that steps from <c>FixedUpdate</c> relies on
+        /// <c>Time.maximumDeltaTime</c> instead.
+        /// </summary>
         public int MaxTicksPerUpdate { get; set; } = 4;
 
         /// <summary>Number of completed server ticks.</summary>
@@ -345,8 +349,10 @@ namespace Caelix.Simulation
         #region Ticking
 
         /// <summary>
-        /// Processes incoming commands, then runs as many fixed steps as the accumulated time
-        /// allows. Call once per frame.
+        /// Self-clocked driver: processes incoming commands, then runs as many fixed steps as the
+        /// accumulated time allows. Call once per frame from a loop that has no fixed step of its
+        /// own, such as a headless server. <c>CaelixHost</c> does not use this; it calls
+        /// <see cref="Step()"/> once per Unity fixed step. Both paths share <see cref="Step()"/>.
         /// </summary>
         public void Update(float deltaTime)
         {
