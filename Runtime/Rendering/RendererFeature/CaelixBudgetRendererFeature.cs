@@ -72,8 +72,8 @@ public class CaelixBudgetRendererFeature : ScriptableRendererFeature
     [SerializeField] private bool enableTemporalAccumulation = true;
     [SerializeField, Range(0.0f, 1.0f)] private float temporalCurrentFrameMinWeight = 0.0f;
     [SerializeField] private bool temporalDepthRejection = true;
-    [SerializeField, Min(0.0f)] private float temporalDepthTolerance = 0.05f;
-    [SerializeField, Min(0.0f)] private float temporalRelativeDepthTolerance = 0.01f;
+    [SerializeField, Min(0.0f)] private float temporalDepthTolerance = 0.1f;
+    [SerializeField, Min(0.0f)] private float temporalRelativeDepthTolerance = 0.005f;
     [SerializeField] private bool temporalNormalRejection = true;
     [SerializeField, Range(-1.0f, 1.0f)] private float temporalNormalThreshold = 0.85f;
     [SerializeField] private bool temporalBilinearHistory = true;

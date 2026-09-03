@@ -34,7 +34,10 @@ public class CaelixBudgetGBufferPass : ScriptableRenderPass
     {
         internal uint width;
         internal uint height;
-        internal float fov;
+        internal float zoom;
+        internal float aspectRatio;
+        /// <summary>This frame's global sub-pixel ray offset, in pixels, in launch space.</summary>
+        internal Vector2 jitter;
         internal int frameIndex;
 
         internal Matrix4x4 cameraToWorld;
@@ -91,6 +94,7 @@ public class CaelixBudgetGBufferPass : ScriptableRenderPass
         CaelixCameraHistory history = CaelixCameraHistory.BeginFrame(
             cameraData.camera,
             worldToCamera,
+            cameraData.camera.fieldOfView,
             cameraData.scaledWidth,
             cameraData.scaledHeight,
             settings.maximumAverageFrames);
@@ -130,8 +134,11 @@ public class CaelixBudgetGBufferPass : ScriptableRenderPass
         {
             passData.width = (uint)cameraData.scaledWidth;
             passData.height = (uint)cameraData.scaledHeight;
-            // TODO: Replace this to use the camera projection matrix instead.
-            passData.fov = 60.0f;
+            // The camera's own vertical FOV, and the jitter the filters will reconstruct rays with:
+            // both come from the history so the tracer and every consumer share one projection.
+            passData.zoom = history.Zoom;
+            passData.aspectRatio = history.Aspect;
+            passData.jitter = history.Jitter;
             passData.frameIndex = Time.frameCount;
 
             passData.cameraToWorld = worldToCamera.inverse;
@@ -234,8 +241,9 @@ public class CaelixBudgetGBufferPass : ScriptableRenderPass
         context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_BudgetEnableSunShadow", data.settings.enableSunShadow ? 1 : 0);
         context.cmd.SetRayTracingIntParam(data.voxShaderRT, "g_BudgetAOSampleCount", data.settings.aoSampleCount);
         context.cmd.SetRayTracingFloatParam(data.voxShaderRT, "g_BudgetAOMaxDistance", data.settings.aoMaxDistance);
-        context.cmd.SetRayTracingFloatParam(data.voxShaderRT, "g_Zoom", Mathf.Tan(Mathf.Deg2Rad * data.fov * 0.5f));
-        context.cmd.SetRayTracingFloatParam(data.voxShaderRT, "g_AspectRatio", data.width / (float)data.height);
+        context.cmd.SetRayTracingFloatParam(data.voxShaderRT, "g_Zoom", data.zoom);
+        context.cmd.SetRayTracingFloatParam(data.voxShaderRT, "g_AspectRatio", data.aspectRatio);
+        context.cmd.SetRayTracingVectorParam(data.voxShaderRT, "g_Jitter", data.jitter);
         context.cmd.SetRayTracingVectorParam(data.voxShaderRT, "g_CameraWorldPosition", data.cameraWorldPosition);
         context.cmd.SetRayTracingMatrixParam(data.voxShaderRT, "g_CurrentCameraToWorld", data.cameraToWorld);
         context.cmd.SetRayTracingMatrixParam(data.voxShaderRT, "g_PrevWorldToCamera", data.previousWorldToCamera);

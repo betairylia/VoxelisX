@@ -44,6 +44,10 @@ RaytracingAccelerationStructure g_AccelStruct : register(t0, space1);
 // diagnostic for it, and the pass sets both every frame anyway.
 float g_Zoom;
 float g_AspectRatio;
+// Sub-pixel offset of EVERY primary ray this frame, in pixels, in launch space. One global value
+// rather than a per-pixel draw: the denoise guides have to rebuild the exact ray a pixel was traced
+// with, and they can only do that from a value the whole image shares.
+float2 g_Jitter;
 float3 g_CameraWorldPosition;
 float4x4 g_CurrentCameraToWorld;
 float4x4 g_PrevWorldToCamera;
@@ -305,10 +309,16 @@ void MainRayGenShader()
     uint2 rayLaunchDim = DispatchRaysDimensions().xy;
     uint2 outputLaunchIndex = uint2(rayDispatchIndex.x, rayLaunchDim.y - rayDispatchIndex.y - 1);
 
-    uint rngState = g_FrameIndex * 7919u;
+    // Every pixel starts its draw index at 0 every frame, because SampleBlueNoise shifts the STBN
+    // tile by the DRAW index and slices it by the frame: a per-frame seed here would put a pixel on
+    // a different sequence position each frame and destroy the temporal property.
+    uint rngState = 0u;
 
-    float2 subpixelJitter = float2(RandomFloat01(rngState), RandomFloat01(rngState));
-    float2 ndcCoords = (outputLaunchIndex + subpixelJitter) / float2(rayLaunchDim.x - 1, rayLaunchDim.y - 1);
+    // Pixel-centre mapping: the sample sits at the centre of pixel `outputLaunchIndex`, displaced by
+    // this frame's global jitter, and the pixel grid spans the full [0, 1] range -- hence `/ dim`
+    // and not `/ (dim - 1)`, which would place the samples on the grid CORNERS and leave the last
+    // row and column unreprojectable.
+    float2 ndcCoords = (float2(outputLaunchIndex) + 0.5f + g_Jitter) / float2(rayLaunchDim);
     ndcCoords = ndcCoords * 2 - float2(1, 1);
     ndcCoords = ndcCoords * g_Zoom;
 
@@ -452,10 +462,14 @@ void MainRayGenShader()
 
     if (previousSurfaceViewDepth > 0.00001f)
     {
-        float2 outputFrameCoord = outputLaunchIndex + float2(0.5, 0.5);
+        // The same launch-space position the primary ray was built from, jitter included. The
+        // subtraction therefore cancels the jitter out of the stored vector: on a static scene a
+        // pixel reprojects exactly onto its own texel, which is what a TAA-style history fetch
+        // expects. Consumers that need the jittered position add g_Jitter back.
+        float2 outputFrameCoord = float2(outputLaunchIndex) + 0.5f + g_Jitter;
         float2 prevNdc = prevViewPosition.xy / previousSurfaceViewDepth;
         prevNdc /= float2(g_AspectRatio * g_Zoom, g_Zoom);
-        motionVector = (prevNdc * 0.5f + 0.5f) - outputFrameCoord / float2(rayLaunchDim.x - 1, rayLaunchDim.y - 1);
+        motionVector = (prevNdc * 0.5f + 0.5f) - outputFrameCoord / float2(rayLaunchDim);
     }
 
     // .xy = previousUV - currentUV, .z = viewZprev - viewZ (NRD 2.5D convention),

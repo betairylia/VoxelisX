@@ -30,6 +30,12 @@ public static class CaelixShaderIDs
     public static readonly int PreviousNormalHistoryTex = Shader.PropertyToID("_PreviousNormalHistoryTex");
 
     public static readonly int FrameSize = Shader.PropertyToID("_CaelixFrameSize");
+    /// <summary>xy = this frame's sub-pixel jitter in pixels, zw = the previous frame's.</summary>
+    public static readonly int CaelixJitter = Shader.PropertyToID("_CaelixJitter");
+    /// <summary>x = zoom (tan(verticalFov / 2)), y = aspect ratio.</summary>
+    public static readonly int CaelixProjection = Shader.PropertyToID("_CaelixProjection");
+    public static readonly int CaelixWorldToCamera = Shader.PropertyToID("_CaelixWorldToCamera");
+    public static readonly int CaelixPrevWorldToCamera = Shader.PropertyToID("_CaelixPrevWorldToCamera");
 
     public static readonly int SpatialFilterEnabled = Shader.PropertyToID("_SpatialFilterEnabled");
     public static readonly int SeparableFilterRadius = Shader.PropertyToID("_SeparableFilterRadius");
@@ -40,8 +46,8 @@ public static class CaelixShaderIDs
     public static readonly int ATrousJitterTaps = Shader.PropertyToID("_ATrousJitterTaps");
     public static readonly int ATrousFrameIndex = Shader.PropertyToID("_ATrousFrameIndex");
     public static readonly int ATrousNormalPower = Shader.PropertyToID("_ATrousNormalPower");
-    public static readonly int ATrousDepthSigma = Shader.PropertyToID("_ATrousDepthSigma");
-    public static readonly int ATrousRelativeDepthSigma = Shader.PropertyToID("_ATrousRelativeDepthSigma");
+    public static readonly int ATrousDepthTolerance = Shader.PropertyToID("_ATrousDepthTolerance");
+    public static readonly int ATrousRelativeDepthTolerance = Shader.PropertyToID("_ATrousRelativeDepthTolerance");
     public static readonly int ATrousRadianceSigma = Shader.PropertyToID("_ATrousRadianceSigma");
 
     public static readonly int IndirectRadianceHistoryValid = Shader.PropertyToID("_IndirectRadianceHistoryValid");
@@ -73,8 +79,16 @@ public static class CaelixShaderIDs
     public static readonly int BudgetAOStrength = Shader.PropertyToID("_BudgetAOStrength");
     public static readonly int BudgetAOAffectsSpecular = Shader.PropertyToID("_BudgetAOAffectsSpecular");
 
+    // --- Colour resolve ---
+    public static readonly int PreviousColorHistoryTex = Shader.PropertyToID("_PreviousColorHistoryTex");
+    public static readonly int ColorHistoryValid = Shader.PropertyToID("_ColorHistoryValid");
+    public static readonly int ColorResolveBlend = Shader.PropertyToID("_ColorResolveBlend");
+    public static readonly int ColorResolveClipScale = Shader.PropertyToID("_ColorResolveClipScale");
+
     // --- Present ---
     public static readonly int DebugView = Shader.PropertyToID("_DebugView");
+    /// <summary>0 = the opaque body of the image, 1 = the partially covered silhouette pixels.</summary>
+    public static readonly int PresentStage = Shader.PropertyToID("_CaelixPresentStage");
 
     // --- Ray tracing shader / brick material ---
     public const string BlueNoiseTexture = "stbnTexture";
