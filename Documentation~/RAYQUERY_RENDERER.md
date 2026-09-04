@@ -27,18 +27,43 @@ the same `RayPayload` the hit group used to fill.
 
 A ray query has no shader table, so there is no per-instance binding. Two global buffers replace it:
 
-* **`CaelixBrickPool`** — one raw `GraphicsBuffer` bound as `g_bricks`, holding the brick records of
-  every sector. Sectors own power-of-two ranges. Growing the pool allocates a new buffer and bumps
-  `Generation`; every sector re-uploads its whole range when it sees a generation it has not
-  uploaded under.
+* **`CaelixBrickPool`** — the brick records of every sector, held in up to `MaxPages` = 4 raw
+  `GraphicsBuffer`s bound as `g_bricks0..3`. Pages exist because one buffer cannot exceed
+  `SystemInfo.maxGraphicsBufferSize` (about 3.9 GB) and one record is 1096 bytes, so a few million
+  live bricks do not fit one buffer. Each page is capped at `PageCapacityLimitBricks` (serialized on
+  the component, clamped to the platform maximum and to a power of two).
 * **`CaelixRayQueryInstanceTable`** — a structured buffer bound as `g_Instances`, one 80-byte record
-  per RTAS instance, indexed by `InstanceID()`. The record holds the sector's word offset into the
-  pool, the previous object-to-world matrix (as four rows, for motion vectors) and the hash seed.
-  The slot index *is* the instance ID, passed to `AddInstance(config, matrix, id)`.
+  per RTAS instance, indexed by `InstanceID()`. The record holds the sector's page, its word offset
+  inside that page, the previous object-to-world matrix (as four rows, for motion vectors) and the
+  hash seed. The slot index *is* the instance ID, passed to `AddInstance(config, matrix, id)`. The
+  kernel reads the record once per procedural candidate and switches every brick load on its page.
+
+Sectors own power-of-two ranges inside a page, handed out by a bump pointer with a per-capacity free
+list, and hold a `CaelixBrickPool.Handle` — a class, because the pool moves ranges. **Growth
+compacts.** When a page has to grow, its live ranges are re-packed contiguously (largest first, so
+every range stays aligned to its own size), the free lists are dropped, the page gets a new buffer
+and its `Generation` goes up. Contents are not copied, but that costs nothing: a new buffer already
+forces every sector on the page to re-upload, and the generation is exactly how a sector notices.
+Without compaction, streaming fragments the pool badly enough that it asks for a buffer past the
+size cap. Growth targets 1.5x what the page needs rather than doubling; when a page cannot grow any
+further the pool opens the next one, and when all four are full it logs an error once and returns an
+invalid handle — that sector is then skipped, and it retries every tick.
+
+A sector that only moved (new range, or a compacted page) republishes its instance record but does
+**not** rebuild its RTAS instance: the AABBs did not change.
 
 `CaelixRayQueryRenderer.Tick` therefore runs its GPU sync in two loops: pass 2a settles every
-sector's pool range (which can grow the pool), pass 2b uploads bricks and updates the acceleration
-structure. Doing both in one loop would upload into a buffer a later sector then replaces.
+sector's pool range (which can grow and compact a page), pass 2b uploads bricks and updates the
+acceleration structure. Doing both in one loop would upload into a buffer a later sector then
+replaces.
+
+## Readiness
+
+`CaelixGBufferPass.IsReady` demands `CaelixRayQueryRenderer.HasResources` for this backend. The
+component only owns its pool, instance table, material buffer and acceleration structure between
+`Awake`/`Tick` and `OnDisable`, so the check is false in edit mode (a Scene view camera, where
+`Awake` never ran) and while the component is disabled. Without it the pass dispatches against null
+buffers and Unity logs `Property (g_Materials) at kernel index (0) is not set` every frame.
 
 ## Material table
 

@@ -108,8 +108,17 @@ inline half3 UnpackObjectNormal(uint normalFlag)
     return objectNormals[firstbitlow(normalFlag)];
 }
 
+// Brick record loads. The DXR hit group reads its per-instance g_bricks directly; the inline ray
+// query kernel routes these through a page switch (see RayQuery/CaelixRayQueryTrace.hlsl) and
+// defines all three before including this file.
+#ifndef CAELIX_BRICKS_LOAD
 // StructuredBuffer<uint> g_bricks;
 ByteAddressBuffer g_bricks;
+#define CAELIX_BRICKS_LOAD(byteAddress) g_bricks.Load(byteAddress)
+#define CAELIX_BRICKS_LOAD2(byteAddress) g_bricks.Load2(byteAddress)
+#define CAELIX_BRICKS_LOAD64(byteAddress) g_bricks.Load<uint64_t>(byteAddress)
+#endif
+
 float4x4 _PrevObjectToWorld;
 uint _SectorHashSeed;
 
@@ -226,7 +235,7 @@ inline int CaelixReadBrick(uint brickBase, int3 localBlockPos)
 {
     uint shift = uint((1 - (localBlockPos.x & 1)) << 4);
     // return int((g_bricks[brickBase + ((localBlockPos.x >> 1) + (localBlockPos.y << 2) + (localBlockPos.z << 5))] >> shift) & 0xFFFFu);
-    return int((g_bricks.Load((brickBase + ((localBlockPos.x >> 1) + (localBlockPos.y << 2) + (localBlockPos.z << 5))) << 2) >> shift) & 0xFFFFu);
+    return int((CAELIX_BRICKS_LOAD((brickBase + ((localBlockPos.x >> 1) + (localBlockPos.y << 2) + (localBlockPos.z << 5))) << 2) >> shift) & 0xFFFFu);
 }
 
 inline uint CaelixBrickBase(uint brickID)
@@ -247,7 +256,7 @@ inline uint CaelixMicroOccupancyBit(int3 microCell)
 inline void CaelixLoadMicroOccupancy(uint brickBase, uint coarseBit, out uint64_t occ)
 {
     uint occupancyBase = brickBase + BRICK_INFO_WORDS + coarseBit * 2u;
-    occ = g_bricks.Load<uint64_t>(occupancyBase << 2);
+    occ = CAELIX_BRICKS_LOAD64(occupancyBase << 2);
     // occLo = g_bricks[occupancyBase];
     // occHi = g_bricks[occupancyBase + 1u];
 }
@@ -356,14 +365,14 @@ inline float CaelixTraceBrickRay(uint brickBase, float3 entryPositionInBrick, fl
 
 // Ray-vs-brick intersection, with every input passed in rather than read from a DXR intrinsic, so
 // the inline ray query kernel can run it on each procedural candidate. `brickBase` is the word
-// offset of the brick record in g_bricks (a per-sector buffer in the DXR path, the global brick
-// pool in the ray query path).
+// offset of the brick record in the buffer CAELIX_BRICKS_LOAD reads: a per-sector buffer in the
+// DXR path, the brick pool page the candidate's instance record names in the ray query path.
 inline float CaelixTraceBrickPrimitiveCore(uint brickBase, float3 objectRayOrigin, float3 objectRayDir, float tCurrent, out AttributeData attrib)
 {
     // attrib.matID_faceNormal = ((0x8001 & 0xFFFF) << 16) + (0b010000 >> 26);
     // return 10;
 
-    uint2 brickInfo = g_bricks.Load2(brickBase << 2);
+    uint2 brickInfo = CAELIX_BRICKS_LOAD2(brickBase << 2);
 
     // Empty brick
     // if(CaelixGetCoarseOccupancy(brickInfo.x) == 0)

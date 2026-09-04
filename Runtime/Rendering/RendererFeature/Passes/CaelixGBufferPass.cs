@@ -81,11 +81,24 @@ public class CaelixGBufferPass : ScriptableRenderPass
         internal bool bakeMaterials;
         /// <summary>One VoxelMaterial per 16-bit block ID, bound as <c>g_Materials</c>. Ray query backend only.</summary>
         internal GraphicsBuffer materialTable;
-        /// <summary>Every sector's brick records, bound as <c>g_bricks</c>. Ray query backend only.</summary>
-        internal GraphicsBuffer brickPool;
+        /// <summary>
+        /// The brick pool's pages, bound as <c>g_bricks0..3</c>. Ray query backend only. Always
+        /// <see cref="CaelixBrickPool.MaxPages"/> long, and every entry is a real buffer: the kernel
+        /// declares all four and Unity logs an error every frame for any it never sees bound.
+        /// </summary>
+        internal GraphicsBuffer[] brickPages;
         /// <summary>Per-RTAS-instance records, bound as <c>g_Instances</c>. Ray query backend only.</summary>
         internal GraphicsBuffer instanceTable;
     }
+
+    /// <summary>Shader property names of the brick pool pages, indexed by page.</summary>
+    private static readonly string[] BrickPageNames = { "g_bricks0", "g_bricks1", "g_bricks2", "g_bricks3" };
+
+    /// <summary>
+    /// Scratch for <see cref="PassData.brickPages"/>, owned by this pass instance. The page buffers
+    /// only change between frames, so the array is refilled at record time rather than reallocated.
+    /// </summary>
+    private readonly GraphicsBuffer[] brickPages = new GraphicsBuffer[CaelixBrickPool.MaxPages];
 
     /// <summary>
     /// Binds the DXR scene renderer, tracing resources and this frame's settings.
@@ -146,10 +159,19 @@ public class CaelixGBufferPass : ScriptableRenderPass
         return kernels;
     }
 
-    /// <summary>True when the stage has everything it needs to record.</summary>
+    /// <summary>
+    /// True when the stage has everything it needs to record.
+    /// </summary>
+    /// <remarks>
+    /// The ray query backend also demands <see cref="CaelixRayQueryRenderer.HasResources"/>: the
+    /// component only owns its GPU buffers between Awake/Tick and OnDisable, so without that check
+    /// a Scene view camera in edit mode (or a disabled component in play mode) would dispatch
+    /// against null buffers and log "Property (g_Materials) ... is not set" every frame.
+    /// </remarks>
     public bool IsReady => backend == CaelixTraceBackend.DXR
         ? (caelixX != null && rayTracingShader != null)
-        : (rayQuery != null && computeShader != null && kernel >= 0 && bakeMaterialsKernels != null);
+        : (rayQuery != null && rayQuery.HasResources && computeShader != null && kernel >= 0
+           && bakeMaterialsKernels != null);
 
     public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
     {
@@ -241,7 +263,7 @@ public class CaelixGBufferPass : ScriptableRenderPass
             passData.backend = backend;
             passData.computeShader = computeShader;
             passData.kernel = kernel;
-            passData.brickPool = rayQuery?.Pool?.Buffer;
+            passData.brickPages = FillBrickPages();
             passData.instanceTable = rayQuery?.Instances?.Buffer;
             passData.bakeMaterialsKernels = bakeMaterialsKernels;
             passData.materialTable = rayQuery?.MaterialTable;
@@ -280,6 +302,28 @@ public class CaelixGBufferPass : ScriptableRenderPass
         }
 
         resources.IsValid = true;
+    }
+
+    /// <summary>
+    /// Refills <see cref="brickPages"/> with the pool's page buffers, or returns null when there is
+    /// no pool (the DXR backend, or a renderer that released its resources between record and now).
+    /// </summary>
+    private GraphicsBuffer[] FillBrickPages()
+    {
+        CaelixBrickPool pool = rayQuery?.Pool;
+        if (pool == null)
+        {
+            return null;
+        }
+
+        for (int i = 0; i < brickPages.Length; i++)
+        {
+            // GetPageBuffer clamps to the last open page, so the slots no instance names are still
+            // bound to a real buffer.
+            brickPages[i] = pool.GetPageBuffer(i);
+        }
+
+        return brickPages;
     }
 
     private static Vector4 ResolveMainLightColor(UniversalLightData lightData)
@@ -381,6 +425,13 @@ public class CaelixGBufferPass : ScriptableRenderPass
     /// </remarks>
     private static void ExecuteRayQuery(PassData data, UnsafeGraphContext context)
     {
+        // Belt and braces: the renderer can only release its buffers between frames, and IsReady
+        // already refuses to record without them, but a null page here would be a driver-level error.
+        if (data.brickPages == null)
+        {
+            return;
+        }
+
         CommandBuffer cmd = CommandBufferHelpers.GetNativeCommandBuffer(context.cmd);
         ComputeShader cs = data.computeShader;
         int k = data.kernel;
@@ -391,7 +442,11 @@ public class CaelixGBufferPass : ScriptableRenderPass
         }
 
         cmd.SetRayTracingAccelerationStructure(cs, k, "g_AccelStruct", data.voxAS);
-        cmd.SetComputeBufferParam(cs, k, "g_bricks", data.brickPool);
+        for (int i = 0; i < data.brickPages.Length; i++)
+        {
+            cmd.SetComputeBufferParam(cs, k, BrickPageNames[i], data.brickPages[i]);
+        }
+
         cmd.SetComputeBufferParam(cs, k, "g_Instances", data.instanceTable);
 
         // The static material tables cannot live in the trace kernel (see the compute shader),

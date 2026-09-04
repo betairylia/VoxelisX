@@ -37,8 +37,13 @@ namespace Caelix.Rendering.RayQuery
 
         private GraphicsBuffer aabbBuffer;
 
-        private CaelixBrickPool.Range poolRange;
-        /// <summary>Pool generation the current range's contents were uploaded under; -1 = never.</summary>
+        /// <summary>This sector's slice of the brick pool. Null until the first allocation.</summary>
+        /// <remarks>
+        /// A class the pool owns and mutates: compacting a page rewrites the offset in place. Read
+        /// its fields fresh every use rather than caching them.
+        /// </remarks>
+        private CaelixBrickPool.Handle poolHandle;
+        /// <summary>Generation of the handle's page the range's contents were uploaded under; -1 = never.</summary>
         private int uploadedGeneration = -1;
         /// <summary>Brick index range modified since the last upload. -1 means "nothing pending".</summary>
         private int pendingUploadMin = -1;
@@ -48,9 +53,19 @@ namespace Caelix.Rendering.RayQuery
         /// <summary>Slot in the instance table, and therefore this sector's RTAS instance ID.</summary>
         private int instanceSlot = -1;
 
+        /// <summary>Word offset and page of the range the instance record currently names; -1 = never published.</summary>
+        private int publishedBrickBase = -1;
+        private int publishedPage = -1;
+
         private int sectorASHandle;
         private bool hasRenderable;
         private bool isDirty;
+        /// <summary>
+        /// Set when the instance record is stale but the geometry is not: the sector's range moved
+        /// to a different offset or page. Republishing the record is enough; rebuilding the RTAS
+        /// instance would throw away a perfectly good BLAS.
+        /// </summary>
+        private bool recordDirty;
         private bool shouldRemove;
 
         private RayTracingAABBsInstanceConfig AABBconfig;
@@ -81,7 +96,7 @@ namespace Caelix.Rendering.RayQuery
         /// <summary>Gets the estimated VRAM usage in bytes: the AABB buffer plus this sector's pool range.</summary>
         public ulong VRAMUsage =>
             (ulong)(Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * 24 +
-                    poolRange.CapacityBricks * SectorRenderer.BRICK_DATA_LENGTH * 4);
+                    (poolHandle?.CapacityBricks ?? 0) * SectorRenderer.BRICK_DATA_LENGTH * 4);
 
         private bool HostBufferInitialized => hostAABBBuffer.IsCreated;
 
@@ -174,9 +189,9 @@ namespace Caelix.Rendering.RayQuery
         /// </summary>
         /// <remarks>
         /// Brick uploads are deliberately deferred to <see cref="UploadBricks"/>: resizing a range
-        /// can grow the pool, which replaces its <see cref="GraphicsBuffer"/> and invalidates every
-        /// other sector's contents. Every sector must therefore learn its final range before any of
-        /// them writes.
+        /// can grow a pool page, which replaces its <see cref="GraphicsBuffer"/> and re-packs every
+        /// other range on it. Every sector must therefore learn its final range before any of them
+        /// writes.
         /// </remarks>
         internal void ApplyCompletedRenderJob(CaelixBrickPool pool)
         {
@@ -210,10 +225,14 @@ namespace Caelix.Rendering.RayQuery
 
             bool poolRangeChanged = false;
             int requestedCapacity = SectorRenderer.GetCapacity(BrickBufferSize);
-            if (requestedCapacity != poolRange.CapacityBricks)
+            if (requestedCapacity != (poolHandle?.CapacityBricks ?? 0))
             {
-                pool.Free(poolRange);
-                poolRange = pool.Allocate(requestedCapacity);
+                if (poolHandle != null)
+                {
+                    pool.Free(poolHandle);
+                }
+
+                poolHandle = pool.Allocate(requestedCapacity);
                 needsFullUpload = true;
                 poolRangeChanged = true;
             }
@@ -228,10 +247,24 @@ namespace Caelix.Rendering.RayQuery
                 pendingUploadMax = pendingUploadMax < 0 ? maxModified : Math.Max(pendingUploadMax, maxModified);
             }
 
-            if (aabbRealloc || poolRangeChanged)
+            if (poolHandle == null || !poolHandle.IsValid)
+            {
+                // Every page is full. needsFullUpload stays set, and the capacity test above retries
+                // the allocation on every tick because an invalid handle reports capacity 0. Until
+                // one succeeds RenderModifyAS skips this sector, so it is simply not drawn.
+                return;
+            }
+
+            if (aabbRealloc)
             {
                 AABBconfig = default;
                 isDirty = true;
+            }
+
+            if (poolRangeChanged)
+            {
+                // A new range only moves what the instance record publishes; the AABBs are the same.
+                recordDirty = true;
             }
         }
 
@@ -241,7 +274,7 @@ namespace Caelix.Rendering.RayQuery
         /// </summary>
         internal void UploadBricks(CaelixBrickPool pool)
         {
-            if (!poolRange.IsValid || !hostBrickBuffer.IsCreated)
+            if (poolHandle == null || !poolHandle.IsValid || !hostBrickBuffer.IsCreated)
             {
                 return;
             }
@@ -255,25 +288,27 @@ namespace Caelix.Rendering.RayQuery
             }
 
             Debug.Assert(
-                brickCount <= poolRange.CapacityBricks,
+                brickCount <= poolHandle.CapacityBricks,
                 "RayQuerySectorRenderer: host brick buffer is larger than the pool range reserved for it.");
 
-            if (uploadedGeneration != pool.Generation || needsFullUpload)
+            int pageGeneration = pool.PageGeneration(poolHandle.Page);
+            if (uploadedGeneration != pageGeneration || needsFullUpload)
             {
-                // Either the pool replaced its buffer (contents are gone) or this sector moved to a
-                // different range. Both mean the whole range has to be written again, and both move
-                // the brick base the instance record publishes.
-                pool.Upload(poolRange, hostBrickBuffer.AsArray(), 0, brickCount);
-                uploadedGeneration = pool.Generation;
+                // Either the page replaced its buffer (contents are gone, and compaction moved every
+                // range on it) or this sector moved to a different range. Both mean the whole range
+                // has to be written again, and both move the brick base the instance record
+                // publishes — but neither touches the geometry, so the RTAS instance stands.
+                pool.Upload(poolHandle, hostBrickBuffer.AsArray(), 0, brickCount);
+                uploadedGeneration = pageGeneration;
                 needsFullUpload = false;
-                isDirty = true;
+                recordDirty = true;
             }
             else if (pendingUploadMin >= 0)
             {
                 int last = Math.Min(pendingUploadMax, brickCount - 1);
                 if (last >= pendingUploadMin)
                 {
-                    pool.Upload(poolRange, hostBrickBuffer.AsArray(), pendingUploadMin, last - pendingUploadMin + 1);
+                    pool.Upload(poolHandle, hostBrickBuffer.AsArray(), pendingUploadMin, last - pendingUploadMin + 1);
                 }
             }
 
@@ -310,25 +345,40 @@ namespace Caelix.Rendering.RayQuery
 
             // A dirty sector with no renderable bricks is legitimate (freshly loaded, or fully
             // culled) and RayTracingAABBsInstanceConfig throws on aabbCount == 0, so skip it; the
-            // sector re-dirties and retries once real geometry appears.
-            bool rebuildsInstance = isDirty && BrickBufferSize > 0;
+            // sector re-dirties and retries once real geometry appears. A sector the pool could not
+            // find room for is skipped the same way.
+            bool hasPool = poolHandle != null && poolHandle.IsValid;
+            bool rebuildsInstance = isDirty && BrickBufferSize > 0 && hasPool;
             bool retracksInstance = hasRenderable && (!entity.IsStatic || resetsMotionVectors);
+            // A moved range changes only what the record names, so it is published without touching
+            // the acceleration structure.
+            bool republishesRecord = recordDirty && hasRenderable && hasPool;
 
-            if (rebuildsInstance || retracksInstance)
+            if (rebuildsInstance || retracksInstance || republishesRecord)
             {
-                // The shader reads the previous transform and the hash seed from the instance
-                // table, keyed by the RTAS instance ID. The slot is claimed once and kept for the
-                // renderer's whole life, because the ID has to survive a remove + add.
-                if (instanceSlot < 0)
-                {
-                    instanceSlot = table.Allocate();
-                }
+                // Fall back to the last published range while the pool has no room for this sector,
+                // so a retrack cannot overwrite a live instance's record with a null range.
+                int brickBaseWords = hasPool
+                    ? poolHandle.OffsetBricks * SectorRenderer.BRICK_DATA_LENGTH
+                    : publishedBrickBase;
+                int brickPage = hasPool ? poolHandle.Page : publishedPage;
 
-                table.Set(
-                    instanceSlot,
-                    prevObjectToWorld,
-                    poolRange.OffsetBricks * SectorRenderer.BRICK_DATA_LENGTH,
-                    (uint)sectorHashSeed);
+                if (brickBaseWords >= 0 && brickPage >= 0)
+                {
+                    // The shader reads the previous transform, the brick pool page and the hash seed
+                    // from the instance table, keyed by the RTAS instance ID. The slot is claimed
+                    // once and kept for the renderer's whole life, because the ID has to survive a
+                    // remove + add.
+                    if (instanceSlot < 0)
+                    {
+                        instanceSlot = table.Allocate();
+                    }
+
+                    table.Set(instanceSlot, prevObjectToWorld, brickBaseWords, brickPage, (uint)sectorHashSeed);
+                    publishedBrickBase = brickBaseWords;
+                    publishedPage = brickPage;
+                    recordDirty = false;
+                }
             }
 
             if (rebuildsInstance)
@@ -399,10 +449,14 @@ namespace Caelix.Rendering.RayQuery
                 instanceSlot = -1;
             }
 
-            pool.Free(poolRange);
-            poolRange = default;
+            if (poolHandle != null)
+            {
+                pool.Free(poolHandle);
+                poolHandle = null;
+            }
 
             isDirty = false;
+            recordDirty = false;
             Dispose();
         }
 

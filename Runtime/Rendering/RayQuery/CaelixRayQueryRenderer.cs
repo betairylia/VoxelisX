@@ -36,13 +36,20 @@ namespace Caelix.Rendering.RayQuery
         /// <summary>When enabled, automatically calls <see cref="Tick"/> every frame.</summary>
         [SerializeField] private bool autoTick = false;
 
+        [Header("Brick Pool")]
+        [SerializeField, Tooltip("Upper size of one brick pool page, in bricks (1096 bytes each). Clamped to the platform's maximum buffer size. Lower it only to test paging.")]
+        private int pageCapacityLimitBricks = CaelixBrickPool.DefaultPageCapacityLimitBricks;
+
         /// <summary>Debug field showing the current number of instances in the acceleration structure.</summary>
         [Header("Debug Utils")] public int instanceCount;
 
-        /// <summary>Debug field showing how many bricks the pool has handed out.</summary>
-        public int poolUsedBricks;
+        /// <summary>Debug field showing how many pages the pool has open.</summary>
+        public int poolPages;
 
-        /// <summary>Debug field showing how many bricks the pool's buffer can hold.</summary>
+        /// <summary>Debug field showing how many bricks are reserved by a live sector range.</summary>
+        public int poolLiveBricks;
+
+        /// <summary>Debug field showing how many bricks the pool's page buffers can hold together.</summary>
         public int poolCapacityBricks;
 
         private ClientWorld source;
@@ -66,7 +73,7 @@ namespace Caelix.Rendering.RayQuery
             }
         }
 
-        /// <summary>The shared brick record buffer bound as <c>g_bricks</c>.</summary>
+        /// <summary>The shared brick records, in up to four pages bound as <c>g_bricks0..3</c>.</summary>
         public CaelixBrickPool Pool { get; private set; }
 
         /// <summary>The per-instance record buffer bound as <c>g_Instances</c>.</summary>
@@ -94,6 +101,14 @@ namespace Caelix.Rendering.RayQuery
         /// <summary>The client world this renderer draws, once resolved.</summary>
         public ClientWorld Source => source;
 
+        /// <summary>
+        /// True while every GPU resource the trace needs exists: between Awake/Tick and OnDisable. False
+        /// in edit mode (no Awake) and while disabled, which is what keeps the G-buffer stage from
+        /// dispatching against null buffers and logging "Property ... is not set" every frame.
+        /// </summary>
+        public bool HasResources => isActiveAndEnabled && Pool != null && Instances != null
+            && MaterialTable != null && _voxelScene != null;
+
         private void Awake()
         {
             if (!SystemInfo.supportsInlineRayTracing)
@@ -103,7 +118,7 @@ namespace Caelix.Rendering.RayQuery
                     "CaelixPathTraceRQ.compute cannot run; use the DXR backend instead.", this);
             }
 
-            Pool ??= new CaelixBrickPool();
+            Pool ??= new CaelixBrickPool(4096, pageCapacityLimitBricks);
             Instances ??= new CaelixRayQueryInstanceTable();
             EnsureMaterialTable();
             ReloadAS();
@@ -209,7 +224,7 @@ namespace Caelix.Rendering.RayQuery
                 ReloadAS();
             }
 
-            Pool ??= new CaelixBrickPool();
+            Pool ??= new CaelixBrickPool(4096, pageCapacityLimitBricks);
             Instances ??= new CaelixRayQueryInstanceTable();
             EnsureMaterialTable();
 
@@ -323,8 +338,9 @@ namespace Caelix.Rendering.RayQuery
 
             Instances.Flush();
 
-            poolUsedBricks = Pool.UsedBricks;
-            poolCapacityBricks = Pool.CapacityBricks;
+            poolPages = Pool.PageCount;
+            poolLiveBricks = Pool.TotalLiveBricks;
+            poolCapacityBricks = Pool.TotalCapacityBricks;
         }
 
         private void EnsureMaterialTable()

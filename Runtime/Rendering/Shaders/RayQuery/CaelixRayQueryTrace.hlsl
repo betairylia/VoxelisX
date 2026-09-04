@@ -6,6 +6,55 @@
 // `RaytracingAccelerationStructure g_AccelStruct;` before including this file.
 
 #include "../Utils/Utils.hlsl"
+
+// Brick pool pages. One GraphicsBuffer cannot exceed SystemInfo.maxGraphicsBufferSize (~3.9 GB),
+// and a large scene holds more brick records than that, so the pool is split into up to four
+// buffers and every instance record names the page its bricks live in. The page is selected once
+// per candidate (below) and every brick load switches on it. Must match CaelixBrickPool.MaxPages.
+#define CAELIX_BRICK_PAGES 4
+ByteAddressBuffer g_bricks0;
+ByteAddressBuffer g_bricks1;
+ByteAddressBuffer g_bricks2;
+ByteAddressBuffer g_bricks3;
+static uint _CaelixBrickPage;
+
+uint CaelixBrickPageLoad(uint byteAddress)
+{
+    switch (_CaelixBrickPage)
+    {
+        case 0u: return g_bricks0.Load(byteAddress);
+        case 1u: return g_bricks1.Load(byteAddress);
+        case 2u: return g_bricks2.Load(byteAddress);
+        default: return g_bricks3.Load(byteAddress);
+    }
+}
+
+uint2 CaelixBrickPageLoad2(uint byteAddress)
+{
+    switch (_CaelixBrickPage)
+    {
+        case 0u: return g_bricks0.Load2(byteAddress);
+        case 1u: return g_bricks1.Load2(byteAddress);
+        case 2u: return g_bricks2.Load2(byteAddress);
+        default: return g_bricks3.Load2(byteAddress);
+    }
+}
+
+uint64_t CaelixBrickPageLoad64(uint byteAddress)
+{
+    switch (_CaelixBrickPage)
+    {
+        case 0u: return g_bricks0.Load<uint64_t>(byteAddress);
+        case 1u: return g_bricks1.Load<uint64_t>(byteAddress);
+        case 2u: return g_bricks2.Load<uint64_t>(byteAddress);
+        default: return g_bricks3.Load<uint64_t>(byteAddress);
+    }
+}
+
+#define CAELIX_BRICKS_LOAD(byteAddress) CaelixBrickPageLoad(byteAddress)
+#define CAELIX_BRICKS_LOAD2(byteAddress) CaelixBrickPageLoad2(byteAddress)
+#define CAELIX_BRICKS_LOAD64(byteAddress) CaelixBrickPageLoad64(byteAddress)
+
 #include "../CaelixBrickTrace.hlsl"
 
 // One record per RTAS instance, indexed by InstanceID(). Mirrors Caelix.Rendering.RayQuery.CaelixRayQueryInstance.
@@ -17,10 +66,11 @@ struct CaelixRayQueryInstance
     float4 prevRow1;
     float4 prevRow2;
     float4 prevRow3;
-    // Word offset of this sector's first brick in g_bricks (the pool).
+    // Word offset of this sector's first brick inside its page.
     uint brickBase;
     uint hashSeed;
-    uint pad0;
+    // Brick pool page holding this sector's bricks.
+    uint page;
     uint pad1;
 };
 
@@ -47,7 +97,11 @@ void CaelixRayQueryTrace(RayDesc ray, out RayPayload payload)
         }
 
         uint instanceId = q.CandidateInstanceID();
-        uint brickBase = g_Instances[instanceId].brickBase + CaelixBrickBase(q.CandidatePrimitiveIndex());
+        // One fetch: the record carries both the page every brick load below switches on and the
+        // sector's word offset inside that page.
+        CaelixRayQueryInstance inst = g_Instances[instanceId];
+        _CaelixBrickPage = inst.page;
+        uint brickBase = inst.brickBase + CaelixBrickBase(q.CandidatePrimitiveIndex());
 
         AttributeData attrib;
         float t = CaelixTraceBrickPrimitiveCore(

@@ -21,13 +21,18 @@ namespace Caelix.Rendering.RayQuery
         public Vector4 prevRow2;
         public Vector4 prevRow3;
 
-        /// <summary>Word offset of this sector's first brick in the brick pool.</summary>
+        /// <summary>Word offset of this sector's first brick inside its brick pool page.</summary>
         public uint brickBase;
 
         /// <summary>Per-sector seed for the voxel face hash.</summary>
         public uint hashSeed;
 
-        public uint pad0;
+        /// <summary>
+        /// Index of the <see cref="CaelixBrickPool"/> page holding this sector's bricks. The kernel
+        /// switches every brick load on it, because one buffer cannot hold a large scene.
+        /// </summary>
+        public uint page;
+
         public uint pad1;
 
         /// <summary>Size of one record in bytes; the structured buffer's stride.</summary>
@@ -99,7 +104,10 @@ namespace Caelix.Rendering.RayQuery
         }
 
         /// <summary>Writes one slot's record. Takes effect on the next <see cref="Flush"/>.</summary>
-        public void Set(int slot, in Matrix4x4 prevObjectToWorld, int brickBaseWords, uint hashSeed)
+        /// <param name="brickBaseWords">Word offset of the sector's first brick inside <paramref name="page"/>.</param>
+        /// <param name="page">Index of the brick pool page holding the sector's bricks.</param>
+        public void Set(
+            int slot, in Matrix4x4 prevObjectToWorld, int brickBaseWords, int page, uint hashSeed)
         {
             host[slot] = new CaelixRayQueryInstance
             {
@@ -108,7 +116,8 @@ namespace Caelix.Rendering.RayQuery
                 prevRow2 = prevObjectToWorld.GetRow(2),
                 prevRow3 = prevObjectToWorld.GetRow(3),
                 brickBase = (uint)brickBaseWords,
-                hashSeed = hashSeed
+                hashSeed = hashSeed,
+                page = (uint)page
             };
 
             dirty = true;
