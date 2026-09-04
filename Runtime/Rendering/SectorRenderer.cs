@@ -36,7 +36,7 @@ namespace Caelix.Rendering
         /// Axis-aligned bounding box structure for ray tracing.
         /// </summary>
         [StructLayout(LayoutKind.Sequential)]
-        struct AABB
+        internal struct AABB
         {
             internal Vector3 min;
             internal Vector3 max;
@@ -163,7 +163,7 @@ namespace Caelix.Rendering
         private bool GPUBufferInitialized => brickBuffer != null && brickBuffer.IsValid();
         private bool HostBufferInitialized => hostAABBBuffer.IsCreated;
 
-        private int GetCapacity(int requestedLength)
+        internal static int GetCapacity(int requestedLength)
         {
             int result = 1;
             while (result < requestedLength)

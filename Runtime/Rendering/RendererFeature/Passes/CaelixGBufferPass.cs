@@ -3,9 +3,10 @@ using UnityEngine.Experimental.Rendering;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.RenderGraphModule;
 using UnityEngine.Rendering.Universal;
+using Caelix.Rendering.RayQuery;
 
 /// <summary>
-/// Stage 1 of 3: traces the voxel scene with DXR and produces the Caelix G-buffer.
+/// Stage 1 of 3: traces the voxel scene and produces the Caelix G-buffer.
 /// </summary>
 /// <remarks>
 /// Writes deterministic (non-denoised) radiance, per-lobe stochastic radiance with hit distance
@@ -13,6 +14,12 @@ using UnityEngine.Rendering.Universal;
 /// plus this frame's depth/normal history for next frame's temporal rejection. Everything it
 /// produces is published to <see cref="CaelixFrameResources"/> and, for the shaders that sample
 /// them by name, as global textures. Downstream stages read that contract and never touch the tracer.
+/// <para>
+/// Two interchangeable trace backends produce that same G-buffer: the DXR pipeline
+/// (<see cref="CaelixTraceBackend.DXR"/>) and an inline ray query compute kernel
+/// (<see cref="CaelixTraceBackend.InlineRayQuery"/>). They run the same path-tracing code and are
+/// configured through <see cref="ConfigureSettings"/> and <see cref="ConfigureRayQuery"/>.
+/// </para>
 /// </remarks>
 public class CaelixGBufferPass : ScriptableRenderPass
 {
@@ -20,6 +27,13 @@ public class CaelixGBufferPass : ScriptableRenderPass
     private RayTracingShader rayTracingShader;
     private Texture2D blueNoiseTexture;
     private CaelixTraceSettings settings = new CaelixTraceSettings().Validated();
+
+    private CaelixTraceBackend backend = CaelixTraceBackend.DXR;
+    private CaelixRayQueryRenderer rayQuery;
+    private ComputeShader computeShader;
+    private int kernel = -1;
+    /// <summary>The three per-field material bake kernels; all must exist for the backend to be ready.</summary>
+    private int[] bakeMaterialsKernels;
 
     /// <summary>Stand-in sky used when the sky provider has not published its cubemap yet.</summary>
     private static Cubemap s_FallbackSky;
@@ -58,23 +72,84 @@ public class CaelixGBufferPass : ScriptableRenderPass
         internal RayTracingAccelerationStructure voxAS;
         internal Texture2D blueNoiseTexture;
         internal Material brickMaterial;
+
+        internal CaelixTraceBackend backend;
+        internal ComputeShader computeShader;
+        internal int kernel;
+        internal int[] bakeMaterialsKernels;
+        /// <summary>Set the first time a material buffer is used: the bake kernel fills it before the trace.</summary>
+        internal bool bakeMaterials;
+        /// <summary>One VoxelMaterial per 16-bit block ID, bound as <c>g_Materials</c>. Ray query backend only.</summary>
+        internal GraphicsBuffer materialTable;
+        /// <summary>Every sector's brick records, bound as <c>g_bricks</c>. Ray query backend only.</summary>
+        internal GraphicsBuffer brickPool;
+        /// <summary>Per-RTAS-instance records, bound as <c>g_Instances</c>. Ray query backend only.</summary>
+        internal GraphicsBuffer instanceTable;
     }
 
     /// <summary>
-    /// Binds the scene renderer, tracing resources and this frame's settings.
+    /// Binds the DXR scene renderer, tracing resources and this frame's settings.
     /// Called once per camera before enqueueing.
     /// </summary>
     public void ConfigureSettings(
         CaelixRenderer vox, RayTracingShader rtShader, Texture2D blueNoise, CaelixTraceSettings traceSettings)
     {
+        backend = CaelixTraceBackend.DXR;
         caelixX = vox;
         rayTracingShader = rtShader;
         blueNoiseTexture = blueNoise;
         settings = traceSettings.Validated();
     }
 
+    /// <summary>
+    /// Binds the inline ray query scene renderer, its compute kernel and this frame's settings.
+    /// Called once per camera before enqueueing, instead of <see cref="ConfigureSettings"/>.
+    /// </summary>
+    public void ConfigureRayQuery(
+        CaelixRayQueryRenderer rq, ComputeShader cs, Texture2D blueNoise, CaelixTraceSettings traceSettings)
+    {
+        backend = CaelixTraceBackend.InlineRayQuery;
+        rayQuery = rq;
+        computeShader = cs;
+        // HasKernel first: FindKernel logs an error and throws when the kernel is missing, and a
+        // renderer asset can easily point at the wrong compute shader.
+        kernel = (cs != null && cs.HasKernel("CaelixPathTraceKernel")) ? cs.FindKernel("CaelixPathTraceKernel") : -1;
+        bakeMaterialsKernels = FindBakeKernels(cs);
+        blueNoiseTexture = blueNoise;
+        settings = traceSettings.Validated();
+    }
+
+    private static readonly string[] BakeKernelNames =
+    {
+        "CaelixBakeMaterialsAlbedo", "CaelixBakeMaterialsEmission", "CaelixBakeMaterialsScalars"
+    };
+
+    /// <summary>All three bake kernel indices, or null when any is missing from the compute shader.</summary>
+    private static int[] FindBakeKernels(ComputeShader cs)
+    {
+        if (cs == null)
+        {
+            return null;
+        }
+
+        int[] kernels = new int[BakeKernelNames.Length];
+        for (int i = 0; i < kernels.Length; i++)
+        {
+            if (!cs.HasKernel(BakeKernelNames[i]))
+            {
+                return null;
+            }
+
+            kernels[i] = cs.FindKernel(BakeKernelNames[i]);
+        }
+
+        return kernels;
+    }
+
     /// <summary>True when the stage has everything it needs to record.</summary>
-    public bool IsReady => caelixX != null && rayTracingShader != null;
+    public bool IsReady => backend == CaelixTraceBackend.DXR
+        ? (caelixX != null && rayTracingShader != null)
+        : (rayQuery != null && computeShader != null && kernel >= 0 && bakeMaterialsKernels != null);
 
     public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
     {
@@ -124,7 +199,10 @@ public class CaelixGBufferPass : ScriptableRenderPass
         resources.CurrentDepthHistory = renderGraph.ImportTexture(history.CurrentDepth);
         resources.CurrentNormalHistory = renderGraph.ImportTexture(history.CurrentNormal);
 
-        using (var builder = renderGraph.AddUnsafePass<PassData>("Caelix DXR Trace", out var passData))
+        // The pass name is what the frame debugger and the profiler show, so it names the backend:
+        // the two are meant to be compared against each other.
+        string passName = backend == CaelixTraceBackend.DXR ? "Caelix DXR Trace" : "Caelix RayQuery Trace";
+        using (var builder = renderGraph.AddUnsafePass<PassData>(passName, out var passData))
         {
             passData.width = (uint)cameraData.scaledWidth;
             passData.height = (uint)cameraData.scaledHeight;
@@ -155,9 +233,25 @@ public class CaelixGBufferPass : ScriptableRenderPass
             passData.CurrentNormalHistory = resources.CurrentNormalHistory;
 
             passData.voxShaderRT = rayTracingShader;
-            passData.voxAS = caelixX.voxelScene;
+            passData.voxAS = backend == CaelixTraceBackend.DXR ? caelixX.voxelScene : rayQuery.voxelScene;
             passData.blueNoiseTexture = blueNoiseTexture;
-            passData.brickMaterial = caelixX.brickMat;
+            // Only the DXR path has a hit-group material to push per-frame uniforms onto.
+            passData.brickMaterial = backend == CaelixTraceBackend.DXR ? caelixX.brickMat : null;
+
+            passData.backend = backend;
+            passData.computeShader = computeShader;
+            passData.kernel = kernel;
+            passData.brickPool = rayQuery?.Pool?.Buffer;
+            passData.instanceTable = rayQuery?.Instances?.Buffer;
+            passData.bakeMaterialsKernels = bakeMaterialsKernels;
+            passData.materialTable = rayQuery?.MaterialTable;
+            // The bake is recorded ahead of the trace in the same command buffer, so flipping the
+            // flag at record time is safe; the pass is never culled.
+            passData.bakeMaterials = rayQuery != null && !rayQuery.MaterialsBaked;
+            if (rayQuery != null)
+            {
+                rayQuery.MaterialsBaked = true;
+            }
 
             builder.UseTexture(passData.DeterministicRadiance, AccessFlags.Write);
             builder.UseTexture(passData.DiffuseRadiance, AccessFlags.Write);
@@ -211,6 +305,12 @@ public class CaelixGBufferPass : ScriptableRenderPass
 
     private static void Execute(PassData data, UnsafeGraphContext context)
     {
+        if (data.backend == CaelixTraceBackend.InlineRayQuery)
+        {
+            ExecuteRayQuery(data, context);
+            return;
+        }
+
         CommandBuffer natcmd = CommandBufferHelpers.GetNativeCommandBuffer(context.cmd);
         natcmd.SetRayTracingShaderPass(data.voxShaderRT, "Caelix");
 
@@ -268,6 +368,87 @@ public class CaelixGBufferPass : ScriptableRenderPass
         context.cmd.SetRayTracingVectorParam(data.voxShaderRT, "g_mainLightColor", data.mainLightColor);
 
         context.cmd.DispatchRays(data.voxShaderRT, "MainRayGenShader", data.width, data.height, 1, null);
+    }
+
+    /// <summary>
+    /// Inline ray query backend: the same uniforms and the same targets as the DXR body, bound to a
+    /// compute kernel instead of a ray tracing shader, plus the two buffers that replace the shader
+    /// table's per-instance bindings.
+    /// </summary>
+    /// <remarks>
+    /// Everything goes through the native command buffer: the unsafe pass context exposes no
+    /// compute-shader setters of its own.
+    /// </remarks>
+    private static void ExecuteRayQuery(PassData data, UnsafeGraphContext context)
+    {
+        CommandBuffer cmd = CommandBufferHelpers.GetNativeCommandBuffer(context.cmd);
+        ComputeShader cs = data.computeShader;
+        int k = data.kernel;
+
+        if (data.settings.buildAccelerationStructure)
+        {
+            cmd.BuildRayTracingAccelerationStructure(data.voxAS);
+        }
+
+        cmd.SetRayTracingAccelerationStructure(cs, k, "g_AccelStruct", data.voxAS);
+        cmd.SetComputeBufferParam(cs, k, "g_bricks", data.brickPool);
+        cmd.SetComputeBufferParam(cs, k, "g_Instances", data.instanceTable);
+
+        // The static material tables cannot live in the trace kernel (see the compute shader),
+        // so they are copied into a buffer once, by a kernel small enough to carry them.
+        if (data.bakeMaterials)
+        {
+            for (int i = 0; i < data.bakeMaterialsKernels.Length; i++)
+            {
+                int bake = data.bakeMaterialsKernels[i];
+                cmd.SetComputeBufferParam(cs, bake, "g_MaterialsOut", data.materialTable);
+                cmd.DispatchCompute(cs, bake, CaelixRayQueryRenderer.MaterialTableEntries / 64, 1, 1);
+            }
+        }
+
+        cmd.SetComputeBufferParam(cs, k, "g_Materials", data.materialTable);
+
+        cmd.SetComputeTextureParam(cs, k, "DeterministicRadianceTarget", (RTHandle)data.DeterministicRadiance);
+        cmd.SetComputeTextureParam(cs, k, "DiffuseRadianceTarget", (RTHandle)data.DiffuseRadiance);
+        cmd.SetComputeTextureParam(cs, k, "SpecularRadianceTarget", (RTHandle)data.SpecularRadiance);
+        cmd.SetComputeTextureParam(cs, k, "AlbedoTarget", (RTHandle)data.Albedo);
+        cmd.SetComputeTextureParam(cs, k, "NormalTarget", (RTHandle)data.Normal);
+        cmd.SetComputeTextureParam(cs, k, "DepthTarget", (RTHandle)data.Depth);
+        cmd.SetComputeTextureParam(cs, k, "MotionVectorTarget", (RTHandle)data.MotionVector);
+        cmd.SetComputeTextureParam(cs, k, "g_CurrentDepthHistory", (RTHandle)data.CurrentDepthHistory);
+        cmd.SetComputeTextureParam(cs, k, "g_CurrentNormalHistory", (RTHandle)data.CurrentNormalHistory);
+
+        // The sky provider publishes its cubemap as a plain global, which render graph cannot track,
+        // so it is fetched directly here — same as the DXR body.
+        cmd.SetComputeTextureParam(cs, k, "g_Sky", ResolveSkyTexture());
+
+        if (data.blueNoiseTexture != null)
+        {
+            cmd.SetComputeTextureParam(cs, k, CaelixShaderIDs.BlueNoiseTexture, data.blueNoiseTexture);
+        }
+
+        cmd.SetComputeIntParam(cs, "g_FrameIndex", data.frameIndex);
+        cmd.SetComputeIntParam(cs, "g_ConvergenceStep", data.convergedFrames);
+        cmd.SetComputeIntParam(cs, "g_BounceCountOpaque", data.settings.bounceCountOpaque);
+        cmd.SetComputeIntParam(cs, "g_BounceCountTransparent", data.settings.bounceCountTransparent);
+        cmd.SetComputeIntParam(cs, "g_spp", data.settings.samplesPerPixel);
+        cmd.SetComputeIntParam(cs, "g_EnableSkySun", data.settings.enableSkySun ? 1 : 0);
+        cmd.SetComputeFloatParam(cs, "g_SkySunDiskRadius", data.settings.sunDiskRadiusRadians);
+        cmd.SetComputeFloatParam(cs, "g_SkySunFlareRadius", data.settings.sunFlareRadiusRadians);
+        cmd.SetComputeFloatParam(cs, "g_Zoom", data.zoom);
+        cmd.SetComputeFloatParam(cs, "g_AspectRatio", data.aspectRatio);
+        cmd.SetComputeVectorParam(cs, "g_Jitter", data.jitter);
+        cmd.SetComputeVectorParam(cs, "g_CameraWorldPosition", data.cameraWorldPosition);
+        cmd.SetComputeVectorParam(cs, "g_mainLightColor", data.mainLightColor);
+        cmd.SetComputeMatrixParam(cs, "g_CurrentWorldToCamera", data.worldToCamera);
+        cmd.SetComputeMatrixParam(cs, "g_CurrentCameraToWorld", data.cameraToWorld);
+        cmd.SetComputeMatrixParam(cs, "g_PrevWorldToCamera", data.previousWorldToCamera);
+
+        // Replaces DispatchRaysDimensions: the kernel needs the launch size both to flip the
+        // vertical axis and to discard the threads the 8x8 rounding adds.
+        cmd.SetComputeIntParams(cs, "g_LaunchDim", (int)data.width, (int)data.height);
+
+        cmd.DispatchCompute(cs, k, (int)((data.width + 7) / 8), (int)((data.height + 7) / 8), 1);
     }
 
     private static Texture ResolveSkyTexture()

@@ -41,6 +41,15 @@ public enum CaelixDebugView
     BudgetSurface = 14
 }
 
+/// <summary>Which GPU mechanism the G-buffer stage uses to trace the voxel scene. Serialized; keep values stable.</summary>
+public enum CaelixTraceBackend
+{
+    /// <summary>DXR pipeline: raygen + intersection + closest-hit through the shader table (<see cref="CaelixRenderer"/>).</summary>
+    DXR = 0,
+    /// <summary>Compute shader with inline ray queries against the same kind of RTAS (<see cref="Caelix.Rendering.RayQuery.CaelixRayQueryRenderer"/>).</summary>
+    InlineRayQuery = 1
+}
+
 /// <summary>
 /// Ray tracing parameters for the G-buffer stage. Built from the renderer feature's serialized
 /// fields once per camera and handed to the stage as an immutable snapshot.

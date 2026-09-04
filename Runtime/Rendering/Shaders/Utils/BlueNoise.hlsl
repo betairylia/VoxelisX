@@ -1,6 +1,12 @@
 ﻿#ifndef CAELIX_BLUE_NOISE
 #define CAELIX_BLUE_NOISE
 
+// Launch index of the current pixel. DXR stages read it from the dispatch intrinsic; the inline
+// ray query compute kernel defines this macro to its own thread index before including this file.
+#ifndef CAELIX_LAUNCH_INDEX
+#define CAELIX_LAUNCH_INDEX (DispatchRaysIndex().xy)
+#endif
+
 // https://developer.nvidia.com/blog/rendering-in-real-time-with-spatiotemporal-blue-noise-textures-part-1/
 // Texture2D<uint2> stbnTexture;
 Texture2D<half2> stbnTexture;
@@ -23,7 +29,7 @@ float2 SampleBlueNoise(inout uint state)
     // temporal property holds for a fixed pixel position across the 64 slices, and a per-frame
     // shift would walk each pixel across the tile and hand it 64 unrelated values instead.
     float2 tileShift = MartinR2(draw + 1u);
-    int2 pos = (DispatchRaysIndex().xy + int2(tileShift * 128)) & 127;
+    int2 pos = (int2(CAELIX_LAUNCH_INDEX) + int2(tileShift * 128)) & 127;
     pos.y += (g_FrameIndex & 63) * 128;
 
     return stbnTexture[pos];

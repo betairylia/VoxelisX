@@ -1,0 +1,114 @@
+// Inline ray query backend of the Caelix path tracer. Same path-tracing code as
+// Full_raygen.raytrace (CaelixPathTraceCommon.hlsl); only the ray dispatch differs: one compute
+// thread per pixel, TraceRayInline against the hardware RTAS, and the brick DDA run inline on
+// every procedural candidate instead of in an intersection shader.
+
+#include "UnityRayQuery.cginc"
+
+#pragma kernel CaelixPathTraceKernel
+#pragma kernel CaelixBakeMaterialsAlbedo
+#pragma kernel CaelixBakeMaterialsEmission
+#pragma kernel CaelixBakeMaterialsScalars
+#pragma use_dxc
+// Int64 is required by the brick DDA, which loads the 64-bit micro-occupancy word in one go. If a
+// future editor reports Int64 as an unknown feature here, drop it from this line rather than
+// changing the DDA.
+#pragma require inlineraytracing Int64
+
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Packing.hlsl"
+#include "Assets/Caelix/VoxelMaterials.hlsl"
+
+// MATERIALS. VoxelMaterials.hlsl holds its tables as `static` arrays, i.e. ~150 KB of immediate
+// constant data. The DXR pipeline swallows that, but D3D12 refuses to create a COMPUTE pipeline
+// state for the full trace kernel with the tables in it ("could not create a compute pipeline
+// state object [8007000e]" = E_OUTOFMEMORY, logged only in the Editor log, and the dispatch is
+// silently skipped). So the trace kernel never touches the static tables: it reads materials from
+// g_Materials, which the CaelixBakeMaterials* kernels below fill once from those same tables, one
+// entry per 16-bit block ID, so GET_MATERIAL keeps its exact semantics (face bits included).
+//
+// The bake is split by FIELD on purpose. A kernel that copies the whole struct keeps the whole
+// 181 KB array of structs as one immediate constant and fails the same way; a kernel that reads
+// single fields lets DXC scalar-replace the table into per-field arrays, each under the 64 KB
+// (4096 float4) immediate-constant limit, which is why the path tracer's own GET_MATERIAL reads
+// survive in the DXR pipeline and in the probe kernels.
+#define CAELIX_MATERIAL_TABLE_SIZE 65536u
+StructuredBuffer<VoxelMaterial> g_Materials;
+RWStructuredBuffer<VoxelMaterial> g_MaterialsOut;
+#undef GET_MATERIAL
+#define GET_MATERIAL(id) g_Materials[uint(id) & 0xFFFFu]
+
+#include "../RayPayload.hlsl"
+#include "../Utils/Utils.hlsl"
+
+#define CAELIX_INLINE_RAY_QUERY 1
+
+// Per-thread launch index, assigned at kernel entry; everything that used DispatchRaysIndex reads it.
+static uint2 _CaelixLaunchIndex;
+uint2 g_LaunchDim;
+#define CAELIX_LAUNCH_INDEX _CaelixLaunchIndex
+#define CAELIX_LAUNCH_DIM g_LaunchDim
+
+#include "../Utils/BlueNoise.hlsl"
+#include "../def/CaelixRayPayloadUtils.hlsl"
+#include "../def/CaelixUtils.hlsl"
+
+RaytracingAccelerationStructure g_AccelStruct;
+
+#include "CaelixRayQueryTrace.hlsl"
+
+#define CAELIX_TRACE_RAY(ray, payload) CaelixRayQueryTrace(ray, payload)
+
+#include "../PathTrace_full/CaelixPathTraceCommon.hlsl"
+
+[numthreads(8, 8, 1)]
+void CaelixPathTraceKernel(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id.xy >= g_LaunchDim))
+    {
+        return;
+    }
+
+    _CaelixLaunchIndex = id.xy;
+    CaelixPathTraceMain();
+}
+
+// The three bake kernels copy the static material tables into g_MaterialsOut, indexed by the raw
+// 16-bit block ID, one group of fields each (see the note on MATERIALS above). The G-buffer stage
+// dispatches all three once per material buffer, CAELIX_MATERIAL_TABLE_SIZE / 64 groups each.
+[numthreads(64, 1, 1)]
+void CaelixBakeMaterialsAlbedo(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= CAELIX_MATERIAL_TABLE_SIZE)
+    {
+        return;
+    }
+
+    g_MaterialsOut[id.x].albedo = GetMaterial(int(id.x)).albedo;
+}
+
+[numthreads(64, 1, 1)]
+void CaelixBakeMaterialsEmission(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= CAELIX_MATERIAL_TABLE_SIZE)
+    {
+        return;
+    }
+
+    g_MaterialsOut[id.x].emission = GetMaterial(int(id.x)).emission;
+}
+
+[numthreads(64, 1, 1)]
+void CaelixBakeMaterialsScalars(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= CAELIX_MATERIAL_TABLE_SIZE)
+    {
+        return;
+    }
+
+    VoxelMaterial material = GetMaterial(int(id.x));
+    g_MaterialsOut[id.x].smoothness = material.smoothness;
+    g_MaterialsOut[id.x].metallic = material.metallic;
+    g_MaterialsOut[id.x].IOR = material.IOR;
+    g_MaterialsOut[id.x].extinction = material.extinction;
+}

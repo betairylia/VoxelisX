@@ -287,11 +287,10 @@ inline int3 VRTStep(int3 cell, float3 tStart, float3 origin, float3 rayDir, half
     return int3(floor(currPos));
 }
 
-inline float CaelixTraceBrickRay(float3 entryPositionInBrick, float3 rayDir, float entryT, uint entryNormal_coarseOccupancy, out AttributeData attrib)
+inline float CaelixTraceBrickRay(uint brickBase, float3 entryPositionInBrick, float3 rayDir, float entryT, uint entryNormal_coarseOccupancy, out AttributeData attrib)
 {
     uint64_t occ = 0ull;
-    
-    uint brickBase = CaelixBrickBase(PrimitiveIndex());
+
     half3 invDir = CaelixBrickRaySafeInvDir(rayDir);
     float3 tStart = (CaelixBrickRayBoundaryOffset(rayDir) - entryPositionInBrick) * invDir;
     float3 origin = clamp(entryPositionInBrick, 0.0f, float3(SIZE_IN_BLOCKS, SIZE_IN_BLOCKS, SIZE_IN_BLOCKS) - BRICK_RAY_GRID_EPSILON);
@@ -333,7 +332,7 @@ inline float CaelixTraceBrickRay(float3 entryPositionInBrick, float3 rayDir, flo
         uint microBit = CaelixMicroOccupancyBit(microCell);
         if (CaelixIsMicroOccupied(occ, microBit))
         {
-            int blockID = CaelixReadBrick(CaelixBrickBase(PrimitiveIndex()) + BRICK_BLOCK_DATA_OFFSET, cell);
+            int blockID = CaelixReadBrick(brickBase + BRICK_BLOCK_DATA_OFFSET, cell);
             float T;
             uint normalFlags = CaelixBrickRayNormalFlags(rayStep, prevCell, tStart, rayDir, invDir, (entryNormal_coarseOccupancy >> 26), T);
             bool shouldTerminate = CaelixShouldTerminateBrickRay(
@@ -355,12 +354,16 @@ inline float CaelixTraceBrickRay(float3 entryPositionInBrick, float3 rayDir, flo
     return 0;
 }
 
-inline float CaelixTraceBrickPrimitive(out AttributeData attrib)
+// Ray-vs-brick intersection, with every input passed in rather than read from a DXR intrinsic, so
+// the inline ray query kernel can run it on each procedural candidate. `brickBase` is the word
+// offset of the brick record in g_bricks (a per-sector buffer in the DXR path, the global brick
+// pool in the ray query path).
+inline float CaelixTraceBrickPrimitiveCore(uint brickBase, float3 objectRayOrigin, float3 objectRayDir, float tCurrent, out AttributeData attrib)
 {
     // attrib.matID_faceNormal = ((0x8001 & 0xFFFF) << 16) + (0b010000 >> 26);
     // return 10;
 
-    uint2 brickInfo = g_bricks.Load2(CaelixBrickBase(PrimitiveIndex()) << 2);
+    uint2 brickInfo = g_bricks.Load2(brickBase << 2);
 
     // Empty brick
     // if(CaelixGetCoarseOccupancy(brickInfo.x) == 0)
@@ -389,10 +392,10 @@ inline float CaelixTraceBrickPrimitive(out AttributeData attrib)
     float3 aabbMin = brickOrigin + tightMin;
     float3 aabbMax = brickOrigin + tightMax;
 
-    float3 rayDir = ObjectRayDirection();
+    float3 rayDir = objectRayDir;
     half3 invDir = 1.0h / rayDir;
-    float3 t0 = (aabbMin - ObjectRayOrigin()) * invDir;
-    float3 t1 = (aabbMax - ObjectRayOrigin()) * invDir;
+    float3 t0 = (aabbMin - objectRayOrigin) * invDir;
+    float3 t1 = (aabbMax - objectRayOrigin) * invDir;
 
     float3 tmin = min(t0, t1);
     float3 tmax = max(t0, t1);
@@ -400,14 +403,14 @@ inline float CaelixTraceBrickPrimitive(out AttributeData attrib)
     float largestTmin = max(max(tmin.x, tmin.y), tmin.z);
     float smallestTmax = min(min(tmax.x, tmax.y), tmax.z);
 
-    if (largestTmin > smallestTmax || smallestTmax < 0 || largestTmin > RayTCurrent())
+    if (largestTmin > smallestTmax || smallestTmax < 0 || largestTmin > tCurrent)
     {
         attrib.matID_faceNormal = 0;
         return 0;
     }
-    
+
     float t = max(0, largestTmin);
-    float3 entryPositionInBrick = ObjectRayOrigin() + rayDir * t - brickOrigin;
+    float3 entryPositionInBrick = objectRayOrigin + rayDir * t - brickOrigin;
 
     // TODO: Do coarse bit (2x2x2) early reject here?
     // CaelixGetCoarseOccupancy(brickInfo.x)
@@ -428,9 +431,18 @@ inline float CaelixTraceBrickPrimitive(out AttributeData attrib)
     }
 
     CaelixBrickHit result = CaelixMakeBrickMiss();
-    return CaelixTraceBrickRay(entryPositionInBrick, rayDir, t,
+    return CaelixTraceBrickRay(brickBase, entryPositionInBrick, rayDir, t,
         (normalFlags << 26)  | CaelixGetCoarseOccupancy(brickInfo.x),
         attrib);
 }
+
+#ifndef CAELIX_INLINE_RAY_QUERY
+// DXR intersection-shader entry: the brick is the current procedural primitive of the current instance.
+inline float CaelixTraceBrickPrimitive(out AttributeData attrib)
+{
+    return CaelixTraceBrickPrimitiveCore(
+        CaelixBrickBase(PrimitiveIndex()), ObjectRayOrigin(), ObjectRayDirection(), RayTCurrent(), attrib);
+}
+#endif
 
 #endif

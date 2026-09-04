@@ -9,6 +9,7 @@ using UnityEngine.SceneManagement;
 using Caelix.Client;
 using Caelix.Net;
 using Caelix.Rendering.Meshing;
+using Caelix.Rendering.RayQuery;
 using Caelix.Simulation;
 using Stopwatch = System.Diagnostics.Stopwatch;
 
@@ -53,6 +54,10 @@ namespace Caelix
 
         [SerializeField] protected VoxelRayCast rayCaster;
         [SerializeField] protected CaelixRenderer rayTracedRenderer;
+
+        [Tooltip("Inline ray query renderer. Enable at most one of the two ray-traced renderers.")]
+        [SerializeField] protected CaelixRayQueryRenderer rayQueryRenderer;
+
         [SerializeField] protected VoxelMeshRendererComponent meshingRenderer;
 
         // ---------------- SIMULATION ------------------
@@ -317,8 +322,10 @@ namespace Caelix
             long clientEnd = Stopwatch.GetTimestamp();
 
             bool usedRayTracing = rayTracedRenderer != null && rayTracedRenderer.enabled;
+            bool usedRayQuery = rayQueryRenderer != null && rayQueryRenderer.enabled;
             bool usedMeshing = meshingRenderer != null && meshingRenderer.enabled;
             if (usedRayTracing) rayTracedRenderer.Tick();
+            if (usedRayQuery) rayQueryRenderer.Tick();
             if (usedMeshing) meshingRenderer.Tick();
             long renderEnd = Stopwatch.GetTimestamp();
 
@@ -330,7 +337,7 @@ namespace Caelix
             LastTickTimings = new HostTimingStats
             {
                 IsCreated = true,
-                UsedRayTracing = usedRayTracing,
+                UsedRayTracing = usedRayTracing || usedRayQuery,
                 UsedMeshing = usedMeshing,
                 ServerTicks = serverTicks,
                 ServerMilliseconds = TicksToMilliseconds(serverElapsed),

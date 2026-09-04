@@ -36,7 +36,7 @@ namespace Caelix.Rendering
         /// Processes dirty bricks and updates AABB and brick data buffers.
         /// </summary>
         [BurstCompile]
-        struct GenerateSectorRenderDataJob : IJob
+        internal struct GenerateSectorRenderDataJob : IJob
         {
             /// <summary>
             /// The sector to generate render data from.
