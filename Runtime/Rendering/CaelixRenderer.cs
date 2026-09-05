@@ -344,6 +344,7 @@ public class CaelixRenderer : MonoBehaviour
     /// </remarks>
     public void Tick()
     {
+        SectorRenderer.sectorMaterial = brickMat;
         if (!EnsureSource())
         {
             return;

@@ -103,6 +103,79 @@ namespace Caelix.Tests
             return total;
         }
 
+        [Test]
+        public void RayRenderer_RemovesInstancesAndRebindsAfterWorldReplacement()
+        {
+            if (!SystemInfo.supportsRayTracing) Assert.Ignore("Ray tracing hardware is required.");
+            using var server = new CaelixServer();
+            var world = server.CreateWorld(CaelixWorldConfig.Default());
+            LocalChannel.CreatePair(out var serverEnd, out var clientEnd);
+            using var client = new CaelixClient(clientEnd, server.Types);
+            server.AddConnection(serverEnd);
+            var guid = new Guid128(11u, 22u, 33u, 44u);
+            world.CreateEntity(guid, RigidTransform.identity, isStatic: true);
+            world.SetBlock(guid, new int3(32), new Block(0x8001));
+            var material = new Material(Shader.Find("Caelix/BrickRTTest"));
+            var go = new GameObject("ray-lifecycle-test");
+            var renderer = go.AddComponent<CaelixRenderer>();
+            renderer.brickMat = material;
+            try
+            {
+                server.Step();
+                client.Receive();
+                renderer.SetSource(client.World);
+                client.PrepareRender();
+                renderer.Tick();
+                renderer.voxelScene.Build();
+                Assert.That(renderer.voxelScene.GetInstanceCount(), Is.EqualTo(1));
+                client.EndFrame();
+                world.GetEntity(guid).RemoveSectorAt(int3.zero);
+                server.Step();
+                client.Receive();
+                Assert.That(renderer.voxelScene.GetInstanceCount(), Is.Zero);
+
+                world.SetBlock(guid, new int3(48), new Block(0x8002));
+                server.Step();
+                client.Receive();
+                client.PrepareRender();
+                renderer.Tick();
+                renderer.voxelScene.Build();
+                Assert.That(renderer.voxelScene.GetInstanceCount(), Is.EqualTo(1));
+                server.RemoveWorld(world);
+                server.Step();
+                client.Receive();
+                Assert.That(renderer.Source, Is.Null);
+                Assert.That(renderer.voxelScene.GetInstanceCount(), Is.Zero);
+
+                world = server.CreateWorld(CaelixWorldConfig.Default());
+                world.CreateEntity(guid, RigidTransform.identity, isStatic: true);
+                world.SetBlock(guid, new int3(64), new Block(0x8003));
+                server.Step();
+                client.Receive();
+                renderer.SetSource(client.World);
+                client.PrepareRender();
+                renderer.Tick();
+                renderer.voxelScene.Build();
+                Assert.That(renderer.voxelScene.GetInstanceCount(), Is.EqualTo(1));
+                // Disabling and re-enabling must also upload a quiet, already-synchronized world.
+                renderer.enabled = false;
+                renderer.enabled = true;
+                renderer.SetSource(client.World);
+                client.EndFrame();
+                client.Receive();
+                client.PrepareRender();
+                renderer.Tick();
+                renderer.voxelScene.Build();
+                Assert.That(renderer.voxelScene.GetInstanceCount(), Is.EqualTo(1));
+            }
+            finally
+            {
+                Object.DestroyImmediate(go);
+                Object.DestroyImmediate(material);
+                Caelix.Rendering.SectorRenderer.sectorMaterial = null;
+            }
+        }
+
         [TestCase(DirtyFlags.BlockBrickAdded)]
         [TestCase(DirtyFlags.BlockBrickRemoved)]
         [TestCase(DirtyFlags.GeometryWithLocalNeighbor)]

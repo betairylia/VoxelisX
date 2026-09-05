@@ -43,6 +43,7 @@ namespace Caelix.Tests
             public readonly CaelixServer Server;
             public readonly CaelixWorld World;
             public readonly CaelixClient Client;
+            public LocalChannel FirstClientChannel { get; private set; }
 
             private readonly List<CaelixClient> clients = new();
 
@@ -60,6 +61,7 @@ namespace Caelix.Tests
             public CaelixClient AddClient()
             {
                 LocalChannel.CreatePair(out LocalChannel serverEnd, out LocalChannel clientEnd);
+                if (clients.Count == 0) FirstClientChannel = clientEnd;
                 var client = new CaelixClient(clientEnd, Server.Types);
                 Server.AddConnection(serverEnd);
                 clients.Add(client);
@@ -803,6 +805,205 @@ namespace Caelix.Tests
             return null;
         }
 
+        [Test]
+        public void SectorRemoval_InvalidatesSurvivingBoundaryWithoutCreatingSectors()
+        {
+            using var rig = new Rig();
+            rig.World.CreateEntity(EntityA, RigidTransform.identity, isStatic: true);
+            rig.World.SetBlock(EntityA, new int3(127, 32, 32), new Block(0x8001));
+            rig.World.SetBlock(EntityA, new int3(128, 32, 32), new Block(0x8001));
+            rig.Exchange();
+            rig.World.GetEntity(EntityA).RemoveSectorAt(new int3(1, 0, 0));
+            rig.Server.Step();
+            rig.Client.Receive();
+            rig.Client.PrepareRender();
+            rig.Client.World.TryGetView(EntityA, out EntityView view);
+            ref Sector neighbor = ref view.Data.sectors[int3.zero].Get();
+            Assert.That(neighbor.sectorRequireUpdateFlags & (ushort)DirtyFlags.GeometryWithLocalNeighbor,
+                Is.Not.Zero);
+            Assert.That(view.Data.sectors.Count, Is.EqualTo(rig.World.GetEntity(EntityA).sectors.Count));
+            Assert.That(view.Data.sectors.ContainsKey(new int3(1, 0, 0)), Is.False);
+        }
+
+        [Serializable]
+        private sealed class ScaleSample
+        {
+            public string stage;
+            public double elapsedSeconds;
+            public long privateBytes;
+            public long managedBytes;
+            public long unityAllocatedBytes;
+            public long queuedBytes;
+            public long peakQueuedBytes;
+            public long receivedBytes;
+            public long serverSectorBytes;
+            public long replicaSectorBytes;
+            public int entities;
+            public int sectors;
+            public long bricks;
+        }
+
+        [Serializable]
+        private sealed class ScaleReport
+        {
+            public string source;
+            public int systemMemoryMB;
+            public string processor;
+            public string gpu;
+            public List<ScaleSample> samples = new();
+        }
+
+        /// <summary>
+        /// Small by default. Set CAELIX_VALIDATION_SAVE to exercise a real save, or
+        /// CAELIX_VALIDATION_SECTORS for 4096 allocated bricks per synthetic sector.
+        /// CAELIX_VALIDATION_REPORT writes measured stages as JSON for manual scale runs.
+        /// </summary>
+        [Test]
+        public void ReplicationScale_LoadSyncDeltaAndReloadMaintainExactBlockStorage()
+        {
+            using var rig = new Rig();
+            string save = Environment.GetEnvironmentVariable("CAELIX_VALIDATION_SAVE");
+            int sectorCount = int.TryParse(Environment.GetEnvironmentVariable("CAELIX_VALIDATION_SECTORS"), out int n)
+                ? math.clamp(n, 1, 1024) : 2;
+            var report = new ScaleReport
+            {
+                source = string.IsNullOrEmpty(save) ? $"synthetic: {sectorCount} sectors" : System.IO.Path.GetFileName(save),
+                systemMemoryMB = SystemInfo.systemMemorySize,
+                processor = SystemInfo.processorType,
+                gpu = SystemInfo.graphicsDeviceName,
+            };
+            var timer = System.Diagnostics.Stopwatch.StartNew();
+            CaptureScaleSample(rig, report, "empty", timer.Elapsed.TotalSeconds);
+            if (!string.IsNullOrEmpty(save))
+            {
+                rig.World.Load(save);
+            }
+            else
+            {
+                rig.World.CreateEntity(EntityA, RigidTransform.identity, isStatic: true);
+                var data = rig.World.GetEntity(EntityA);
+                for (int s = 0; s < sectorCount; s++)
+                {
+                    int3 sectorPos = new int3(s * 2, 0, 0);
+                    data.AddEmptySectorAt(sectorPos);
+                    ref Sector sector = ref data.sectors[sectorPos].Get();
+                    for (int brick = 0; brick < Sector.BRICKS_IN_SECTOR; brick++)
+                    {
+                        int3 pos = Sector.ToBrickPos((short)brick) * Sector.SIZE_IN_BLOCKS + new int3(3);
+                        sector.SetBlock(pos.x, pos.y, pos.z, new Block(0x8001));
+                    }
+                }
+            }
+            CaptureScaleSample(rig, report, "loaded", timer.Elapsed.TotalSeconds);
+            rig.Server.Step();
+            CaptureScaleSample(rig, report, "sync-queued", timer.Elapsed.TotalSeconds);
+            rig.Client.Receive();
+            rig.Client.PrepareRender();
+            rig.Client.EndFrame();
+            AssertAllBlockStorageEqual(rig.World, rig.Client.World);
+            CaptureScaleSample(rig, report, "sync-applied", timer.Elapsed.TotalSeconds);
+
+            // Several server ticks can arrive before one client frame. Use a non-physics entity
+            // to make the edit workload independent of the saved world's moving bodies.
+            var editGuid = new Guid128(0xCAEFu, 0xFEEDu, 0xBAADu, 0x600Du);
+            rig.World.CreateEntity(editGuid, RigidTransform.identity, isStatic: true);
+            for (int tick = 0; tick < 4; tick++)
+            {
+                for (int b = 0; b < 1000; b++)
+                {
+                    int3 p = Sector.ToBrickPos((short)b) * Sector.SIZE_IN_BLOCKS + new int3(3);
+                    rig.World.SetBlock(editGuid, p, new Block((ushort)(0x8010 + tick)));
+                }
+                rig.Server.Step();
+            }
+            CaptureScaleSample(rig, report, "four-deltas-queued", timer.Elapsed.TotalSeconds);
+            rig.Client.Receive();
+            rig.Client.PrepareRender();
+            rig.Client.EndFrame();
+            AssertAllBlockStorageEqual(rig.World, rig.Client.World);
+            CaptureScaleSample(rig, report, "four-deltas-applied", timer.Elapsed.TotalSeconds);
+
+            if (!string.IsNullOrEmpty(save))
+            {
+                rig.World.Load(save);
+                rig.Server.Step();
+                CaptureScaleSample(rig, report, "reload-queued", timer.Elapsed.TotalSeconds);
+                rig.Client.Receive();
+                rig.Client.PrepareRender();
+                rig.Client.EndFrame();
+                AssertAllBlockStorageEqual(rig.World, rig.Client.World);
+                CaptureScaleSample(rig, report, "reload-applied", timer.Elapsed.TotalSeconds);
+            }
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            CaptureScaleSample(rig, report, "after-gc", timer.Elapsed.TotalSeconds);
+            string json = JsonUtility.ToJson(report, true);
+            TestContext.Out.WriteLine(json);
+            string output = Environment.GetEnvironmentVariable("CAELIX_VALIDATION_REPORT");
+            if (!string.IsNullOrEmpty(output)) System.IO.File.WriteAllText(output, json);
+        }
+
+        private static void CaptureScaleSample(Rig rig, ScaleReport report, string stage, double elapsed)
+        {
+            var sample = new ScaleSample
+            {
+                stage = stage,
+                elapsedSeconds = elapsed,
+                privateBytes = System.Diagnostics.Process.GetCurrentProcess().PrivateMemorySize64,
+                managedBytes = GC.GetTotalMemory(false),
+                unityAllocatedBytes = UnityEngine.Profiling.Profiler.GetTotalAllocatedMemoryLong(),
+                queuedBytes = rig.FirstClientChannel.PendingBytes,
+                peakQueuedBytes = rig.FirstClientChannel.PeakPendingBytes,
+                receivedBytes = rig.FirstClientChannel.TotalReceivedBytes,
+                entities = rig.World.EntityCount,
+            };
+            foreach (var entity in rig.World.Data.VoxelEntities)
+            foreach (var sector in entity.Value.sectors)
+            {
+                sample.sectors++;
+                sample.bricks += sector.Value.Get().NonEmptyBrickCount;
+                sample.serverSectorBytes += sector.Value.Get().MemoryUsage;
+            }
+            foreach (var world in rig.Client.Worlds)
+            foreach (var view in world.Views)
+            foreach (var sector in view.Data.sectors) sample.replicaSectorBytes += sector.Value.Get().MemoryUsage;
+            report.samples.Add(sample);
+        }
+
+        private static unsafe void AssertAllBlockStorageEqual(CaelixWorld server, ClientWorld replica)
+        {
+            Assert.That(replica.Views.Count, Is.EqualTo(server.EntityCount));
+            foreach (var entity in server.Data.VoxelEntities)
+            {
+                Assert.That(replica.TryGetView(entity.Key, out EntityView view), Is.True);
+                Assert.That(view.Data.sectors.Count, Is.EqualTo(entity.Value.sectors.Count));
+                foreach (var entry in entity.Value.sectors)
+                {
+                    Assert.That(view.Data.sectors.TryGetValue(entry.Key, out SectorHandle replicaSector), Is.True);
+                    ref Sector a = ref entry.Value.Get();
+                    ref Sector b = ref replicaSector.Get();
+                    for (int brick = 0; brick < Sector.BRICKS_IN_SECTOR; brick++)
+                    {
+                        short aid = a.brickMap.indices[brick], bid = b.brickMap.indices[brick];
+                        if ((aid == Sector.BRICKID_EMPTY) != (bid == Sector.BRICKID_EMPTY))
+                            Assert.Fail($"Allocation mismatch: {entity.Key}, {entry.Key}, brick {brick}");
+                        if (aid == Sector.BRICKID_EMPTY) continue;
+                        Block* ab = a.GetBrick<Block>(SectorSlotId.Block, aid);
+                        Block* bb = b.GetBrick<Block>(SectorSlotId.Block, bid);
+                        if (ab == null || bb == null)
+                        {
+                            if (ab != bb) Assert.Fail("Block slot presence differs");
+                            continue;
+                        }
+                        if (Unity.Collections.LowLevel.Unsafe.UnsafeUtility.MemCmp(ab, bb,
+                            Sector.BLOCKS_IN_BRICK * sizeof(Block)) != 0)
+                            Assert.Fail($"Block mismatch: {entity.Key}, {entry.Key}, brick {brick}");
+                    }
+                }
+            }
+        }
+
         private static void AssertReplicaMatchesServer(Rig rig, CaelixClient client)
         {
             Assert.That(client.World.TryGetView(EntityA, out EntityView view), Is.True);
@@ -835,6 +1036,93 @@ namespace Caelix.Tests
                     }
                 }
             }
+        }
+    }
+
+    public class HostIntegrationTests
+    {
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator PausedHost_QueriesRunAtZeroTimeScaleAndAuthoredViewsSurviveReload()
+        {
+            UnityEditor.SceneManagement.EditorSceneManager.NewScene(
+                UnityEditor.SceneManagement.NewSceneSetup.EmptyScene,
+                UnityEditor.SceneManagement.NewSceneMode.Single);
+            yield return new UnityEngine.TestTools.EnterPlayMode();
+            float oldScale = Time.timeScale;
+            float oldFixed = Time.fixedDeltaTime;
+            var root = new GameObject("host-integration-test");
+            string save = System.IO.Path.Combine(Application.temporaryCachePath,
+                "host-integration-" + System.Guid.NewGuid() + ".cxw");
+            try
+            {
+                Time.timeScale = 0;
+                var host = root.AddComponent<CaelixHost>();
+                var authoredObject = new GameObject("authored-entity");
+                authoredObject.transform.SetParent(root.transform);
+                var authored = authoredObject.AddComponent<VoxelEntity>();
+                var guid = authored.PersistentGuid;
+                int3 p = new int3(32);
+                authored.SetBlock(p, new Block(0x8001));
+                host.Step();
+                yield return null;
+                yield return null;
+                Assert.That(authored.View, Is.Not.Null);
+                Assert.That(authored.View.Component, Is.SameAs(authored));
+                host.Save(save);
+
+                for (int cycle = 0; cycle < 3; cycle++)
+                {
+                    uint tick = host.Server.TickIndex;
+                    VoxelQueryReply reply = null;
+                    host.Client.SetBlock(guid, p, new Block(0x8002));
+                    host.Client.QueryVoxel(guid, p, Sector.DefaultReplicatedSlotMask, r => reply = r);
+                    host.Client.SetBlock(guid, new int3(256), new Block(0x8003));
+                    for (int frame = 0; frame < 10 && reply == null; frame++) yield return null;
+                    Assert.That(reply, Is.Not.Null, "Host.Update must service queries without FixedUpdate");
+                    Assert.That(reply.TryGetSlot(SectorSlotId.Block, out Block queried), Is.True);
+                    Assert.That(queried, Is.EqualTo(new Block(0x8001)));
+                    Assert.That(host.Server.TickIndex, Is.EqualTo(tick));
+                    Assert.That(host.Server.Connections[0].Channel.PendingCount, Is.EqualTo(2));
+                    Assert.That(authored.GetBlock(p), Is.EqualTo(new Block(0x8001)));
+                    host.Step();
+                    yield return null;
+                    Assert.That(host.Server.TickIndex, Is.EqualTo(tick + 1));
+                    Assert.That(authored.GetBlock(p), Is.EqualTo(new Block(0x8002)));
+                    Assert.That(authored.View.Data.GetBlock(new int3(256)), Is.EqualTo(new Block(0x8003)));
+                    host.Load(save);
+                    host.Step();
+                    yield return null;
+                    Assert.That(authored.View.Component, Is.SameAs(authored));
+                    Assert.That(authored.View.Data.GetBlock(p), Is.EqualTo(new Block(0x8001)));
+                    Assert.That(authored.View.Data.GetBlock(new int3(256)).isEmpty, Is.True);
+                }
+
+                var oldWorld = host.World;
+                host.Server.RemoveWorld(oldWorld);
+                var replacement = host.Server.CreateWorld(CaelixWorldConfig.Default());
+                replacement.CreateEntity(guid, RigidTransform.identity, isStatic: true);
+                replacement.SetBlock(guid, p, new Block(0x8004));
+                host.Step();
+                yield return null;
+                Assert.That(authored.ServerWorld, Is.SameAs(replacement));
+                Assert.That(authored.HasServerData, Is.True);
+                Assert.That(authored.View.Component, Is.SameAs(authored));
+                authored.SetBlock(p, new Block(0x8005));
+                Assert.That(replacement.GetBlock(guid, p), Is.EqualTo(new Block(0x8005)));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+                Time.timeScale = oldScale;
+                Time.fixedDeltaTime = oldFixed;
+                if (System.IO.File.Exists(save)) System.IO.File.Delete(save);
+            }
+        }
+
+        [UnityEngine.TestTools.UnityTearDown]
+        public System.Collections.IEnumerator LeavePlayMode()
+        {
+            if (Application.isPlaying) yield return new UnityEngine.TestTools.ExitPlayMode();
         }
     }
 }

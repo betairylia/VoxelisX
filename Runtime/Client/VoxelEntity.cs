@@ -290,6 +290,8 @@ namespace Caelix
         internal void BindView(EntityView boundView)
         {
             view = boundView;
+            // The same authored component may rebind after its world was replaced.
+            serverWorld = resolvedHost?.Server?.FindWorld(boundView.WorldId);
         }
 
         internal void UnbindView()

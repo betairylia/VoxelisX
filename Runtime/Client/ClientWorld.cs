@@ -115,7 +115,7 @@ namespace Caelix.Client
                 isProtected = message.IsProtected != 0,
             };
 
-            var view = new EntityView(message.Guid, data)
+            var view = new EntityView(message.Guid, data, Id)
             {
                 HasBody = message.HasBody != 0,
                 // A born-static body settles its motion vectors on its first frame.
@@ -249,6 +249,27 @@ namespace Caelix.Client
             if (!view.Data.sectors.ContainsKey(message.SectorPos)) return;
             SectorRemoving?.Invoke(view, message.SectorPos);
             view.Data.RemoveSectorAt(message.SectorPos);
+            InvalidateRemovedSectorBoundary(view, message.SectorPos);
+        }
+
+        private static unsafe void InvalidateRemovedSectorBoundary(EntityView view, int3 removedPos)
+        {
+            // Surviving face, edge and corner neighbors may have culled geometry against the
+            // removed storage. Schedule their boundary bricks directly; this creates no topology.
+            foreach (var entry in view.Data.sectors)
+            {
+                int3 delta = removedPos - entry.Key;
+                if (math.any(math.abs(delta) > 1)) continue;
+                ref Sector sector = ref entry.Value.Get();
+                for (int i = 0; i < Sector.BRICKS_IN_SECTOR; i++)
+                {
+                    if (sector.brickMap.indices[i] == Sector.BRICKID_EMPTY) continue;
+                    int3 p = Sector.ToBrickPos((short)i);
+                    if (math.any((delta < 0) & (p != 0)) ||
+                        math.any((delta > 0) & (p != Sector.SIZE_IN_BRICKS - 1))) continue;
+                    sector.MarkBrickRequireUpdate(i, DirtyFlags.GeometryWithLocalNeighbor);
+                }
+            }
         }
 
         internal void OnBrickBatch(in BrickBatchHeader header, ref NetMessageReader reader)

@@ -381,7 +381,8 @@ namespace Caelix.Rendering
         {
             if (shouldRemove)
             {
-                AS.RemoveInstance(sectorASHandle);
+                if (hasRenderable) AS.RemoveInstance(sectorASHandle);
+                hasRenderable = false;
                 // Debug.Log("Removed sector");
                 isDirty = false;
                 Dispose();
@@ -515,7 +516,8 @@ namespace Caelix.Rendering
         /// </remarks>
         public void RenderEmitJob(SectorHandle sector, SectorNeighborHandles neighborHandle)
         {
-            if (shouldRemove || sector.IsRendererEmpty || (!sector.IsRendererRequireUpdate))
+            bool initialUpload = !HostBufferInitialized;
+            if (shouldRemove || sector.IsRendererEmpty || (!initialUpload && !sector.IsRendererRequireUpdate))
             {
                 return;
             }
@@ -525,6 +527,7 @@ namespace Caelix.Rendering
             // Job generating renderer buffers
             rendererJob = new GenerateSectorRenderDataJob()
             {
+                forceFullUpload = initialUpload,
                 sectorHandle = sector,
                 neighbors = neighborHandle,
 #if !CAELIX_RENDER_DISABLE_CULLING

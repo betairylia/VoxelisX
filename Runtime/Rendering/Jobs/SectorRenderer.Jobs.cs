@@ -42,6 +42,7 @@ namespace Caelix.Rendering
             /// The sector to generate render data from.
             /// </summary>
             public SectorHandle sectorHandle;
+            public bool forceFullUpload;
 
             public SectorNeighborHandles neighbors;
 #if !CAELIX_RENDER_DISABLE_CULLING
@@ -83,7 +84,7 @@ namespace Caelix.Rendering
                     for (int brickIdxAbs = 0; brickIdxAbs < Sector.BRICKS_IN_SECTOR; brickIdxAbs++)
                     {
                         // Check require-update flags populated by dirty propagation.
-                        bool isAdded = (sector.brickRequireUpdateFlags[brickIdxAbs] & (ushort)DirtyFlags.BlockBrickAdded) !=
+                        bool isAdded = forceFullUpload || (sector.brickRequireUpdateFlags[brickIdxAbs] & (ushort)DirtyFlags.BlockBrickAdded) !=
                                        0;
                         bool isRemoved =
                             (sector.brickRequireUpdateFlags[brickIdxAbs] & (ushort)DirtyFlags.BlockBrickRemoved) !=
