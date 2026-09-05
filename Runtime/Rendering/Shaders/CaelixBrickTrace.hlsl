@@ -109,8 +109,8 @@ inline half3 UnpackObjectNormal(uint normalFlag)
 }
 
 // Brick record loads. The DXR hit group reads its per-instance g_bricks directly; the inline ray
-// query kernel routes these through a page switch (see RayQuery/CaelixRayQueryTrace.hlsl) and
-// defines all three before including this file.
+// query kernel, and the DXR hit group in brick pool mode, route these through a page switch
+// (see CaelixBrickPages.hlsl) and define all three before including this file.
 #ifndef CAELIX_BRICKS_LOAD
 // StructuredBuffer<uint> g_bricks;
 ByteAddressBuffer g_bricks;
@@ -446,11 +446,23 @@ inline float CaelixTraceBrickPrimitiveCore(uint brickBase, float3 objectRayOrigi
 }
 
 #ifndef CAELIX_INLINE_RAY_QUERY
+#ifdef CAELIX_BRICK_POOL
+// Pool storage: g_bricks is bound per instance to the POOL PAGE holding this sector, and the
+// sector's first brick sits _BrickBase words into it. The page is selected on the CPU by binding
+// the right buffer, not by a switch in the shader: a 4-way buffer switch inside the intersection
+// shader measured ~40% slower than a direct per-instance binding on the 8K StressTest scene.
+uint _BrickBase;
+#endif
+
 // DXR intersection-shader entry: the brick is the current procedural primitive of the current instance.
 inline float CaelixTraceBrickPrimitive(out AttributeData attrib)
 {
-    return CaelixTraceBrickPrimitiveCore(
-        CaelixBrickBase(PrimitiveIndex()), ObjectRayOrigin(), ObjectRayDirection(), RayTCurrent(), attrib);
+#ifdef CAELIX_BRICK_POOL
+    uint brickBase = _BrickBase + CaelixBrickBase(PrimitiveIndex());
+#else
+    uint brickBase = CaelixBrickBase(PrimitiveIndex());
+#endif
+    return CaelixTraceBrickPrimitiveCore(brickBase, ObjectRayOrigin(), ObjectRayDirection(), RayTCurrent(), attrib);
 }
 #endif
 

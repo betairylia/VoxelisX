@@ -20,11 +20,16 @@ Shader "Caelix/BrickRTTest"
             #pragma enable_ray_tracing_shader_debug_symbols
             #pragma target 6.6
             #pragma use_dxc
+            // Brick storage: off = one buffer per sector bound through the property block;
+            // on = the shared CaelixBrickPool, g_bricks bound per instance to the page holding the sector, offset by _BrickBase.
+            // CaelixRenderer enables the keyword on a private material instance in pool mode.
+            #pragma multi_compile_local _ CAELIX_BRICK_POOL
 
             #include "RayPayload.hlsl"
             #include "Utils/Utils.hlsl"
             #include "Assets/Caelix/VoxelMaterials.hlsl"
             #include "Utils/BlueNoise.hlsl"
+
 
             #include "CaelixBrickTrace.hlsl"
             

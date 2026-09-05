@@ -21,9 +21,9 @@ namespace Caelix.Rendering.RayQuery
     /// one brick record is <see cref="SectorRenderer.BRICK_DATA_LENGTH"/> words = 1096 bytes, so a
     /// large streamed scene (millions of live bricks) does not fit a single buffer. The pool
     /// therefore owns several, each capped at <see cref="PageCapacityLimitBricks"/>, and every
-    /// instance record names the page its sector's bricks live in. The shader picks the page with a
-    /// switch over four named buffers, so <see cref="MaxPages"/> must match
-    /// <c>CAELIX_BRICK_PAGES</c> in <c>RayQuery/CaelixRayQueryTrace.hlsl</c>.
+    /// sector names the page its bricks live in. The shader picks the page with a switch over four
+    /// named buffers, so <see cref="MaxPages"/> must match <c>CAELIX_BRICK_PAGES</c> in
+    /// <c>Shaders/CaelixBrickPages.hlsl</c>.
     /// </para>
     /// <para>
     /// <b>Why compaction is free.</b> Sectors own power-of-two-sized ranges (see
@@ -44,9 +44,27 @@ namespace Caelix.Rendering.RayQuery
     {
         /// <summary>
         /// Number of pages the shader can select between. Must match <c>CAELIX_BRICK_PAGES</c> in
-        /// <c>RayQuery/CaelixRayQueryTrace.hlsl</c>.
+        /// <c>Shaders/CaelixBrickPages.hlsl</c>.
         /// </summary>
-        public const int MaxPages = 4;
+        public const int MaxPages = 32;
+
+        /// <summary>
+        /// Pages the inline ray query kernel can address: it selects the page with a switch over
+        /// that many named buffers, so it must match <c>CAELIX_BRICK_PAGES</c> in
+        /// <c>Shaders/CaelixBrickPages.hlsl</c>. The DXR hit group binds its page per instance and
+        /// can use every page up to <see cref="MaxPages"/>.
+        /// </summary>
+        public const int MaxNamedPages = 4;
+
+        /// <summary>
+        /// Page limit for the DXR pipeline path. A hit group reads <c>g_bricks</c> through a buffer
+        /// VIEW from its shader record, and D3D12 caps a buffer view at 2^27 elements, 512 MB for a
+        /// raw buffer (D3D12_REQ_BUFFER_RESOURCE_TEXEL_COUNT_2_TO_EXP). Every brick past that mark
+        /// in a larger page reads as zero, i.e. as empty space. 2^18 bricks is 287 MB. The compute
+        /// kernel binds its pages as root descriptors and has no such limit, hence the larger
+        /// <see cref="DefaultPageCapacityLimitBricks"/>.
+        /// </summary>
+        public const int DefaultDxrPageCapacityLimitBricks = 1 << 18;
 
         /// <summary>Default cap on one page, in bricks: 2^21 records = about 2.3 GB.</summary>
         public const int DefaultPageCapacityLimitBricks = 1 << 21;

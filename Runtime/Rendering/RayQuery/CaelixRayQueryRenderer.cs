@@ -53,6 +53,7 @@ namespace Caelix.Rendering.RayQuery
         public int poolCapacityBricks;
 
         private ClientWorld source;
+        private bool warnedTooManyPages;
 
         /// <summary>Maps (view, sectorPos) → renderer, so render state stays separate from entity data.</summary>
         private readonly Dictionary<(EntityView entity, int3 sectorPos), RayQuerySectorRenderer> sectorRenderers = new();
@@ -339,6 +340,14 @@ namespace Caelix.Rendering.RayQuery
             Instances.Flush();
 
             poolPages = Pool.PageCount;
+            if (Pool.PageCount > CaelixBrickPool.MaxNamedPages && !warnedTooManyPages)
+            {
+                // The kernel switches over MaxNamedPages named buffers; anything past that is invisible to it.
+                warnedTooManyPages = true;
+                Debug.LogError(
+                    $"CaelixRayQueryRenderer: the brick pool opened {Pool.PageCount} pages but the kernel " +
+                    $"addresses only {CaelixBrickPool.MaxNamedPages}. Raise pageCapacityLimitBricks.", this);
+            }
             poolLiveBricks = Pool.TotalLiveBricks;
             poolCapacityBricks = Pool.TotalCapacityBricks;
         }

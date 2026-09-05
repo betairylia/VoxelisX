@@ -57,6 +57,33 @@ sector's pool range (which can grow and compact a page), pass 2b uploads bricks 
 acceleration structure. Doing both in one loop would upload into a buffer a later sector then
 replaces.
 
+## DXR on the pool
+
+The two backends differ in two independent ways: the dispatch model (shader table vs. one compute
+kernel) and the brick storage (a buffer per sector vs. the shared pool). `CaelixRenderer.brickStorage`
+separates them: set it to `SharedPool` and the DXR path stores its bricks in the same
+`CaelixBrickPool`, so a DXR-vs-ray-query comparison measures only the dispatch model. `PerSector` is
+the default and is unchanged.
+
+In pool mode `CaelixRenderer` runs a private instance of `brickMat` with the `CAELIX_BRICK_POOL`
+keyword enabled (the asset on disk is never touched). There is no page switch in the hit group: the
+DXR path has a per-instance binding anyway, so each sector's property block binds `g_bricks` to the
+POOL PAGE holding the sector and carries `_BrickBase`, the word offset of its first brick, which the
+intersection shader adds to `CaelixBrickBase(PrimitiveIndex())`. A sector whose range moves
+republishes that property block without rebuilding its RTAS instance, exactly as the ray query path
+republishes its instance record. (A 4-way page switch inside the intersection shader was tried
+first and measured no faster than a direct binding.)
+
+**Page size matters here.** The hit group reads `g_bricks` through a buffer VIEW from its shader
+record, and D3D12 caps a buffer view at 2^27 elements: 512 MB for a raw buffer. Every brick past
+that mark in a larger page reads as zero, i.e. as empty space, which shows up as sky leaking
+through walls and, because the rays then travel further, as a slower frame. The compute kernel
+binds its pages as root descriptors and is not affected. So `CaelixRenderer.pageCapacityLimitBricks`
+defaults to 2^18 bricks (287 MB, `CaelixBrickPool.DefaultDxrPageCapacityLimitBricks`) while the ray
+query renderer keeps 2^21. The pool allows `MaxPages` (32) pages; only the compute kernel is limited
+to the `MaxNamedPages` (4) it can switch over, and `CaelixRayQueryRenderer` logs an error when the
+pool opens more.
+
 ## Readiness
 
 `CaelixGBufferPass.IsReady` demands `CaelixRayQueryRenderer.HasResources` for this backend. The

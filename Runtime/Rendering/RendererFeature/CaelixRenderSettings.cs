@@ -51,6 +51,30 @@ public enum CaelixTraceBackend
 }
 
 /// <summary>
+/// Where <see cref="CaelixRenderer"/> keeps its brick records. Serialized; keep values stable.
+/// </summary>
+/// <remarks>
+/// The two backends of <see cref="CaelixTraceBackend"/> differ in two independent ways: the dispatch
+/// model and the brick storage. This setting exists so the DXR backend can be run on the ray query
+/// backend's storage, which leaves the dispatch model as the only difference between them.
+/// </remarks>
+public enum CaelixBrickStorage
+{
+    /// <summary>
+    /// One <c>g_bricks</c> buffer per sector, bound through the hit group's per-instance property
+    /// block. The default, and the only mode the DXR path had before.
+    /// </summary>
+    PerSector = 0,
+
+    /// <summary>
+    /// The shared <see cref="Caelix.Rendering.RayQuery.CaelixBrickPool"/>, exactly as the inline ray
+    /// query backend uses it: the pages are bound globally and each instance publishes the word
+    /// offset and page of its own range. Enables the <c>CAELIX_BRICK_POOL</c> shader keyword.
+    /// </summary>
+    SharedPool = 1
+}
+
+/// <summary>
 /// Ray tracing parameters for the G-buffer stage. Built from the renderer feature's serialized
 /// fields once per camera and handed to the stage as an immutable snapshot.
 /// </summary>

@@ -82,8 +82,10 @@ public class CaelixGBufferPass : ScriptableRenderPass
         /// <summary>One VoxelMaterial per 16-bit block ID, bound as <c>g_Materials</c>. Ray query backend only.</summary>
         internal GraphicsBuffer materialTable;
         /// <summary>
-        /// The brick pool's pages, bound as <c>g_bricks0..3</c>. Ray query backend only. Always
-        /// <see cref="CaelixBrickPool.MaxPages"/> long, and every entry is a real buffer: the kernel
+        /// The brick pool's pages, bound as <c>g_bricks0..3</c>. Null unless a pool is in use: the
+        /// ray query backend always, the DXR backend only in
+        /// <see cref="CaelixBrickStorage.SharedPool"/> storage. Always
+        /// <see cref="CaelixBrickPool.MaxNamedPages"/> long, and every entry is a real buffer: the shader
         /// declares all four and Unity logs an error every frame for any it never sees bound.
         /// </summary>
         internal GraphicsBuffer[] brickPages;
@@ -98,7 +100,7 @@ public class CaelixGBufferPass : ScriptableRenderPass
     /// Scratch for <see cref="PassData.brickPages"/>, owned by this pass instance. The page buffers
     /// only change between frames, so the array is refilled at record time rather than reallocated.
     /// </summary>
-    private readonly GraphicsBuffer[] brickPages = new GraphicsBuffer[CaelixBrickPool.MaxPages];
+    private readonly GraphicsBuffer[] brickPages = new GraphicsBuffer[CaelixBrickPool.MaxNamedPages];
 
     /// <summary>
     /// Binds the DXR scene renderer, tracing resources and this frame's settings.
@@ -306,11 +308,14 @@ public class CaelixGBufferPass : ScriptableRenderPass
 
     /// <summary>
     /// Refills <see cref="brickPages"/> with the pool's page buffers, or returns null when there is
-    /// no pool (the DXR backend, or a renderer that released its resources between record and now).
+    /// no pool to bind by name (the DXR backend, or a renderer that released its resources between
+    /// record and now).
     /// </summary>
     private GraphicsBuffer[] FillBrickPages()
     {
-        CaelixBrickPool pool = rayQuery?.Pool;
+        // Only the ray query kernel reads the pages by name. The DXR hit group in pool mode gets its
+        // page buffer through the per-instance property block instead (SectorRenderer.RenderModifyAS).
+        CaelixBrickPool pool = backend == CaelixTraceBackend.DXR ? null : rayQuery?.Pool;
         if (pool == null)
         {
             return null;

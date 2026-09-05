@@ -9,6 +9,7 @@ using Random = UnityEngine.Random;
 using Caelix;
 using Caelix.Client;
 using Caelix.Rendering;
+using Caelix.Rendering.RayQuery;
 using Caelix.Utils;
 
 /// <summary>
@@ -68,6 +69,31 @@ public class CaelixRenderer : MonoBehaviour
     /// </summary>
     public Material brickMat;
 
+    [SerializeField, Tooltip("PerSector: one g_bricks buffer per sector, bound through the hit group's property block. SharedPool: the same CaelixBrickPool the inline ray query backend uses, so the two backends differ only in dispatch model.")]
+    private CaelixBrickStorage brickStorage = CaelixBrickStorage.PerSector;
+
+    [Header("Brick Pool")]
+    [SerializeField, Tooltip("Upper size of one brick pool page, in bricks (1096 bytes each). Clamped to the platform's maximum buffer size. Keep it under 512 MB (2^18 bricks): the hit group reads its page through a buffer view, and D3D12 views stop at 2^27 elements. SharedPool storage only.")]
+    private int pageCapacityLimitBricks = CaelixBrickPool.DefaultDxrPageCapacityLimitBricks;
+
+    /// <summary>True when this renderer stores its bricks in <see cref="Pool"/> rather than per sector.</summary>
+    public bool UsesBrickPool => brickStorage == CaelixBrickStorage.SharedPool;
+
+    /// <summary>
+    /// The shared brick records, in up to four pages bound as <c>g_bricks0..3</c>. Null in
+    /// <see cref="CaelixBrickStorage.PerSector"/> storage, where each sector owns its own buffer.
+    /// </summary>
+    public CaelixBrickPool Pool { get; private set; }
+
+    /// <summary>
+    /// Private instance of <see cref="brickMat"/> with <c>CAELIX_BRICK_POOL</c> enabled.
+    /// </summary>
+    /// <remarks>
+    /// An instance rather than the asset: enabling a keyword on the asset would dirty it on disk,
+    /// and the per-sector mode has to keep running the same material with the keyword off.
+    /// </remarks>
+    private Material pooledBrickMat;
+
     /// <summary>
     /// Current frame ID for rendering. Incremented each Tick().
     /// </summary>
@@ -77,6 +103,15 @@ public class CaelixRenderer : MonoBehaviour
     /// Debug field showing the current number of instances in the acceleration structure.
     /// </summary>
     [Header("Debug Utils")] public int instanceCount;
+
+    /// <summary>Debug field showing how many pages the pool has open. SharedPool storage only.</summary>
+    public int poolPages;
+
+    /// <summary>Debug field showing how many bricks are reserved by a live sector range.</summary>
+    public int poolLiveBricks;
+
+    /// <summary>Debug field showing how many bricks the pool's page buffers can hold together.</summary>
+    public int poolCapacityBricks;
 
     /// <summary>The client world this renderer draws, once resolved.</summary>
     public ClientWorld Source => source;
@@ -99,9 +134,38 @@ public class CaelixRenderer : MonoBehaviour
 
     private void Awake()
     {
-        SectorRenderer.sectorMaterial = brickMat;
+        EnsureBrickStorage();
         ReloadAS();
     }
+
+    /// <summary>
+    /// Creates the brick pool and the keyword material instance in pool mode, then points every
+    /// sector renderer at the material its storage mode needs. Safe to call every frame.
+    /// </summary>
+    private void EnsureBrickStorage()
+    {
+        if (!UsesBrickPool)
+        {
+            SectorRenderer.sectorMaterial = brickMat;
+            return;
+        }
+
+        Pool ??= new CaelixBrickPool(4096, pageCapacityLimitBricks);
+
+        if (pooledBrickMat == null && brickMat != null)
+        {
+            pooledBrickMat = new Material(brickMat)
+            {
+                hideFlags = HideFlags.HideAndDontSave
+            };
+            pooledBrickMat.EnableKeyword("CAELIX_BRICK_POOL");
+        }
+
+        SectorRenderer.sectorMaterial = pooledBrickMat;
+    }
+
+    /// <summary>The pool sector renderers write into, or null in per-sector storage.</summary>
+    private CaelixBrickPool ActivePool => UsesBrickPool ? Pool : null;
 
     /// <summary>Binds to the host's client world. Safe to call every frame.</summary>
     private bool EnsureSource()
@@ -146,7 +210,7 @@ public class CaelixRenderer : MonoBehaviour
         {
             SectorRenderer renderer = sectorRenderers[removalScratch[i]];
             renderer.MarkRemove();
-            renderer.RemoveMe(ref _voxelScene);
+            renderer.RemoveMe(ref _voxelScene, ActivePool);
             sectorRenderers.Remove(removalScratch[i]);
         }
     }
@@ -169,12 +233,13 @@ public class CaelixRenderer : MonoBehaviour
     [ContextMenu("Render all")]
     public void RenderAll()
     {
-        SectorRenderer.sectorMaterial = brickMat;
+        EnsureBrickStorage();
         if (!EnsureSource())
         {
             return;
         }
 
+        CaelixBrickPool pool = ActivePool;
         _voxelScene.ClearInstances();
         IReadOnlyList<EntityView> views = source.Views;
         for (int v = 0; v < views.Count; v++)
@@ -189,7 +254,7 @@ public class CaelixRenderer : MonoBehaviour
                     sectorRenderers[key] = new SectorRenderer(view, sectorPos);
                 }
 
-                sectorRenderers[key].RenderModifyAS(ref _voxelScene, view, sectorPos);
+                sectorRenderers[key].RenderModifyAS(ref _voxelScene, view, sectorPos, pool);
             }
 
             view.ShouldResetMotionVectors = false;
@@ -282,6 +347,8 @@ public class CaelixRenderer : MonoBehaviour
             aabbBuffer.Release();
         }
 
+        // Sector renderers first: their pool ranges only mean anything while the pool is alive, and
+        // their AABB configs still reference the keyword material instance.
         foreach (var kvp in sectorRenderers)
         {
             kvp.Value.Dispose();
@@ -290,6 +357,15 @@ public class CaelixRenderer : MonoBehaviour
         sectorRenderers.Clear();
         _voxelScene?.Dispose();
         _voxelScene = null;
+
+        Pool?.Dispose();
+        Pool = null;
+
+        if (pooledBrickMat != null)
+        {
+            CoreUtils.Destroy(pooledBrickMat);
+            pooledBrickMat = null;
+        }
     }
 
     /// <summary>
@@ -306,10 +382,15 @@ public class CaelixRenderer : MonoBehaviour
     /// Performs one render update tick for all voxel entity views.
     /// </summary>
     /// <remarks>
-    /// This method runs in two passes:
-    /// Pass 1: Emits render jobs for all sectors and removes sectors marked for deletion.
-    /// Pass 2: Synchronizes GPU buffers and updates the acceleration structure.
-    /// This two-pass approach allows for parallel job execution while maintaining proper synchronization.
+    /// Pass 1 emits the render jobs for all sectors and removes sectors marked for deletion, so the
+    /// jobs run in parallel. Pass 2a consumes the finished jobs and settles every sector's brick
+    /// storage. Pass 2b uploads bricks and updates the acceleration structure.
+    /// <para>
+    /// 2a and 2b are separate loops even in per-sector storage, so the CPU-side ordering does not
+    /// depend on the storage mode. In pool storage the split is required: 2a can grow the pool,
+    /// which replaces a page's buffer, and 2b is what re-uploads every sector whose generation then
+    /// became stale.
+    /// </para>
     /// </remarks>
     public void Tick()
     {
@@ -322,6 +403,9 @@ public class CaelixRenderer : MonoBehaviour
         {
             ReloadAS();
         }
+
+        EnsureBrickStorage();
+        CaelixBrickPool pool = ActivePool;
 
         frameId += 1;
         instanceCount = (int)voxelScene.GetInstanceCount();
@@ -342,7 +426,7 @@ public class CaelixRenderer : MonoBehaviour
                 if (sectorRenderers.TryGetValue(key, out SectorRenderer removed))
                 {
                     removed.MarkRemove();
-                    removed.RemoveMe(ref _voxelScene);
+                    removed.RemoveMe(ref _voxelScene, pool);
                     sectorRenderers.Remove(key);
                 }
             }
@@ -373,7 +457,21 @@ public class CaelixRenderer : MonoBehaviour
             renderJobs.Complete();
         }
 
-        // Pass 2: Sync buffers
+        // Pass 2a: consume the finished jobs. May grow the pool.
+        for (int v = 0; v < views.Count; v++)
+        {
+            EntityView view = views[v];
+
+            foreach (var kvp in view.Data.sectors)
+            {
+                var key = (view, kvp.Key);
+                if (!sectorRenderers.TryGetValue(key, out SectorRenderer renderer)) continue;
+
+                renderer.ApplyCompletedRenderJob(pool);
+            }
+        }
+
+        // Pass 2b: upload bricks against the final storage, then update the acceleration structure.
         for (int v = 0; v < views.Count; v++)
         {
             EntityView view = views[v];
@@ -384,10 +482,10 @@ public class CaelixRenderer : MonoBehaviour
                 ref Sector sector = ref kvp.Value.Get();
 
                 var key = (view, sectorPos);
-                if (!sectorRenderers.ContainsKey(key)) continue;
+                if (!sectorRenderers.TryGetValue(key, out SectorRenderer renderer)) continue;
 
-                sectorRenderers[key].ApplyCompletedRenderJob();
-                sectorRenderers[key].RenderModifyAS(ref _voxelScene, view, sectorPos);
+                renderer.UploadBricks(pool);
+                renderer.RenderModifyAS(ref _voxelScene, view, sectorPos, pool);
 
                 // Call sector tick
                 sector.ReorderBricks();
@@ -395,6 +493,13 @@ public class CaelixRenderer : MonoBehaviour
 
             // Every sector of this view has consumed the reset; its motion vectors are settled.
             view.ShouldResetMotionVectors = false;
+        }
+
+        if (pool != null)
+        {
+            poolPages = pool.PageCount;
+            poolLiveBricks = pool.TotalLiveBricks;
+            poolCapacityBricks = pool.TotalCapacityBricks;
         }
     }
 }
