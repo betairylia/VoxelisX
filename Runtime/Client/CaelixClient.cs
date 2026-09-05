@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
 using UnityEngine;
+using Unity.Profiling;
 using Caelix.Net;
 using Caelix.Simulation;
 using Caelix.Utils;
@@ -49,6 +50,12 @@ namespace Caelix.Client
     /// </summary>
     public sealed class CaelixClient : IDisposable
     {
+        private static readonly ProfilerMarker s_BeginFrameMarker = new("Client.BeginFrame");
+        private static readonly ProfilerMarker s_ReceiveMarker = new("Client.Receive");
+        private static readonly ProfilerMarker s_ApplyBrickBatchMarker = new("Client.ApplyBrickBatch");
+        private static readonly ProfilerMarker s_PropagateForRenderMarker = new("Client.PropagateForRender");
+        private static readonly ProfilerMarker s_EndFrameMarker = new("Client.EndFrame");
+
         private delegate void EventHandler(ushort worldId, ref NetMessageReader reader);
 
         private delegate void TypedReplyDispatch(ushort worldId, ushort typeId, ref NetMessageReader reader);
@@ -146,31 +153,41 @@ namespace Caelix.Client
         /// </summary>
         public void Update()
         {
-            for (int i = 0; i < worldList.Count; i++)
+            using (s_BeginFrameMarker.Auto())
             {
-                worldList[i].BeginFrame();
-            }
-
-            while (channel.TryReceive(out byte[] message))
-            {
-                try
+                for (int i = 0; i < worldList.Count; i++)
                 {
-                    Apply(message);
-                }
-                catch (Exception exception)
-                {
-                    Debug.LogException(exception);
+                    worldList[i].BeginFrame();
                 }
             }
 
-            for (int i = 0; i < worldList.Count; i++)
+            using (s_ReceiveMarker.Auto())
             {
-                worldList[i].PropagateForRender();
+                while (channel.TryReceive(out byte[] message))
+                {
+                    try
+                    {
+                        Apply(message);
+                    }
+                    catch (Exception exception)
+                    {
+                        Debug.LogException(exception);
+                    }
+                }
+            }
+
+            using (s_PropagateForRenderMarker.Auto())
+            {
+                for (int i = 0; i < worldList.Count; i++)
+                {
+                    worldList[i].PropagateForRender();
+                }
             }
         }
 
         public void EndFrame()
         {
+            using var _ = s_EndFrameMarker.Auto();
             for (int i = 0; i < worldList.Count; i++)
             {
                 worldList[i].EndFrame();
@@ -241,6 +258,7 @@ namespace Caelix.Client
                 }
                 case NetMessageType.BrickData:
                 {
+                    using var _ = s_ApplyBrickBatchMarker.Auto();
                     var m = reader.Read<BrickBatchHeader>();
                     GetOrCreateWorld(header.WorldId).OnBrickBatch(in m, ref reader);
                     break;

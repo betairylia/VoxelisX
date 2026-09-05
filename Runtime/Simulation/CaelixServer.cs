@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
+using Unity.Profiling;
 using Caelix.Net;
 using Caelix.Utils;
 
@@ -26,6 +27,12 @@ namespace Caelix.Simulation
         private delegate void CommandHandler(ServerConnection connection, CaelixWorld world, ref NetMessageReader reader);
 
         private delegate void QueryDispatch(ServerConnection connection, CaelixWorld world, uint requestId, ref NetMessageReader reader);
+
+        private static readonly ProfilerMarker s_ProcessIncomingMarker = new("Server.ProcessIncoming");
+        private static readonly ProfilerMarker s_TickSimulateMarker = new("Server.TickSimulate");
+        private static readonly ProfilerMarker s_ReplicateMarker = new("Server.Replicate");
+        private static readonly ProfilerMarker s_EndTickMarker = new("Server.EndTick");
+        private static readonly ProfilerMarker s_DrainEventsMarker = new("Server.DrainEvents");
 
         private readonly List<CaelixWorld> worlds = new();
         private readonly List<ServerConnection> connections = new();
@@ -239,6 +246,7 @@ namespace Caelix.Simulation
         /// <summary>Drains every connection's inbox and dispatches commands and queries.</summary>
         public void ProcessIncoming()
         {
+            using var _ = s_ProcessIncomingMarker.Auto();
             for (int c = 0; c < connections.Count; c++)
             {
                 ServerConnection connection = connections[c];
@@ -404,9 +412,9 @@ namespace Caelix.Simulation
             for (int w = 0; w < worlds.Count; w++)
             {
                 CaelixWorld world = worlds[w];
-                world.TickSimulate(dt);
-                Replicate(world);
-                world.EndTick();
+                using (s_TickSimulateMarker.Auto()) world.TickSimulate(dt);
+                using (s_ReplicateMarker.Auto()) Replicate(world);
+                using (s_EndTickMarker.Auto()) world.EndTick();
             }
 
             TickIndex++;
@@ -447,6 +455,8 @@ namespace Caelix.Simulation
             {
                 return;
             }
+
+            using var _ = s_DrainEventsMarker.Auto();
 
             for (int i = 0; i < events.Count; i++)
             {

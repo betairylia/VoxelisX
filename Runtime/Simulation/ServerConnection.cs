@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using Unity.Collections;
 using Unity.Mathematics;
+using Unity.Profiling;
 using Caelix.Net;
 using Caelix.Utils;
 
@@ -26,6 +27,9 @@ namespace Caelix.Simulation
         {
             public readonly Dictionary<Guid128, EntityKnown> Entities = new();
         }
+
+        private static readonly ProfilerMarker s_ReplicateWorldMarker = new("Server.ReplicateWorld");
+        private static readonly ProfilerMarker s_WriteBrickBatchMarker = new("Server.WriteBrickBatch");
 
         private readonly Dictionary<ushort, WorldKnown> worlds = new();
         private readonly List<Guid128> guidScratch = new();
@@ -65,6 +69,7 @@ namespace Caelix.Simulation
         // TODO: VibeReview: Can we burst-ify the build process (and connection data holders)?
         internal unsafe void ReplicateWorld(CaelixWorld world, NetMessageWriter writer)
         {
+            using var _ = s_ReplicateWorldMarker.Auto();
             if (!IsSubscribed(world.Id))
             {
                 return;
@@ -216,6 +221,7 @@ namespace Caelix.Simulation
             NetMessageWriter writer, ushort worldId, uint tick, Guid128 guid, int3 sectorPos,
             ref Sector sector, ushort slotMask, bool fullSector)
         {
+            using var _ = s_WriteBrickBatchMarker.Auto();
             writer.Reset();
             NetHeader.Write(writer, NetMessageType.BrickData, worldId, tick);
             int headerOffset = writer.Reserve<BrickBatchHeader>();

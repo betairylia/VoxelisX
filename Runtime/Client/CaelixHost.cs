@@ -6,6 +6,7 @@ using UnityEditor;
 #endif
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using Unity.Profiling;
 using Caelix.Client;
 using Caelix.Net;
 using Caelix.Rendering.Meshing;
@@ -43,6 +44,10 @@ namespace Caelix
         }
 
         private const string DefaultSaveLoadFileName = "caelix-world.cxw";
+
+        private static readonly ProfilerMarker s_ServerTickMarker = new("Host.ServerTick");
+        private static readonly ProfilerMarker s_ClientFrameMarker = new("Host.ClientFrame");
+        private static readonly ProfilerMarker s_RenderersMarker = new("Host.Renderers");
 
         // TODO: VibeReview: Why do we even care about multiple `CaelixHost`s?
         private static readonly List<CaelixHost> s_hosts = new();
@@ -280,7 +285,7 @@ namespace Caelix
 
             PushSettings();
             long start = Stopwatch.GetTimestamp();
-            Server.Step();
+            using (s_ServerTickMarker.Auto()) Server.Step();
             serverTicksElapsed += Stopwatch.GetTimestamp() - start;
             ticksSinceLastFrame++;
             firstFrameDone = true;
@@ -303,7 +308,7 @@ namespace Caelix
                 // tick. A frozen scene therefore still gets exactly one tick, as it always did.
                 firstFrameDone = true;
                 long start = Stopwatch.GetTimestamp();
-                Server.Step();
+                using (s_ServerTickMarker.Auto()) Server.Step();
                 serverTicksElapsed += Stopwatch.GetTimestamp() - start;
                 ticksSinceLastFrame++;
             }
@@ -319,14 +324,22 @@ namespace Caelix
             // Client frame: apply replication, run input, render.
             /////////////////////////////////////////////////////////////////////////
 
-            Client.Update();
-            rayCaster?.Tick();
+            using (s_ClientFrameMarker.Auto())
+            {
+                Client.Update();
+                rayCaster?.Tick();
+            }
+
             long clientEnd = Stopwatch.GetTimestamp();
 
             bool usedRayTracing = rayTracedRenderer != null && rayTracedRenderer.enabled;
             bool usedMeshing = meshingRenderer != null && meshingRenderer.enabled;
-            if (usedRayTracing) rayTracedRenderer.Tick();
-            if (usedMeshing) meshingRenderer.Tick();
+            using (s_RenderersMarker.Auto())
+            {
+                if (usedRayTracing) rayTracedRenderer.Tick();
+                if (usedMeshing) meshingRenderer.Tick();
+            }
+
             long renderEnd = Stopwatch.GetTimestamp();
 
             Client.EndFrame();
