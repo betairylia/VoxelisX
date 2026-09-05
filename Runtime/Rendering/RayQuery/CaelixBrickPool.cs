@@ -21,8 +21,8 @@ namespace Caelix.Rendering.RayQuery
     /// one brick record is <see cref="SectorRenderer.BRICK_DATA_LENGTH"/> words = 1096 bytes, so a
     /// large streamed scene (millions of live bricks) does not fit a single buffer. The pool
     /// therefore owns several, each capped at <see cref="PageCapacityLimitBricks"/>, and every
-    /// sector names the page its bricks live in. The shader picks the page with a switch over four
-    /// named buffers, so <see cref="MaxPages"/> must match <c>CAELIX_BRICK_PAGES</c> in
+    /// sector names the page its bricks live in. The shader picks the page with a switch over the
+    /// named buffers, so <see cref="MaxNamedPages"/> must match <c>CAELIX_BRICK_PAGES</c> in
     /// <c>Shaders/CaelixBrickPages.hlsl</c>.
     /// </para>
     /// <para>
@@ -49,12 +49,20 @@ namespace Caelix.Rendering.RayQuery
         public const int MaxPages = 32;
 
         /// <summary>
-        /// Pages the inline ray query kernel can address: it selects the page with a switch over
-        /// that many named buffers, so it must match <c>CAELIX_BRICK_PAGES</c> in
-        /// <c>Shaders/CaelixBrickPages.hlsl</c>. The DXR hit group binds its page per instance and
-        /// can use every page up to <see cref="MaxPages"/>.
+        /// Pages that can be bound by name: the shaders select the page with a switch over that many
+        /// named buffers, so it must match <c>CAELIX_BRICK_PAGES</c> in
+        /// <c>Shaders/CaelixBrickPages.hlsl</c>. Used by the inline ray query kernel and by the DXR
+        /// hit group in <see cref="CaelixBrickStorage.SharedPoolInstanceTable"/> storage. In
+        /// <see cref="CaelixBrickStorage.SharedPool"/> storage the hit group binds its page per
+        /// instance instead and can use every page up to <see cref="MaxPages"/>.
         /// </summary>
-        public const int MaxNamedPages = 4;
+        /// <remarks>
+        /// Sixteen rather than four because of the DXR view limit: a hit group reads its page
+        /// through a buffer view, capped at 2^18 bricks (see
+        /// <see cref="DefaultDxrPageCapacityLimitBricks"/>), so a large scene needs many more pages
+        /// there than the compute kernel does at 2^21 bricks each.
+        /// </remarks>
+        public const int MaxNamedPages = 16;
 
         /// <summary>
         /// Page limit for the DXR pipeline path. A hit group reads <c>g_bricks</c> through a buffer
@@ -194,13 +202,13 @@ namespace Caelix.Rendering.RayQuery
         }
 
         /// <summary>
-        /// The buffer of one page, for binding as <c>g_bricks0..3</c>.
+        /// The buffer of one page, for binding as <c>g_bricks0..15</c>.
         /// </summary>
         /// <remarks>
         /// Pages past <see cref="PageCount"/> return the last open page's buffer rather than null:
-        /// the kernel declares all four, and Unity logs "Property (g_bricksN) ... is not set" every
-        /// frame for any it never sees bound. Nothing reads those slots, because no instance record
-        /// names a page that is not open.
+        /// the shaders declare every named page, and Unity logs "Property (g_bricksN) ... is not
+        /// set" every frame for any it never sees bound. Nothing reads those slots, because no
+        /// instance record names a page that is not open.
         /// </remarks>
         public GraphicsBuffer GetPageBuffer(int page)
         {

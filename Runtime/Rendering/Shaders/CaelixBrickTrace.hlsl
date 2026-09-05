@@ -119,6 +119,9 @@ ByteAddressBuffer g_bricks;
 #define CAELIX_BRICKS_LOAD64(byteAddress) g_bricks.Load<uint64_t>(byteAddress)
 #endif
 
+// Per-instance values the hit group's property block carries in PerSector and SharedPool storage.
+// CAELIX_BRICK_POOL_TABLE reads both from the instance record instead and never references these,
+// so they are left declared: an unreferenced global is dropped and no local root argument survives.
 float4x4 _PrevObjectToWorld;
 uint _SectorHashSeed;
 
@@ -457,7 +460,13 @@ uint _BrickBase;
 // DXR intersection-shader entry: the brick is the current procedural primitive of the current instance.
 inline float CaelixTraceBrickPrimitive(out AttributeData attrib)
 {
-#ifdef CAELIX_BRICK_POOL
+#if defined(CAELIX_BRICK_POOL_TABLE)
+    // Everything per instance comes from the InstanceID()-indexed record: the shader record of this
+    // hit group carries no local root arguments at all.
+    CaelixRayQueryInstance inst = g_Instances[InstanceID()];
+    _CaelixBrickPage = inst.page;
+    uint brickBase = inst.brickBase + CaelixBrickBase(PrimitiveIndex());
+#elif defined(CAELIX_BRICK_POOL)
     uint brickBase = _BrickBase + CaelixBrickBase(PrimitiveIndex());
 #else
     uint brickBase = CaelixBrickBase(PrimitiveIndex());

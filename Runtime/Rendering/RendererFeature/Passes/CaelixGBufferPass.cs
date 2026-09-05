@@ -1,3 +1,4 @@
+using System.Linq;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering;
 using UnityEngine.Rendering;
@@ -82,19 +83,26 @@ public class CaelixGBufferPass : ScriptableRenderPass
         /// <summary>One VoxelMaterial per 16-bit block ID, bound as <c>g_Materials</c>. Ray query backend only.</summary>
         internal GraphicsBuffer materialTable;
         /// <summary>
-        /// The brick pool's pages, bound as <c>g_bricks0..3</c>. Null unless a pool is in use: the
-        /// ray query backend always, the DXR backend only in
-        /// <see cref="CaelixBrickStorage.SharedPool"/> storage. Always
-        /// <see cref="CaelixBrickPool.MaxNamedPages"/> long, and every entry is a real buffer: the shader
-        /// declares all four and Unity logs an error every frame for any it never sees bound.
+        /// The brick pool's pages, bound as <c>g_bricks0..15</c>. Null unless the pages are bound by
+        /// name: the ray query backend always, the DXR backend only in
+        /// <see cref="CaelixBrickStorage.SharedPoolInstanceTable"/> storage (plain
+        /// <see cref="CaelixBrickStorage.SharedPool"/> binds its page per instance instead). Always
+        /// <see cref="CaelixBrickPool.MaxNamedPages"/> long, and every entry is a real buffer: the
+        /// shader declares them all and Unity logs an error every frame for any it never sees bound.
         /// </summary>
         internal GraphicsBuffer[] brickPages;
-        /// <summary>Per-RTAS-instance records, bound as <c>g_Instances</c>. Ray query backend only.</summary>
+        /// <summary>
+        /// Per-RTAS-instance records, bound as <c>g_Instances</c>. Set for the ray query backend and
+        /// for the DXR backend in <see cref="CaelixBrickStorage.SharedPoolInstanceTable"/> storage.
+        /// </summary>
         internal GraphicsBuffer instanceTable;
     }
 
     /// <summary>Shader property names of the brick pool pages, indexed by page.</summary>
-    private static readonly string[] BrickPageNames = { "g_bricks0", "g_bricks1", "g_bricks2", "g_bricks3" };
+    private static readonly string[] BrickPageNames = Enumerable
+        .Range(0, CaelixBrickPool.MaxNamedPages)
+        .Select(i => $"g_bricks{i}")
+        .ToArray();
 
     /// <summary>
     /// Scratch for <see cref="PassData.brickPages"/>, owned by this pass instance. The page buffers
@@ -266,7 +274,9 @@ public class CaelixGBufferPass : ScriptableRenderPass
             passData.computeShader = computeShader;
             passData.kernel = kernel;
             passData.brickPages = FillBrickPages();
-            passData.instanceTable = rayQuery?.Instances?.Buffer;
+            passData.instanceTable = backend == CaelixTraceBackend.DXR
+                ? (caelixX.UsesInstanceTable ? caelixX.Instances?.Buffer : null)
+                : rayQuery?.Instances?.Buffer;
             passData.bakeMaterialsKernels = bakeMaterialsKernels;
             passData.materialTable = rayQuery?.MaterialTable;
             // The bake is recorded ahead of the trace in the same command buffer, so flipping the
@@ -308,14 +318,17 @@ public class CaelixGBufferPass : ScriptableRenderPass
 
     /// <summary>
     /// Refills <see cref="brickPages"/> with the pool's page buffers, or returns null when there is
-    /// no pool to bind by name (the DXR backend, or a renderer that released its resources between
-    /// record and now).
+    /// no pool to bind by name (the DXR backend outside table storage, or a renderer that released
+    /// its resources between record and now).
     /// </summary>
     private GraphicsBuffer[] FillBrickPages()
     {
-        // Only the ray query kernel reads the pages by name. The DXR hit group in pool mode gets its
-        // page buffer through the per-instance property block instead (SectorRenderer.RenderModifyAS).
-        CaelixBrickPool pool = backend == CaelixTraceBackend.DXR ? null : rayQuery?.Pool;
+        // The ray query kernel always reads the pages by name, and so does the DXR hit group in
+        // table storage. Plain SharedPool storage gets its page buffer through the per-instance
+        // property block instead (SectorRenderer.RenderModifyAS), so there is nothing to bind.
+        CaelixBrickPool pool = backend == CaelixTraceBackend.DXR
+            ? (caelixX.UsesInstanceTable ? caelixX.Pool : null)
+            : rayQuery?.Pool;
         if (pool == null)
         {
             return null;
@@ -371,6 +384,19 @@ public class CaelixGBufferPass : ScriptableRenderPass
             }
 
             data.brickMaterial.SetInt("g_FrameIndex", data.frameIndex);
+        }
+
+        // Instance table storage: the hit group's shader records are empty, so the pages and the
+        // record buffer are globals rather than per-instance bindings. Null in the other two storage
+        // modes, which bind g_bricks through the property block (or own a buffer per sector).
+        if (data.brickPages != null)
+        {
+            for (int i = 0; i < data.brickPages.Length; i++)
+            {
+                natcmd.SetGlobalBuffer(BrickPageNames[i], data.brickPages[i]);
+            }
+
+            natcmd.SetGlobalBuffer("g_Instances", data.instanceTable);
         }
 
         if (data.settings.buildAccelerationStructure)

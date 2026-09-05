@@ -27,8 +27,8 @@ the same `RayPayload` the hit group used to fill.
 
 A ray query has no shader table, so there is no per-instance binding. Two global buffers replace it:
 
-* **`CaelixBrickPool`** — the brick records of every sector, held in up to `MaxPages` = 4 raw
-  `GraphicsBuffer`s bound as `g_bricks0..3`. Pages exist because one buffer cannot exceed
+* **`CaelixBrickPool`** — the brick records of every sector, held in up to `MaxNamedPages` = 16 raw
+  `GraphicsBuffer`s bound as `g_bricks0..15`. Pages exist because one buffer cannot exceed
   `SystemInfo.maxGraphicsBufferSize` (about 3.9 GB) and one record is 1096 bytes, so a few million
   live bricks do not fit one buffer. Each page is capped at `PageCapacityLimitBricks` (serialized on
   the component, clamped to the platform maximum and to a power of two).
@@ -46,7 +46,7 @@ and its `Generation` goes up. Contents are not copied, but that costs nothing: a
 forces every sector on the page to re-upload, and the generation is exactly how a sector notices.
 Without compaction, streaming fragments the pool badly enough that it asks for a buffer past the
 size cap. Growth targets 1.5x what the page needs rather than doubling; when a page cannot grow any
-further the pool opens the next one, and when all four are full it logs an error once and returns an
+further the pool opens the next one, and when every page is full it logs an error once and returns an
 invalid handle — that sector is then skipped, and it retries every tick.
 
 A sector that only moved (new range, or a compacted page) republishes its instance record but does
@@ -62,8 +62,8 @@ replaces.
 The two backends differ in two independent ways: the dispatch model (shader table vs. one compute
 kernel) and the brick storage (a buffer per sector vs. the shared pool). `CaelixRenderer.brickStorage`
 separates them: set it to `SharedPool` and the DXR path stores its bricks in the same
-`CaelixBrickPool`, so a DXR-vs-ray-query comparison measures only the dispatch model. `PerSector` is
-the default and is unchanged.
+`CaelixBrickPool`, so a DXR-vs-ray-query comparison measures only the dispatch model — almost.
+`PerSector` is the default and is unchanged.
 
 In pool mode `CaelixRenderer` runs a private instance of `brickMat` with the `CAELIX_BRICK_POOL`
 keyword enabled (the asset on disk is never touched). There is no page switch in the hit group: the
@@ -80,9 +80,32 @@ that mark in a larger page reads as zero, i.e. as empty space, which shows up as
 through walls and, because the rays then travel further, as a slower frame. The compute kernel
 binds its pages as root descriptors and is not affected. So `CaelixRenderer.pageCapacityLimitBricks`
 defaults to 2^18 bricks (287 MB, `CaelixBrickPool.DefaultDxrPageCapacityLimitBricks`) while the ray
-query renderer keeps 2^21. The pool allows `MaxPages` (32) pages; only the compute kernel is limited
-to the `MaxNamedPages` (4) it can switch over, and `CaelixRayQueryRenderer` logs an error when the
-pool opens more.
+query renderer keeps 2^21. The pool allows `MaxPages` (32) pages; anything bound BY NAME is limited
+to the `MaxNamedPages` (16) the shaders can switch over, and `CaelixRayQueryRenderer` logs an error
+when the pool opens more. Sixteen rather than four exists for the DXR view limit above: at 2^18
+bricks a page, a big scene needs many more pages than the compute kernel does at 2^21.
+
+### `SharedPoolInstanceTable`: no local root arguments either
+
+`SharedPool` leaves one difference standing. Every DXR hit-group shader record still carries local
+root arguments — a buffer descriptor for `g_bricks` and a constant buffer with `_BrickBase` and
+`_PrevObjectToWorld` — which the intersection and closest-hit shaders fetch per invocation. The
+third storage mode removes them, so every record is identical:
+
+* the material instance enables `CAELIX_BRICK_POOL_TABLE` instead of `CAELIX_BRICK_POOL`;
+* `CaelixRenderer` owns a `CaelixRayQueryInstanceTable`, exactly the one the ray query renderer
+  uses, and each sector claims a slot it keeps for life and passes as the `id` argument of
+  `AddInstance(config, matrix, id)`;
+* no `MaterialPropertyBlock` is created at all, and `RayTracingAABBsInstanceConfig.materialProperties`
+  is left unset;
+* the pages are bound as GLOBAL buffers (`g_bricks0..15`) by `CaelixGBufferPass`, together with
+  `g_Instances`;
+* the intersection shader reads `g_Instances[InstanceID()]` for the page and the word offset, and
+  the closest-hit shader reads the previous transform from the same record.
+
+The record struct and `g_Instances` therefore live in `Shaders/CaelixInstanceRecord.hlsl`, shared
+verbatim by the compute kernel and the hit group. A sector whose range moves rewrites its table slot
+and touches the acceleration structure not at all — not even an `UpdateInstancePropertyBlock`.
 
 ## Readiness
 

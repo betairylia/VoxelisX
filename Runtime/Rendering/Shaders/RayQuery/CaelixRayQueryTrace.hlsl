@@ -11,24 +11,8 @@
 
 #include "../CaelixBrickTrace.hlsl"
 
-// One record per RTAS instance, indexed by InstanceID(). Mirrors Caelix.Rendering.RayQuery.CaelixRayQueryInstance.
-struct CaelixRayQueryInstance
-{
-    // Rows of the previous frame's object-to-world matrix (Matrix4x4.GetRow), stored as rows so
-    // the layout does not depend on HLSL matrix packing rules.
-    float4 prevRow0;
-    float4 prevRow1;
-    float4 prevRow2;
-    float4 prevRow3;
-    // Word offset of this sector's first brick inside its page.
-    uint brickBase;
-    uint hashSeed;
-    // Brick pool page holding this sector's bricks.
-    uint page;
-    uint pad1;
-};
-
-StructuredBuffer<CaelixRayQueryInstance> g_Instances;
+// The instance record and g_Instances, shared with the DXR hit group in CAELIX_BRICK_POOL_TABLE storage.
+#include "../CaelixInstanceRecord.hlsl"
 
 // Same contract as the DXR hit group: on a hit the payload carries T, the packed
 // (blockID << 16 | faceNormalFlags) word, the packed world normal and the packed previous-frame
@@ -83,7 +67,7 @@ void CaelixRayQueryTrace(RayDesc ray, out RayPayload payload)
     payload.packedWorldNormal = CaelixPackWorldNormal(mul((float3x3)objectToWorld, UnpackObjectNormal(committedAttrib)));
 
     CaelixRayQueryInstance inst = g_Instances[committedInstance];
-    float4x4 prevObjectToWorld = float4x4(inst.prevRow0, inst.prevRow1, inst.prevRow2, inst.prevRow3);
+    float4x4 prevObjectToWorld = CaelixInstancePrevObjectToWorld(inst);
     float3 objectHitPosition = q.CommittedObjectRayOrigin() + q.CommittedObjectRayDirection() * T;
     float3 worldHitPosition = ray.Origin + ray.Direction * T;
     payload.packedPrevWorldOffset = CaelixPackFloat3ToHalf4(

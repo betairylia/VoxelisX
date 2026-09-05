@@ -45,6 +45,7 @@ namespace Caelix
 
         private const string DefaultSaveLoadFileName = "caelix-world.cxw";
 
+        // TODO: VibeReview: Why do we even care about multiple `CaelixHost`s?
         private static readonly List<CaelixHost> s_hosts = new();
 
         // ---------------- COMPONENTS ------------------
@@ -121,6 +122,9 @@ namespace Caelix
 
         public static IReadOnlyList<CaelixHost> All => s_hosts;
 
+        // TODO: VibeReview: And having `Any` instead of `Singleton`, again why should we care about multiple hosts?
+        // Because there could be multiple unity scenes? Maybe it should be scene-agnostic?
+        // Each host also creates their own server & client. I don't really understand tbh.
         /// <summary>Any live host, preferring registered ones. Null when the scene has none.</summary>
         public static CaelixHost Any
         {
@@ -201,6 +205,7 @@ namespace Caelix
 
             Client = new CaelixClient(clientEnd, Server.Types) { Host = this };
             Server.AddConnection(serverEnd);
+            // TODO: VibeReview: Should we abstract the connecting processes etc. similar to Core/Net/INetChannel?
         }
 
         private void Start()
@@ -294,8 +299,9 @@ namespace Caelix
             }
 
             long frameStart = Stopwatch.GetTimestamp();
-            PushSettings();
+            PushSettings(); // TODO: VibeReview: This seems to be server-side only. Do we need it in Update?
 
+            // TODO: VibeReview: Why is this `if` needed? A bit confusing.
             if (!firstFrameDone)
             {
                 // The initial state reaches the client through replication, which runs inside a
@@ -307,6 +313,7 @@ namespace Caelix
                 ticksSinceLastFrame++;
             }
 
+            // Get server info by cheating basically, since we are in local hosting mode
             long serverEnd = Stopwatch.GetTimestamp();
             int serverTicks = ticksSinceLastFrame;
             long serverElapsed = serverTicksElapsed;
@@ -330,7 +337,11 @@ namespace Caelix
             long renderEnd = Stopwatch.GetTimestamp();
 
             Client.EndFrame();
-
+            
+            /////////////////////////////////////////////////////////////////////////
+            // Collect timing metrics
+            /////////////////////////////////////////////////////////////////////////
+            
             // Server buckets are the LAST tick's split; ServerMilliseconds is the sum of every
             // tick that ran since the previous frame (FixedUpdate may run several, or none).
             TickTimingStats worldTimings = World != null ? World.LastTickTimings : default;

@@ -67,11 +67,26 @@ public enum CaelixBrickStorage
     PerSector = 0,
 
     /// <summary>
-    /// The shared <see cref="Caelix.Rendering.RayQuery.CaelixBrickPool"/>, exactly as the inline ray
-    /// query backend uses it: the pages are bound globally and each instance publishes the word
-    /// offset and page of its own range. Enables the <c>CAELIX_BRICK_POOL</c> shader keyword.
+    /// The shared <see cref="Caelix.Rendering.RayQuery.CaelixBrickPool"/>, the same one the inline
+    /// ray query backend uses. Each instance's property block binds <c>g_bricks</c> to the page
+    /// holding its sector and publishes the word offset of its own range. Enables the
+    /// <c>CAELIX_BRICK_POOL</c> shader keyword.
     /// </summary>
-    SharedPool = 1
+    SharedPool = 1,
+
+    /// <summary>
+    /// The shared pool, and per-instance data through an <c>InstanceID()</c>-indexed table instead
+    /// of a property block; the hit group has no local root arguments at all. Enables the
+    /// <c>CAELIX_BRICK_POOL_TABLE</c> shader keyword.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="SharedPool"/> still gives every hit-group shader record a buffer descriptor and a
+    /// constant buffer that the intersection and closest-hit shaders fetch. This mode removes them:
+    /// the pages are bound as globals, and the page, the word offset and the previous transform come
+    /// from the same <c>g_Instances</c> record the ray query kernel reads. Every shader record is
+    /// then identical, which leaves the dispatch model as the only difference between the backends.
+    /// </remarks>
+    SharedPoolInstanceTable = 2
 }
 
 /// <summary>

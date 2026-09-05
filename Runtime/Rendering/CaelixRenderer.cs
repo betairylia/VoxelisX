@@ -69,30 +69,46 @@ public class CaelixRenderer : MonoBehaviour
     /// </summary>
     public Material brickMat;
 
-    [SerializeField, Tooltip("PerSector: one g_bricks buffer per sector, bound through the hit group's property block. SharedPool: the same CaelixBrickPool the inline ray query backend uses, so the two backends differ only in dispatch model.")]
+    [SerializeField, Tooltip("PerSector: one g_bricks buffer per sector, bound through the hit group's property block. SharedPool: the same CaelixBrickPool the inline ray query backend uses, so the two backends differ only in dispatch model. SharedPoolInstanceTable: that pool, plus per-instance data through the g_Instances table, so the hit group has no local root arguments either.")]
     private CaelixBrickStorage brickStorage = CaelixBrickStorage.PerSector;
 
     [Header("Brick Pool")]
-    [SerializeField, Tooltip("Upper size of one brick pool page, in bricks (1096 bytes each). Clamped to the platform's maximum buffer size. Keep it under 512 MB (2^18 bricks): the hit group reads its page through a buffer view, and D3D12 views stop at 2^27 elements. SharedPool storage only.")]
+    [SerializeField, Tooltip("Upper size of one brick pool page, in bricks (1096 bytes each). Clamped to the platform's maximum buffer size. Keep it under 512 MB (2^18 bricks): the hit group reads its page through a buffer view, and D3D12 views stop at 2^27 elements. Pool storage only.")]
     private int pageCapacityLimitBricks = CaelixBrickPool.DefaultDxrPageCapacityLimitBricks;
 
     /// <summary>True when this renderer stores its bricks in <see cref="Pool"/> rather than per sector.</summary>
-    public bool UsesBrickPool => brickStorage == CaelixBrickStorage.SharedPool;
+    public bool UsesBrickPool => brickStorage != CaelixBrickStorage.PerSector;
 
     /// <summary>
-    /// The shared brick records, in up to four pages bound as <c>g_bricks0..3</c>. Null in
-    /// <see cref="CaelixBrickStorage.PerSector"/> storage, where each sector owns its own buffer.
+    /// True when per-instance data travels through <see cref="Instances"/> rather than a property
+    /// block, so the hit group's shader records carry no local root arguments.
+    /// </summary>
+    public bool UsesInstanceTable => brickStorage == CaelixBrickStorage.SharedPoolInstanceTable;
+
+    /// <summary>
+    /// The shared brick records, in up to <see cref="CaelixBrickPool.MaxNamedPages"/> pages bound as
+    /// <c>g_bricks0..15</c>. Null in <see cref="CaelixBrickStorage.PerSector"/> storage, where each
+    /// sector owns its own buffer.
     /// </summary>
     public CaelixBrickPool Pool { get; private set; }
 
     /// <summary>
-    /// Private instance of <see cref="brickMat"/> with <c>CAELIX_BRICK_POOL</c> enabled.
+    /// The per-instance record buffer bound as <c>g_Instances</c>, the same table the inline ray
+    /// query backend uses. Null unless <see cref="UsesInstanceTable"/>.
+    /// </summary>
+    public CaelixRayQueryInstanceTable Instances { get; private set; }
+
+    /// <summary>
+    /// Private instance of <see cref="brickMat"/> with the storage mode's keyword enabled.
     /// </summary>
     /// <remarks>
     /// An instance rather than the asset: enabling a keyword on the asset would dirty it on disk,
-    /// and the per-sector mode has to keep running the same material with the keyword off.
+    /// and the per-sector mode has to keep running the same material with every keyword off.
     /// </remarks>
     private Material pooledBrickMat;
+
+    /// <summary>The keyword <see cref="pooledBrickMat"/> was created with; null when there is none.</summary>
+    private string pooledBrickMatKeyword;
 
     /// <summary>
     /// Current frame ID for rendering. Incremented each Tick().
@@ -139,8 +155,9 @@ public class CaelixRenderer : MonoBehaviour
     }
 
     /// <summary>
-    /// Creates the brick pool and the keyword material instance in pool mode, then points every
-    /// sector renderer at the material its storage mode needs. Safe to call every frame.
+    /// Creates the brick pool, the instance table and the keyword material instance the current
+    /// storage mode needs, then points every sector renderer at that material. Safe to call every
+    /// frame.
     /// </summary>
     private void EnsureBrickStorage()
     {
@@ -152,13 +169,29 @@ public class CaelixRenderer : MonoBehaviour
 
         Pool ??= new CaelixBrickPool(4096, pageCapacityLimitBricks);
 
+        if (UsesInstanceTable)
+        {
+            Instances ??= new CaelixRayQueryInstanceTable();
+        }
+
+        string keyword = UsesInstanceTable ? "CAELIX_BRICK_POOL_TABLE" : "CAELIX_BRICK_POOL";
+        if (pooledBrickMat != null && pooledBrickMatKeyword != keyword)
+        {
+            // The storage mode changed at run time. The two keywords select different per-instance
+            // plumbing, so the instance is built again rather than re-keyworded: every sector's AABB
+            // config holds this material, and a fresh one makes the next rebuild pick it up.
+            CoreUtils.Destroy(pooledBrickMat);
+            pooledBrickMat = null;
+        }
+
         if (pooledBrickMat == null && brickMat != null)
         {
             pooledBrickMat = new Material(brickMat)
             {
                 hideFlags = HideFlags.HideAndDontSave
             };
-            pooledBrickMat.EnableKeyword("CAELIX_BRICK_POOL");
+            pooledBrickMat.EnableKeyword(keyword);
+            pooledBrickMatKeyword = keyword;
         }
 
         SectorRenderer.sectorMaterial = pooledBrickMat;
@@ -166,6 +199,12 @@ public class CaelixRenderer : MonoBehaviour
 
     /// <summary>The pool sector renderers write into, or null in per-sector storage.</summary>
     private CaelixBrickPool ActivePool => UsesBrickPool ? Pool : null;
+
+    /// <summary>
+    /// The instance table sector renderers publish into, or null in the storage modes that use a
+    /// per-instance property block instead. Doubles as the "table mode" flag they test.
+    /// </summary>
+    private CaelixRayQueryInstanceTable ActiveInstances => UsesInstanceTable ? Instances : null;
 
     /// <summary>Binds to the host's client world. Safe to call every frame.</summary>
     private bool EnsureSource()
@@ -210,7 +249,7 @@ public class CaelixRenderer : MonoBehaviour
         {
             SectorRenderer renderer = sectorRenderers[removalScratch[i]];
             renderer.MarkRemove();
-            renderer.RemoveMe(ref _voxelScene, ActivePool);
+            renderer.RemoveMe(ref _voxelScene, ActivePool, ActiveInstances);
             sectorRenderers.Remove(removalScratch[i]);
         }
     }
@@ -240,6 +279,7 @@ public class CaelixRenderer : MonoBehaviour
         }
 
         CaelixBrickPool pool = ActivePool;
+        CaelixRayQueryInstanceTable instances = ActiveInstances;
         _voxelScene.ClearInstances();
         IReadOnlyList<EntityView> views = source.Views;
         for (int v = 0; v < views.Count; v++)
@@ -254,12 +294,13 @@ public class CaelixRenderer : MonoBehaviour
                     sectorRenderers[key] = new SectorRenderer(view, sectorPos);
                 }
 
-                sectorRenderers[key].RenderModifyAS(ref _voxelScene, view, sectorPos, pool);
+                sectorRenderers[key].RenderModifyAS(ref _voxelScene, view, sectorPos, pool, instances);
             }
 
             view.ShouldResetMotionVectors = false;
         }
 
+        instances?.Flush();
         _voxelScene.Build();
     }
 
@@ -358,6 +399,9 @@ public class CaelixRenderer : MonoBehaviour
         _voxelScene?.Dispose();
         _voxelScene = null;
 
+        Instances?.Dispose();
+        Instances = null;
+
         Pool?.Dispose();
         Pool = null;
 
@@ -365,6 +409,7 @@ public class CaelixRenderer : MonoBehaviour
         {
             CoreUtils.Destroy(pooledBrickMat);
             pooledBrickMat = null;
+            pooledBrickMatKeyword = null;
         }
     }
 
@@ -406,6 +451,7 @@ public class CaelixRenderer : MonoBehaviour
 
         EnsureBrickStorage();
         CaelixBrickPool pool = ActivePool;
+        CaelixRayQueryInstanceTable instances = ActiveInstances;
 
         frameId += 1;
         instanceCount = (int)voxelScene.GetInstanceCount();
@@ -426,7 +472,7 @@ public class CaelixRenderer : MonoBehaviour
                 if (sectorRenderers.TryGetValue(key, out SectorRenderer removed))
                 {
                     removed.MarkRemove();
-                    removed.RemoveMe(ref _voxelScene, pool);
+                    removed.RemoveMe(ref _voxelScene, pool, instances);
                     sectorRenderers.Remove(key);
                 }
             }
@@ -485,7 +531,7 @@ public class CaelixRenderer : MonoBehaviour
                 if (!sectorRenderers.TryGetValue(key, out SectorRenderer renderer)) continue;
 
                 renderer.UploadBricks(pool);
-                renderer.RenderModifyAS(ref _voxelScene, view, sectorPos, pool);
+                renderer.RenderModifyAS(ref _voxelScene, view, sectorPos, pool, instances);
 
                 // Call sector tick
                 sector.ReorderBricks();
@@ -494,6 +540,9 @@ public class CaelixRenderer : MonoBehaviour
             // Every sector of this view has consumed the reset; its motion vectors are settled.
             view.ShouldResetMotionVectors = false;
         }
+
+        // One upload for every record written above; a no-op when nothing changed.
+        instances?.Flush();
 
         if (pool != null)
         {

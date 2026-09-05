@@ -113,6 +113,11 @@ namespace Caelix.Rendering
         /// g_bricks on buffer realloc, <see cref="RenderModifyAS"/> writes the previous transform),
         /// and constant-per-sector values like the face-hash seed must be set exactly once no
         /// matter which of them runs first.
+        /// <para>
+        /// Never called in <see cref="CaelixBrickStorage.SharedPoolInstanceTable"/> storage, where
+        /// <see cref="matProps"/> stays null: a property block IS the hit group's local root
+        /// arguments, and that mode exists to have none.
+        /// </para>
         /// </remarks>
         private MaterialPropertyBlock EnsureMaterialProperties()
         {
@@ -199,9 +204,20 @@ namespace Caelix.Rendering
         /// </summary>
         private bool recordDirty;
 
-        /// <summary>Word offset and page the property block currently names; -1 = never published.</summary>
+        /// <summary>Word offset and page the instance record currently names; -1 = never published.</summary>
         private int publishedBrickBase = -1;
         private int publishedPage = -1;
+
+        /// <summary>
+        /// Slot in the instance table, and therefore this sector's RTAS instance ID. -1 until the
+        /// first publish; always -1 outside
+        /// <see cref="CaelixBrickStorage.SharedPoolInstanceTable"/> storage.
+        /// </summary>
+        /// <remarks>
+        /// Claimed once and kept for this renderer's whole life, because the ID has to survive the
+        /// remove + add a geometry rebuild does. Mirrors <see cref="RayQuerySectorRenderer"/>.
+        /// </remarks>
+        private int instanceSlot = -1;
 
         private bool GPUBufferInitialized => brickBuffer != null && brickBuffer.IsValid();
         private bool HostBufferInitialized => hostAABBBuffer.IsCreated;
@@ -587,10 +603,13 @@ namespace Caelix.Rendering
         }
 
         /// <summary>
-        /// Releases the RTAS instance and, in pool mode, this sector's pool range, then disposes.
+        /// Releases the RTAS instance and, in pool mode, this sector's pool range and instance
+        /// table slot, then disposes.
         /// </summary>
         /// <param name="pool">The shared brick pool in pool mode; null in per-sector mode.</param>
-        public void RemoveMe(ref RayTracingAccelerationStructure AS, CaelixBrickPool pool)
+        /// <param name="table">The instance table in table mode; null in the other modes.</param>
+        public void RemoveMe(
+            ref RayTracingAccelerationStructure AS, CaelixBrickPool pool, CaelixRayQueryInstanceTable table)
         {
             if (shouldRemove)
             {
@@ -602,6 +621,12 @@ namespace Caelix.Rendering
                 {
                     pool?.Free(poolHandle);
                     poolHandle = null;
+                }
+
+                if (instanceSlot >= 0)
+                {
+                    table?.Free(instanceSlot);
+                    instanceSlot = -1;
                 }
 
                 recordDirty = false;
@@ -616,19 +641,32 @@ namespace Caelix.Rendering
         /// <param name="entity">The voxel entity this sector belongs to.</param>
         /// <param name="sectorPos">The position of this sector in sector coordinates.</param>
         /// <param name="pool">The shared brick pool in pool mode; null in per-sector mode.</param>
+        /// <param name="table">
+        /// The instance table in table mode; null in the other two modes. Non-null is what selects
+        /// table mode: per-instance data then travels through the table rather than a property
+        /// block, and this sector's hit-group records carry no local root arguments at all.
+        /// </param>
         /// <remarks>
         /// Must be called after Render(), which is what turns fresh voxel data into isDirty.
         /// Four outcomes:
-        /// - geometry changed: rebuild the RTAS instance (remove + add) and push the property block;
+        /// - geometry changed: rebuild the RTAS instance (remove + add) and publish the record;
         /// - instance exists and still needs tracking (moving entity, or the one frame an entity
-        ///   turns static and its motion vectors must settle): push transform + property block;
-        /// - pool mode only, the sector's range moved: push the property block alone, because the
-        ///   AABBs did not change and rebuilding would throw away a perfectly good BLAS;
+        ///   turns static and its motion vectors must settle): push transform + record;
+        /// - pool mode only, the sector's range moved: publish the record alone, because the AABBs
+        ///   did not change and rebuilding would throw away a perfectly good BLAS;
         /// - otherwise: nothing, which is how static entities stay free after their first frame.
+        /// <para>
+        /// "The record" is the property block in per-sector and plain pool storage, and a slot of
+        /// <paramref name="table"/> in table storage — where a republish touches the acceleration
+        /// structure not at all, because the table write is already the whole update.
+        /// </para>
         /// </remarks>
         public void RenderModifyAS(
-            ref RayTracingAccelerationStructure AS, EntityView entity, int3 sectorPos, CaelixBrickPool pool)
+            ref RayTracingAccelerationStructure AS, EntityView entity, int3 sectorPos, CaelixBrickPool pool,
+            CaelixRayQueryInstanceTable table)
         {
+            bool usesTable = table != null;
+
             Matrix4x4 objectToWorld =
                 entity.LocalToWorld *
                 Matrix4x4.Translate((sectorPos * Sector.SECTOR_SIZE_IN_BLOCKS).ToVector3Int());
@@ -673,53 +711,88 @@ namespace Caelix.Rendering
 
             if (rebuildsInstance || retracksInstance || republishesRecord)
             {
-                // Previous transform is delivered through the per-instance property block for now.
-                // This matches the sector-instance RTAS layout, but it means moving sectors need a
-                // property-block update even when voxel geometry is unchanged. If that gets expensive,
-                // move these matrices to a structured buffer keyed by a stable instance/sector id.
-                // g_bricks needs no refresh here: Render() re-binds it whenever the buffer is replaced.
-                EnsureMaterialProperties().SetMatrix("_PrevObjectToWorld", prevObjectToWorld);
-
-                if (pool != null)
+                if (usesTable)
                 {
-                    // Fall back to the last published range while the pool has no room for this
-                    // sector, so a retrack cannot overwrite a live instance's record with a null range.
+                    // Table mode: nothing rides on the shader record, so no property block is ever
+                    // created. Same fallback-to-published logic as the property-block path below.
                     int brickBaseWords = hasPool ? poolHandle.OffsetBricks * BRICK_DATA_LENGTH : publishedBrickBase;
                     int brickPage = hasPool ? poolHandle.Page : publishedPage;
 
                     if (brickBaseWords >= 0 && brickPage >= 0)
                     {
-                        // The page buffer goes through the per-instance binding the DXR path has anyway;
-                        // a page switch inside the intersection shader is far slower (see CaelixBrickTrace.hlsl).
-                        matProps.SetBuffer("g_bricks", pool.GetPageBuffer(brickPage));
-                        matProps.SetInt("_BrickBase", brickBaseWords);
+                        // The slot is claimed once and kept for this renderer's whole life: it IS the
+                        // RTAS instance ID, so it has to survive a remove + add.
+                        if (instanceSlot < 0)
+                        {
+                            instanceSlot = table.Allocate();
+                        }
+
+                        table.Set(instanceSlot, prevObjectToWorld, brickBaseWords, brickPage, (uint)sectorHashSeed);
                         publishedBrickBase = brickBaseWords;
                         publishedPage = brickPage;
                         recordDirty = false;
+                    }
+                }
+                else
+                {
+                    // Previous transform is delivered through the per-instance property block for now.
+                    // This matches the sector-instance RTAS layout, but it means moving sectors need a
+                    // property-block update even when voxel geometry is unchanged. If that gets expensive,
+                    // move these matrices to a structured buffer keyed by a stable instance/sector id.
+                    // g_bricks needs no refresh here: Render() re-binds it whenever the buffer is replaced.
+                    EnsureMaterialProperties().SetMatrix("_PrevObjectToWorld", prevObjectToWorld);
+
+                    if (pool != null)
+                    {
+                        // Fall back to the last published range while the pool has no room for this
+                        // sector, so a retrack cannot overwrite a live instance's record with a null range.
+                        int brickBaseWords = hasPool ? poolHandle.OffsetBricks * BRICK_DATA_LENGTH : publishedBrickBase;
+                        int brickPage = hasPool ? poolHandle.Page : publishedPage;
+
+                        if (brickBaseWords >= 0 && brickPage >= 0)
+                        {
+                            // The page buffer goes through the per-instance binding the DXR path has anyway;
+                            // a page switch inside the intersection shader is far slower (see CaelixBrickTrace.hlsl).
+                            matProps.SetBuffer("g_bricks", pool.GetPageBuffer(brickPage));
+                            matProps.SetInt("_BrickBase", brickBaseWords);
+                            publishedBrickBase = brickBaseWords;
+                            publishedPage = brickPage;
+                            recordDirty = false;
+                        }
                     }
                 }
             }
 
             if (rebuildsInstance)
             {
-                EnsureAABBConfig();
+                EnsureAABBConfig(usesTable);
 
                 // Assigned here rather than inside EnsureAABBConfig: on a settle tick Render() never
                 // ran, so the config was never invalidated and still carries the previous tick's flag.
                 // AABBconfig.dynamicGeometry = wantsDynamicGeometry;
 
                 AS.RemoveInstance(sectorASHandle);
-                sectorASHandle = AS.AddInstance(AABBconfig, objectToWorld);
+                sectorASHandle = usesTable
+                    ? AS.AddInstance(AABBconfig, objectToWorld, (uint)instanceSlot)
+                    : AS.AddInstance(AABBconfig, objectToWorld);
                 instanceIsDynamic = wantsDynamicGeometry;
                 hasRenderable = true;
-                AS.UpdateInstancePropertyBlock(sectorASHandle, matProps);
+
+                if (!usesTable)
+                {
+                    AS.UpdateInstancePropertyBlock(sectorASHandle, matProps);
+                }
             }
             else if (retracksInstance)
             {
                 AS.UpdateInstanceTransform(sectorASHandle, objectToWorld);
-                AS.UpdateInstancePropertyBlock(sectorASHandle, matProps);
+
+                if (!usesTable)
+                {
+                    AS.UpdateInstancePropertyBlock(sectorASHandle, matProps);
+                }
             }
-            else if (republishesRecord)
+            else if (republishesRecord && !usesTable)
             {
                 AS.UpdateInstancePropertyBlock(sectorASHandle, matProps);
             }
@@ -735,11 +808,15 @@ namespace Caelix.Rendering
         /// <summary>
         /// Builds the AABB instance config if Render() invalidated it (or it was never built).
         /// </summary>
+        /// <param name="usesTable">
+        /// True in table mode. The config then carries no material properties: a property block is
+        /// exactly the local root arguments that mode exists to remove.
+        /// </param>
         /// <remarks>
         /// dynamicGeometry is deliberately not set here — it is per-registration state decided by
         /// the caller, and this method no-ops on the settle tick.
         /// </remarks>
-        private void EnsureAABBConfig()
+        private void EnsureAABBConfig(bool usesTable)
         {
             if (AABBconfig.aabbCount != 0)
             {
@@ -752,8 +829,12 @@ namespace Caelix.Rendering
                 dynamicGeometry = false,
                 accelerationStructureBuildFlagsOverride = true,
                 accelerationStructureBuildFlags = RayTracingAccelerationStructureBuildFlags.PreferFastTrace,
-                materialProperties = EnsureMaterialProperties(),
             };
+
+            if (!usesTable)
+            {
+                AABBconfig.materialProperties = EnsureMaterialProperties();
+            }
         }
 
         /// <summary>

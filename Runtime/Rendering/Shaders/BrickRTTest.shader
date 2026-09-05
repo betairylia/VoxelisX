@@ -20,16 +20,25 @@ Shader "Caelix/BrickRTTest"
             #pragma enable_ray_tracing_shader_debug_symbols
             #pragma target 6.6
             #pragma use_dxc
-            // Brick storage: off = one buffer per sector bound through the property block;
-            // on = the shared CaelixBrickPool, g_bricks bound per instance to the page holding the sector, offset by _BrickBase.
-            // CaelixRenderer enables the keyword on a private material instance in pool mode.
-            #pragma multi_compile_local _ CAELIX_BRICK_POOL
+            // Brick storage, one variant each:
+            // _                         = one g_bricks buffer per sector, bound through the property block;
+            // CAELIX_BRICK_POOL         = the shared CaelixBrickPool, g_bricks bound per instance to the page
+            //                             holding the sector, offset by _BrickBase;
+            // CAELIX_BRICK_POOL_TABLE   = the same pool, but the pages are bound globally and the page, the
+            //                             offset and the previous transform come from g_Instances[InstanceID()],
+            //                             so this hit group has no local root arguments at all.
+            // CaelixRenderer enables the keyword its storage mode needs on a private material instance.
+            #pragma multi_compile_local _ CAELIX_BRICK_POOL CAELIX_BRICK_POOL_TABLE
 
             #include "RayPayload.hlsl"
             #include "Utils/Utils.hlsl"
             #include "Assets/Caelix/VoxelMaterials.hlsl"
             #include "Utils/BlueNoise.hlsl"
 
+            #ifdef CAELIX_BRICK_POOL_TABLE
+            #include "CaelixBrickPages.hlsl"
+            #include "CaelixInstanceRecord.hlsl"
+            #endif
 
             #include "CaelixBrickTrace.hlsl"
             
@@ -66,8 +75,13 @@ Shader "Caelix/BrickRTTest"
 
                 float3 objectHitPosition = ObjectRayOrigin() + ObjectRayDirection() * payload.T;
                 float3 worldHitPosition = WorldRayOrigin() + WorldRayDirection() * payload.T;
+            #ifdef CAELIX_BRICK_POOL_TABLE
+                float4x4 prevObjectToWorld = CaelixInstancePrevObjectToWorld(g_Instances[InstanceID()]);
+            #else
+                float4x4 prevObjectToWorld = _PrevObjectToWorld;
+            #endif
                 payload.packedPrevWorldOffset = CaelixPackFloat3ToHalf4(
-                mul(_PrevObjectToWorld, float4(objectHitPosition, 1.0f)).xyz - worldHitPosition);
+                    mul(prevObjectToWorld, float4(objectHitPosition, 1.0f)).xyz - worldHitPosition);
             }
             
             // [shader("anyhit")]
