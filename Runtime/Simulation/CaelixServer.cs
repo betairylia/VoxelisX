@@ -111,6 +111,8 @@ namespace Caelix.Simulation
                 return false;
             }
 
+            // TODO: VibeReview: Why `CreateWorld` does not notify connections but `RemoveWorld` does?
+            // Also should we explicitly notify them here?
             for (int i = 0; i < connections.Count; i++)
             {
                 connections[i].ForgetWorld(world.Id);
@@ -418,12 +420,19 @@ namespace Caelix.Simulation
             }
         }
 
+        /// <summary>
+        /// Notify all connections with delta packages for client replication (rendering etc.).
+        /// </summary>
+        /// <param name="world"></param>
         private void Replicate(CaelixWorld world)
         {
             for (int c = 0; c < connections.Count; c++)
             {
                 if (connections[c].IsConnected)
                 {
+                    // TODO: VibeReview: Shouldn't we build this once and send to all connections instead?
+                    // Currently it builds for each connection from stretch right? Seems heavy.
+                    // Even if later client's update region is independent, most clients should overlap in normal game sessions.
                     connections[c].ReplicateWorld(world, writer);
                 }
             }
