@@ -831,6 +831,8 @@ namespace Caelix.Tests
             public string stage;
             public double elapsedSeconds;
             public long privateBytes;
+            public long residentBytes;
+            public long peakResidentBytes;
             public long managedBytes;
             public long unityAllocatedBytes;
             public long queuedBytes;
@@ -852,6 +854,23 @@ namespace Caelix.Tests
             public string gpu;
             public List<ScaleSample> samples = new();
         }
+
+#if UNITY_EDITOR_WIN
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ProcessMemoryCounters
+        {
+            public uint cb, pageFaultCount;
+            public UIntPtr peakWorkingSet, workingSet, quotaPeakPaged, quotaPaged;
+            public UIntPtr quotaPeakNonPaged, quotaNonPaged, pagefile, peakPagefile, privateUsage;
+        }
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GetCurrentProcess();
+
+        [DllImport("psapi.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetProcessMemoryInfo(IntPtr process, out ProcessMemoryCounters counters, uint size);
+#endif
 
         /// <summary>
         /// Small by default. Set CAELIX_VALIDATION_SAVE to exercise a real save, or
@@ -938,13 +957,18 @@ namespace Caelix.Tests
             GC.WaitForPendingFinalizers();
             GC.Collect();
             CaptureScaleSample(rig, report, "after-gc", timer.Elapsed.TotalSeconds);
+            rig.Dispose();
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            CaptureScaleSample(rig, report, "disposed-after-gc", timer.Elapsed.TotalSeconds, disposed: true);
             string json = JsonUtility.ToJson(report, true);
             TestContext.Out.WriteLine(json);
             string output = Environment.GetEnvironmentVariable("CAELIX_VALIDATION_REPORT");
             if (!string.IsNullOrEmpty(output)) System.IO.File.WriteAllText(output, json);
         }
 
-        private static void CaptureScaleSample(Rig rig, ScaleReport report, string stage, double elapsed)
+        private static void CaptureScaleSample(Rig rig, ScaleReport report, string stage, double elapsed, bool disposed = false)
         {
             var sample = new ScaleSample
             {
@@ -956,8 +980,19 @@ namespace Caelix.Tests
                 queuedBytes = rig.FirstClientChannel.PendingBytes,
                 peakQueuedBytes = rig.FirstClientChannel.PeakPendingBytes,
                 receivedBytes = rig.FirstClientChannel.TotalReceivedBytes,
-                entities = rig.World.EntityCount,
+                entities = disposed ? 0 : rig.World.EntityCount,
             };
+#if UNITY_EDITOR_WIN
+            // Unity's Mono returns zero for Process.PrivateMemorySize64 on this Editor version.
+            if (!GetProcessMemoryInfo(GetCurrentProcess(), out var counters,
+                    (uint)Marshal.SizeOf<ProcessMemoryCounters>()))
+                Assert.Fail("Could not read Windows process memory counters");
+            sample.privateBytes = (long)counters.privateUsage.ToUInt64();
+            sample.residentBytes = (long)counters.workingSet.ToUInt64();
+            sample.peakResidentBytes = (long)counters.peakWorkingSet.ToUInt64();
+#endif
+            report.samples.Add(sample);
+            if (disposed) return;
             foreach (var entity in rig.World.Data.VoxelEntities)
             foreach (var sector in entity.Value.sectors)
             {
@@ -968,7 +1003,6 @@ namespace Caelix.Tests
             foreach (var world in rig.Client.Worlds)
             foreach (var view in world.Views)
             foreach (var sector in view.Data.sectors) sample.replicaSectorBytes += sector.Value.Get().MemoryUsage;
-            report.samples.Add(sample);
         }
 
         private static unsafe void AssertAllBlockStorageEqual(CaelixWorld server, ClientWorld replica)
