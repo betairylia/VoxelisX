@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Unity.Collections;
 using Unity.Mathematics;
@@ -29,11 +30,18 @@ namespace Caelix.Simulation
         }
 
         private static readonly ProfilerMarker s_ReplicateWorldMarker = new("Server.ReplicateWorld");
-        private static readonly ProfilerMarker s_WriteBrickBatchMarker = new("Server.WriteBrickBatch");
+        private static readonly ProfilerMarker s_ReplicationFullBuildMarker = new("Server.ReplicationFullBuild");
 
         private readonly Dictionary<ushort, WorldKnown> worlds = new();
         private readonly List<Guid128> guidScratch = new();
         private readonly List<int3> sectorScratch = new();
+        private readonly List<ushort> worldScratch = new();
+
+        /// <summary>
+        /// Sectors this connection received in full during the current <see cref="ReplicateWorld"/>
+        /// call. Their shared-delta slices are redundant and are skipped. Reused across ticks.
+        /// </summary>
+        private readonly HashSet<(Guid128 Guid, int3 SectorPos)> sentFullThisTick = new();
 
         public int Id { get; }
         public INetChannel Channel { get; }
@@ -60,14 +68,81 @@ namespace Caelix.Simulation
             Channel.Send(delivery, writer.AsSpan());
         }
 
-        /// <summary>Forgets everything about a world so the next replication resends it in full.</summary>
+        /// <summary>Sends bytes a <see cref="ReplicationBatch"/> packed. The span is copied by the channel.</summary>
+        public void Send(NetDelivery delivery, ReadOnlySpan<byte> payload)
+        {
+            Channel.Send(delivery, payload);
+        }
+
+        /// <summary>Forgets a world so the next <see cref="SyncWorlds"/> sends it again in full.</summary>
         public void ForgetWorld(ushort worldId)
         {
             worlds.Remove(worldId);
         }
 
-        // TODO: VibeReview: Can we burst-ify the build process (and connection data holders)?
-        internal unsafe void ReplicateWorld(CaelixWorld world, NetMessageWriter writer)
+        /// <summary>
+        /// Brings this connection's world set in line with the server's: a WorldRemove for every
+        /// world it knew that is gone or no longer subscribed, then a WorldAdd for every subscribed
+        /// world it does not know yet. Runs once per <c>Step</c>, before any world replicates, so
+        /// <see cref="ReplicateWorld"/> can rely on the world being known.
+        /// </summary>
+        internal void SyncWorlds(IReadOnlyList<CaelixWorld> serverWorlds, NetMessageWriter writer, uint tick)
+        {
+            // Removes first: a world id that is freed and reused in the same tick must reach the
+            // client as remove-then-add, not add-then-remove.
+            worldScratch.Clear();
+            foreach (var kvp in worlds)
+            {
+                ushort worldId = kvp.Key;
+                bool stillThere = false;
+                for (int i = 0; i < serverWorlds.Count; i++)
+                {
+                    if (serverWorlds[i].Id == worldId)
+                    {
+                        stillThere = true;
+                        break;
+                    }
+                }
+
+                if (!stillThere || !IsSubscribed(worldId))
+                {
+                    worldScratch.Add(worldId);
+                }
+            }
+
+            for (int i = 0; i < worldScratch.Count; i++)
+            {
+                worlds.Remove(worldScratch[i]);
+                writer.Reset();
+                NetHeader.Write(writer, NetMessageType.WorldRemove, worldScratch[i], tick);
+                writer.Write(new WorldRemoveMessage());
+                Send(NetDelivery.Reliable, writer);
+            }
+
+            for (int i = 0; i < serverWorlds.Count; i++)
+            {
+                CaelixWorld world = serverWorlds[i];
+                if (!IsSubscribed(world.Id) || worlds.ContainsKey(world.Id))
+                {
+                    continue;
+                }
+
+                worlds.Add(world.Id, new WorldKnown());
+                writer.Reset();
+                NetHeader.Write(writer, NetMessageType.WorldAdd, world.Id, tick);
+                writer.Write(new WorldAddMessage { ReplicatedSlotMask = world.Config.replicatedSlotMask });
+                Send(NetDelivery.Reliable, writer);
+            }
+        }
+
+        /// <summary>
+        /// Phase B of replication: the per-connection diff. Sends despawns, spawns, state,
+        /// transforms and sector adds and removes, packs the sectors this connection has not seen
+        /// into <paramref name="full"/> and sends them, then forwards the shared
+        /// <paramref name="delta"/> slices that are not already covered by a full sector.
+        /// </summary>
+        internal unsafe void ReplicateWorld(
+            CaelixWorld world, NetMessageWriter writer, ReplicationBatch delta, ReplicationBatch full)
         {
             using var _ = s_ReplicateWorldMarker.Auto();
             if (!IsSubscribed(world.Id))
@@ -77,9 +152,12 @@ namespace Caelix.Simulation
 
             if (!worlds.TryGetValue(world.Id, out WorldKnown known))
             {
-                known = new WorldKnown();
-                worlds.Add(world.Id, known);
+                // SyncWorlds runs first every tick and creates it; nothing to do before it did.
+                return;
             }
+
+            sentFullThisTick.Clear();
+            full.Clear();
 
             ushort worldId = world.Id;
             uint tick = world.TickIndex;
@@ -105,7 +183,7 @@ namespace Caelix.Simulation
                 Send(NetDelivery.Reliable, writer);
             }
 
-            // Spawns, state, transforms, sectors, bricks.
+            // Spawns, state, transforms, sectors.
             foreach (var kvp in entities)
             {
                 Guid128 guid = kvp.Key;
@@ -190,70 +268,58 @@ namespace Caelix.Simulation
                     Send(NetDelivery.Reliable, writer);
                 }
 
-                // Sector adds and brick deltas.
+                // Sector adds. An entity that is new to this connection has every sector new, so it
+                // is served entirely by the catch-up batch and never by a shared delta slice.
                 foreach (var sectorEntry in data.sectors)
                 {
                     int3 sectorPos = sectorEntry.Key;
-                    ref Sector sector = ref sectorEntry.Value.Get();
-
-                    bool sectorIsNew = entityKnown.Sectors.Add(sectorPos);
-                    if (sectorIsNew)
+                    if (!entityKnown.Sectors.Add(sectorPos))
                     {
-                        writer.Reset();
-                        NetHeader.Write(writer, NetMessageType.SectorAdd, worldId, tick);
-                        writer.Write(new SectorMessage { Guid = guid, SectorPos = sectorPos });
-                        Send(NetDelivery.Reliable, writer);
-
-                        if (sector.NonEmptyBrickCount > 0)
-                        {
-                            WriteBrickBatch(writer, worldId, tick, guid, sectorPos, ref sector, slotMask, fullSector: true);
-                        }
+                        continue;
                     }
-                    else if ((sector.sectorDirtyFlags & (ushort)Sector.ReplicationDirtyMask) != 0)
+
+                    writer.Reset();
+                    NetHeader.Write(writer, NetMessageType.SectorAdd, worldId, tick);
+                    writer.Write(new SectorMessage { Guid = guid, SectorPos = sectorPos });
+                    Send(NetDelivery.Reliable, writer);
+
+                    full.Add(guid, sectorPos, sectorEntry.Value, fullSector: true);
+                    sentFullThisTick.Add((guid, sectorPos));
+                }
+            }
+
+            // Catch-up: the sectors this connection did not know. SectorAdd for each already went
+            // out above, in the same order the batch packed them.
+            if (full.SectorCount > 0)
+            {
+                using (s_ReplicationFullBuildMarker.Auto())
+                {
+                    full.Build(worldId, tick, slotMask);
+                }
+
+                for (int i = 0; i < full.Count; i++)
+                {
+                    if (full[i].Length > 0)
                     {
-                        WriteBrickBatch(writer, worldId, tick, guid, sectorPos, ref sector, slotMask, fullSector: false);
+                        Send(NetDelivery.Reliable, full.Slice(i));
                     }
                 }
             }
-        }
 
-        private unsafe void WriteBrickBatch(
-            NetMessageWriter writer, ushort worldId, uint tick, Guid128 guid, int3 sectorPos,
-            ref Sector sector, ushort slotMask, bool fullSector)
-        {
-            using var _ = s_WriteBrickBatchMarker.Auto();
-            writer.Reset();
-            NetHeader.Write(writer, NetMessageType.BrickData, worldId, tick);
-            int headerOffset = writer.Reserve<BrickBatchHeader>();
-
-            ushort count = 0;
-            ushort dirtyMask = (ushort)Sector.ReplicationDirtyMask;
-            for (int brickIdx = 0; brickIdx < Sector.BRICKS_IN_SECTOR; brickIdx++)
+            // The shared delta. It can only name sectors this connection already knows, because a
+            // sector new to it got its SectorAdd earlier in this same call and is in
+            // sentFullThisTick. A range for a known sector holds exactly the bricks the old
+            // per-connection WriteBrickBatch produced.
+            for (int i = 0; i < delta.Count; i++)
             {
-                if (sector.brickMap.indices[brickIdx] == Sector.BRICKID_EMPTY)
+                ReplicationRange range = delta[i];
+                if (range.Length == 0 || sentFullThisTick.Contains((range.Guid, range.SectorPos)))
                 {
                     continue;
                 }
 
-                ushort dirty = sector.brickDirtyFlags[brickIdx];
-                if (!fullSector && (dirty & dirtyMask) == 0)
-                {
-                    continue;
-                }
-
-                writer.Write((ushort)brickIdx);
-                writer.Write(dirty);
-                sector.WriteReplicatedBrick(writer, brickIdx, slotMask);
-                count++;
+                Send(NetDelivery.Reliable, delta.Slice(i));
             }
-
-            if (count == 0)
-            {
-                return;
-            }
-
-            writer.Patch(headerOffset, new BrickBatchHeader { Guid = guid, SectorPos = sectorPos, BrickCount = count });
-            Send(NetDelivery.Reliable, writer);
         }
 
         private static bool TransformEquals(in RigidTransform a, in RigidTransform b)

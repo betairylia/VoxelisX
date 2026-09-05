@@ -177,7 +177,7 @@ namespace Caelix
         /// </summary>
         public void SetDrag(Vector3 anchorLocal, Vector3 targetWorld, float spring, float damping, float maxAcceleration)
         {
-            CaelixHost host = entity.Host != null ? entity.Host : CaelixHost.Any;
+            CaelixHost host = entity.Host != null ? entity.Host : CaelixHost.Current;
             if (host == null || host.Client == null)
             {
                 return;
@@ -198,7 +198,7 @@ namespace Caelix
         /// <summary>Ends this client's drag on the body.</summary>
         public void ReleaseDrag()
         {
-            CaelixHost host = entity.Host != null ? entity.Host : CaelixHost.Any;
+            CaelixHost host = entity.Host != null ? entity.Host : CaelixHost.Current;
             if (host == null || host.Client == null)
             {
                 return;
@@ -210,7 +210,7 @@ namespace Caelix
 
         private void Send(in VoxelBodyForceCommand command)
         {
-            CaelixHost host = entity.Host != null ? entity.Host : CaelixHost.Any;
+            CaelixHost host = entity.Host != null ? entity.Host : CaelixHost.Current;
             if (host == null || host.Client == null)
             {
                 return;

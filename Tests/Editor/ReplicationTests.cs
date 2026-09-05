@@ -44,26 +44,57 @@ namespace Caelix.Tests
             public readonly CaelixWorld World;
             public readonly CaelixClient Client;
 
+            private readonly List<CaelixClient> clients = new();
+
             public Rig()
             {
-                LocalChannel.CreatePair(out LocalChannel serverEnd, out LocalChannel clientEnd);
                 Server = new CaelixServer { TickRate = 100f };
                 World = Server.CreateWorld(CaelixWorldConfig.Default(0, "test"));
-                Client = new CaelixClient(clientEnd, Server.Types);
-                Server.AddConnection(serverEnd);
+                Client = AddClient();
             }
 
-            /// <summary>One server tick, then one client frame.</summary>
+            /// <summary>Every client connected to this rig's server, in connection order.</summary>
+            public IReadOnlyList<CaelixClient> Clients => clients;
+
+            /// <summary>Connects one more client through its own in-process channel pair.</summary>
+            public CaelixClient AddClient()
+            {
+                LocalChannel.CreatePair(out LocalChannel serverEnd, out LocalChannel clientEnd);
+                var client = new CaelixClient(clientEnd, Server.Types);
+                Server.AddConnection(serverEnd);
+                clients.Add(client);
+                return client;
+            }
+
+            /// <summary>One server tick, then one client frame on the first client.</summary>
             public void Exchange()
             {
                 Server.Step();
-                Client.Update();
+                Client.Receive();
+                Client.PrepareRender();
                 Client.EndFrame();
+            }
+
+            /// <summary>One server tick, then one client frame on every connected client.</summary>
+            public void ExchangeAll()
+            {
+                Server.Step();
+                for (int i = 0; i < clients.Count; i++)
+                {
+                    clients[i].Receive();
+                    clients[i].PrepareRender();
+                    clients[i].EndFrame();
+                }
             }
 
             public void Dispose()
             {
-                Client.Dispose();
+                for (int i = 0; i < clients.Count; i++)
+                {
+                    clients[i].Dispose();
+                }
+
+                clients.Clear();
                 Server.Dispose();
             }
         }
@@ -136,7 +167,8 @@ namespace Caelix.Tests
 
             rig.World.SetBlock(EntityA, new int3(9, 8, 8), new Block(0x8002));
             rig.Server.Step();
-            rig.Client.Update(); // BeginFrame + apply + propagate; EndFrame not yet called
+            rig.Client.Receive(); // apply messages
+            rig.Client.PrepareRender(); // propagate render flags; EndFrame not yet called
 
             SectorHandle sector = view.Data.sectors[int3.zero];
             int brickIdx = Sector.ToBrickIdx(1, 1, 1);
@@ -225,7 +257,8 @@ namespace Caelix.Tests
                 });
 
             rig.Server.ProcessIncoming();
-            rig.Client.Update();
+            rig.Client.Receive();
+            rig.Client.PrepareRender();
             rig.Client.EndFrame();
 
             Assert.That(replyCount, Is.EqualTo(5));
@@ -389,7 +422,8 @@ namespace Caelix.Tests
             VoxelQueryReply reply = null;
             rig.Client.QueryVoxel(EntityA, new int3(5, 5, 5), 0xFFFF, r => reply = r);
             rig.Server.ProcessIncoming();
-            rig.Client.Update();
+            rig.Client.Receive();
+            rig.Client.PrepareRender();
             rig.Client.EndFrame();
 
             Assert.That(reply, Is.Not.Null);
@@ -430,6 +464,127 @@ namespace Caelix.Tests
             }
 
             System.IO.File.Delete(path);
+        }
+
+        [Test]
+        public void TwoClients_ShareDeltaAndLateJoinerGetsFullState()
+        {
+            using var rig = new Rig();
+            CaelixClient second = rig.AddClient();
+
+            rig.World.CreateEntity(EntityA, RigidTransform.identity, isStatic: true);
+            rig.World.SetBlock(EntityA, new int3(1, 1, 1), new Block(0x8001));
+            rig.World.SetBlock(EntityA, new int3(130, 1, 1), new Block(0x8002)); // second sector
+            rig.ExchangeAll();
+
+            AssertReplicaMatchesServer(rig, rig.Client);
+            AssertReplicaMatchesServer(rig, second);
+
+            rig.World.SetBlock(EntityA, new int3(1, 1, 1), new Block(0x8003));   // edit a known brick
+            rig.World.SetBlock(EntityA, new int3(1, 1, 260), new Block(0x8004)); // a sector nobody has
+            rig.ExchangeAll();
+
+            AssertReplicaMatchesServer(rig, rig.Client);
+            AssertReplicaMatchesServer(rig, second);
+
+            // A late joiner is caught up from the same tick's batches, not from a replay.
+            CaelixClient third = rig.AddClient();
+            rig.ExchangeAll();
+            AssertReplicaMatchesServer(rig, third);
+
+            rig.World.SetBlock(EntityA, new int3(2, 1, 1), new Block(0x8005));
+            rig.ExchangeAll();
+
+            AssertReplicaMatchesServer(rig, rig.Client);
+            AssertReplicaMatchesServer(rig, second);
+            AssertReplicaMatchesServer(rig, third);
+
+            Assert.That(third.World.TryGetView(EntityA, out EntityView thirdView), Is.True);
+            Assert.That(thirdView.Data.GetBlock(new int3(2, 1, 1)), Is.EqualTo(new Block(0x8005)));
+            Assert.That(thirdView.Data.GetBlock(new int3(1, 1, 1)), Is.EqualTo(new Block(0x8003)));
+            Assert.That(thirdView.Data.GetBlock(new int3(1, 1, 260)), Is.EqualTo(new Block(0x8004)));
+        }
+
+        [Test]
+        public void WorldLifecycle_AddAndRemoveReachTheClient()
+        {
+            using var rig = new Rig();
+            rig.World.CreateEntity(EntityA, RigidTransform.identity, isStatic: true);
+            rig.World.SetBlock(EntityA, new int3(1, 1, 1), new Block(0x8001));
+            rig.Exchange();
+
+            CaelixWorld second = rig.Server.CreateWorld(CaelixWorldConfig.Default(1, "second"));
+            second.CreateEntity(EntityB, RigidTransform.identity, isStatic: true);
+            second.SetBlock(EntityB, new int3(2, 2, 2), new Block(0x8007));
+            rig.Exchange();
+
+            ClientWorld replica = FindClientWorld(rig.Client, 1);
+            Assert.That(replica, Is.Not.Null, "WorldAdd creates the replica of the new world");
+            Assert.That(replica.TryGetView(EntityB, out EntityView view), Is.True);
+            Assert.That(view.Data.GetBlock(new int3(2, 2, 2)), Is.EqualTo(new Block(0x8007)));
+
+            var removed = new List<ushort>();
+            rig.Client.WorldRemoving += w => removed.Add(w.Id);
+            rig.Server.RemoveWorld(second);
+            rig.Exchange();
+
+            Assert.That(removed.Count, Is.EqualTo(1));
+            Assert.That(removed[0], Is.EqualTo(1));
+            Assert.That(FindClientWorld(rig.Client, 1), Is.Null);
+
+            ClientWorld defaultReplica = FindClientWorld(rig.Client, 0);
+            Assert.That(defaultReplica, Is.Not.Null, "the default world is untouched");
+            Assert.That(defaultReplica.TryGetView(EntityA, out _), Is.True);
+        }
+
+        [Test]
+        public void FrozenServer_RunsExactlyOneTick()
+        {
+            using var rig = new Rig();
+            rig.Server.Frozen = true;
+
+            Assert.That(rig.Server.Tick(), Is.True, "the first tick runs even while frozen");
+            Assert.That(rig.Server.Tick(), Is.False);
+            Assert.That(rig.Server.Tick(), Is.False);
+            Assert.That(rig.Server.TickIndex, Is.EqualTo(1u));
+
+            rig.Server.Step();
+            Assert.That(rig.Server.TickIndex, Is.EqualTo(2u), "Step ignores the freeze");
+
+            rig.Server.Frozen = false;
+            Assert.That(rig.Server.Tick(), Is.True);
+            Assert.That(rig.Server.TickIndex, Is.EqualTo(3u));
+        }
+
+        [Test]
+        public void Hello_ArrivesWithNoWorldHeader()
+        {
+            using var rig = new Rig();
+            rig.Exchange();
+
+            Assert.That(rig.Client.IsConnected, Is.True);
+            Assert.That(rig.Client.Hello.TickRate, Is.EqualTo(100f));
+
+            ClientWorld replica = FindClientWorld(rig.Client, 0);
+            Assert.That(replica, Is.Not.Null, "the world arrives as WorldAdd, not inside Hello");
+            Assert.That(replica.ReplicatedSlotMask, Is.EqualTo(Sector.DefaultReplicatedSlotMask));
+        }
+
+        private static ClientWorld FindClientWorld(CaelixClient client, ushort worldId)
+        {
+            IReadOnlyList<ClientWorld> worlds = client.Worlds;
+            for (int i = 0; i < worlds.Count; i++)
+            {
+                if (worlds[i].Id == worldId) return worlds[i];
+            }
+
+            return null;
+        }
+
+        private static void AssertReplicaMatchesServer(Rig rig, CaelixClient client)
+        {
+            Assert.That(client.World.TryGetView(EntityA, out EntityView view), Is.True);
+            AssertBlockSlotsEqual(rig.World.GetEntity(EntityA), view.Data);
         }
 
         private static unsafe void AssertBlockSlotsEqual(in VoxelEntityData server, in VoxelEntityData replica)

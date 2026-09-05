@@ -302,7 +302,7 @@ namespace Caelix.Client
         #region Frame
 
         /// <summary>Clears last frame's require-update flags. Call before applying messages.</summary>
-        public void BeginFrame()
+        public void ClearRequireUpdate()
         {
             for (int i = 0; i < viewList.Count; i++)
             {

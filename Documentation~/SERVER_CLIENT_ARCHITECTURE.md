@@ -1,8 +1,9 @@
 # Caelix server-client architecture
 
 **Status:** v1 landed (branch `dev/fable/server-client-v1`, started 2026-09-03,
-commits `532b157` to `aa97d84`; later branches carry it forward). Section 10 lists what
-is still open. Last checked against the code on 2026-09-04.
+commits `532b157` to `aa97d84`; later branches carry it forward). Then world lifecycle
+messages, two-phase replication and one host per process, 2026-09-05. Section 10 lists
+what is still open. Last checked against the code on 2026-09-05.
 **Decided by:** owner, after the design discussion recorded in the family `CLAUDE.md` notes.
 
 This document is the boundary contract. Code that crosses it without going
@@ -47,11 +48,19 @@ Rejected alternatives, and why:
   is world-major today: for each world, simulate, replicate, end tick. A
   stage-major loop, where a cross-world stage can sit between per-world
   stages, is deferred (section 9).
-- Two ways to drive the clock. `CaelixHost` calls `Step()` once per Unity
-  fixed step (section 10). `CaelixServer.Update(deltaTime)` is a self-clocked
-  driver with its own accumulator and a `MaxTicksPerUpdate` backlog cap, kept
-  for a loop that has no fixed step of its own, such as a headless server.
-  Nothing calls it yet.
+- **The server owns the clock rule, not the host.** `Step()` runs one tick
+  unconditionally. `Tick()` is the gated form: it runs `Step()` unless the
+  server is frozen, and it returns whether a tick ran. A frozen server still
+  runs its very first tick, because replication happens inside a tick and a
+  client that never received one has no state at all. So `Frozen` means "no
+  tick after the first", and `Tick()` returning false is the normal steady
+  state of a frozen scene.
+- Two ways to drive the clock. `CaelixHost` calls `Tick()` once per Unity
+  fixed step and nothing anywhere else (section 10). `CaelixServer.Update(deltaTime)`
+  is a self-clocked driver with its own accumulator and a `MaxTicksPerUpdate`
+  backlog cap, kept for a loop that has no fixed step of its own, such as a
+  headless server; it calls `Tick()` too and drops the accumulator when the
+  freeze stops it. Nothing calls it yet.
 - A connection receives every world by default. `ServerConnection.SubscribedWorlds`
   restricts it to a subset.
 - An entity lives in exactly one world. The wire address of an entity is
@@ -85,7 +94,20 @@ host by convention and registers:
 
 1. a serialized host reference on the component, if set;
 2. otherwise a `CaelixHost` found through the parents;
-3. otherwise the host registered for the component's scene, or any host.
+3. otherwise `CaelixHost.Current`, the host of this process.
+
+**There is one host per process.** A host claims `CaelixHost.Current` in
+`EnsureInitialized` and `OnEnable` and releases it in `OnDisable` and
+`OnDestroy`; a second enabled host logs an error, still initializes so that
+nothing throws, and is not the one components find. `Current` falls back to a
+scene search, because a component's `OnEnable` may run before the host's.
+
+The per-scene lookup (`FindForScene`, `All`) went. A host owns a server, a
+client and a channel between them, so one host per scene meant several
+independent servers in one process with no path from one to another, and an
+entity in an additively loaded scene would silently join a different world.
+Worlds, not hosts, are how one process holds several simulations (section 2).
+`CaelixHost.Any` remains as an obsolete alias of `Current`.
 
 In Host role the component registers the entity with the server world and is
 bound as the client view for the same guid when the replication spawn message
@@ -123,6 +145,23 @@ the renderer is what makes it possible.
   happens after alien propagation and before `ClearDirtyFlags`. For more
   replicated slots later, add one dirty bit `SlotReplicate` that any write to
   a masked slot sets.
+- **Two phases.** Phase A, `ReplicationBatch`, packs BrickData messages for a
+  list of sectors into one byte buffer, in parallel over sectors, with a size
+  job, an exclusive prefix sum, and a write job over `UnsafeNetWriter`. It is
+  built once per world per tick from the world's dirty sectors and every
+  connection sends the same bytes. `CollectDirtySectors` walks the entity map
+  and picks the sectors whose `sectorDirtyFlags` meet the replication mask;
+  the packing walks `SectorDirtyBrickEnumerator`, the one legitimate reader of
+  the raw write-side dirty flags, because it runs inside the tick before
+  `ClearDirtyFlags`.
+- **Phase B** is `ServerConnection.ReplicateWorld`, one call per connection.
+  It diffs the connection's knowledge, sends the lifecycle messages, packs
+  whatever that connection still has to catch up on into a second batch and
+  sends it, then forwards the shared delta slices, skipping any sector it just
+  sent in full this tick. A connection that is new to an entity has all of its
+  sectors new, so it is served entirely by the catch-up batch; a shared delta
+  slice can only name a sector the connection already knows, because a new
+  one got its `SectorAdd` earlier in the same call.
 - **Topology.** Per connection, the server diffs the known entity set and the
   known sector set of each entity against the world every tick. New entities
   and sectors are sent in full. Removed ones are sent as despawn or remove.
@@ -131,24 +170,33 @@ the renderer is what makes it possible.
   discards it.
 - **Client apply.** `Sector.ApplyReplicatedBrick` copies the raw brick, marks
   `Geometry | GeometryWithLocalNeighbor | BlockBrickAdded` as needed, and
-  widens the block AABB to the brick bounds. The client frame is: clear
-  require-update, apply messages, propagate the render flags (`Geometry`,
-  `GeometryWithLocalNeighbor`, `BlockBrickAdded`, `BlockBrickRemoved`),
-  render, clear dirty. None of these four bits is in
+  widens the block AABB to the brick bounds. The client frame is three calls
+  plus the renderers: `Receive` (clear require-update, then apply every pending
+  message), `PrepareRender` (propagate the render flags `Geometry`,
+  `GeometryWithLocalNeighbor`, `BlockBrickAdded`, `BlockBrickRemoved`), the
+  renderers, then `EndFrame` (clear dirty). None of those four bits is in
   `DirtyPropagationSettings.DirtyFlagsCanAllocateLocalBricks`, so the client
   never grows phantom sectors.
 - **Frozen server.** Replication runs inside the tick. Freeze is a server-level
   switch (`CaelixServer.Frozen`, driven by the host's `freeze` field), not a
-  per-world flag; a frozen server sends nothing. The host always runs one tick
-  on its first frame so a frozen scene still gets its initial state.
+  per-world flag; a frozen server sends nothing after its first tick, and that
+  first tick is what gives a frozen scene its initial state (section 2).
 
 ## 6. Messages, v1
 
 Envelope: `u8 type, u16 worldId, u32 tick`. Then the payload.
 
+World id 0 is a real world (the default world), so a message that is not scoped
+to one world carries the sentinel `NetHeader.NoWorld` (`0xFFFF`) instead. Hello
+is the only such message today. **Every dispatcher tests for the sentinel before
+it looks a world up**, and warns for any other type that arrives with it; a
+world-scoped message never carries it.
+
 | Direction | Message | Payload |
 |---|---|---|
-| S to C | Hello | replicated slot mask, tick rate, registry hash, world count |
+| S to C | Hello | tick rate, registry hash. Header world id is `NoWorld` |
+| S to C | WorldAdd | replicated slot mask. Header world id names the world |
+| S to C | WorldRemove | (padding byte). Header world id names the world |
 | S to C | EntitySpawn | guid, transform, isStatic, isProtected, hasBody |
 | S to C | EntityDespawn | guid |
 | S to C | EntityState | guid, isStatic, isProtected, hasBody |
@@ -166,9 +214,20 @@ Envelope: `u8 type, u16 worldId, u32 tick`. Then the payload.
 `BrickData` is one message per sector per tick: a new sector sends every
 allocated brick, a known sector sends only the bricks whose dirty flags meet
 the replication mask. The client ignores the per-brick dirty flags; they are
-informational. `Hello` goes out on the first `Step()` after the connection is
+informational.
+
+Order per connection, every `Step()`: `Hello` once, then `WorldAdd` /
+`WorldRemove` for every world that appeared or went, then that tick's
+replication. `Hello` goes out on the first `Step()` after the connection is
 accepted, not at accept time, so game types registered during scene start are
-part of the registry hash.
+part of the registry hash. World lifecycle is a diff like everything else:
+`CreateWorld` and `RemoveWorld` notify nobody, and the next `Step()` compares
+the connection's known world set against the server's, sending removes before
+adds so a reused world id reaches the client in the right order. Unsubscribing
+a connection from a world reads as a removal. The client creates a replica on
+`WorldAdd` and disposes it on `WorldRemove`, raising `WorldAdded` and
+`WorldRemoving`; a message naming an unknown world still creates a replica, so
+nothing is lost if the order is ever violated.
 
 A command may also carry a trailing payload: send it with
 `CaelixClient.SendCommand(in T, ReadOnlySpan<byte>)` and receive it with
@@ -256,12 +315,22 @@ Deferred:
 - **No Burst direct calls on the tick path.** `[BurstCompile]` static methods called from
   managed code compile synchronously in the Editor. Use a Burst job and `Run()` instead
   (`CollectBrickJob`, `PreviewBuilder`).
-- **Host frame order.** Server ticks run in `CaelixHost.FixedUpdate`, one per fixed
-  step; `driveFixedTimestep` sets `Time.fixedDeltaTime` from `targetTPS`. `Update`
-  runs the first forced tick if none ran yet, then client update (apply messages,
-  propagate Geometry bits), raycast tick, renderer ticks, client end frame. Render
-  frame rate and tick rate are independent; the client applies whatever ticks landed
-  since the last frame. No interpolation yet, so bodies show the latest tick's pose.
+- **Host frame order.** `FixedUpdate` is the only place a tick runs: push the
+  inspector settings, then one `Server.Tick()`, timed. `driveFixedTimestep` sets
+  `Time.fixedDeltaTime` from `targetTPS`. `Update` never ticks and never pushes
+  settings; it runs `Client.Receive()`, `Client.PrepareRender()`, the raycast tick,
+  the renderer ticks, then `Client.EndFrame()`, and collects the timings.
+  `HostTimingStats.ServerTicks` is how many ticks ran since the last frame, so 0 on a
+  frozen scene and n after a hitch. Render frame rate and tick rate are independent;
+  the client applies whatever ticks landed since the last frame. No interpolation yet,
+  so bodies show the latest tick's pose.
+- **Profiler markers.** Server: `Server.ProcessIncoming`, `Server.TickSimulate`,
+  `Server.Replicate`, `Server.ReplicationBuild` (phase A, the shared delta),
+  `Server.ReplicateWorld` (phase B, per connection), `Server.ReplicationFullBuild`
+  (phase A again, for one connection's catch-up), `Server.EndTick`,
+  `Server.DrainEvents`. Client: `Client.ClearRequireUpdate`, `Client.Receive`,
+  `Client.ApplyBrickBatch`, `Client.PropagateForRender`, `Client.EndFrame`. Host:
+  `Host.ServerTick`, `Host.ClientFrame`, `Host.Renderers`.
 - **Scene compatibility.** `CaelixHost.cs` and `PhysicsWorldConfig.cs` keep the script
   GUIDs of `CaelixWorld` and `CaelixPhysicsWorld`, and `VoxelEntity` / `VoxelBody` kept
   theirs across the assembly move, so existing scenes stay wired. `SimplePlayer` and
@@ -276,6 +345,8 @@ Deferred:
   All are registered after the engine types on both ends by
   `TitaniaNetTypes.EnsureRegistered(host)`. That file is the reference for game-defined
   messages. The tools read the client replica (`EntityView`), never server data.
+  Titania still calls the obsolete `CaelixHost.Any` alias until it moves onto this
+  branch; that is why the alias exists.
 - **Not done in v1:** the rendering assembly is not yet excluded from Dedicated Server
   builds; `InfiniteLoader` is not ticked; guids on authored entities are runtime-random
   unless set through `PersistentGuid`.

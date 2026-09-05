@@ -40,7 +40,7 @@ namespace Caelix
         [SerializeField, HideInInspector] private bool excludeFromWorldSave;
 
         [Tooltip("Host this entity registers with. Leave empty to use a host on a parent, then the " +
-                 "host of this scene, then any host.")]
+                 "process host.")]
         [SerializeField] private CaelixHost host;
 
         // Stable identity across play sessions and remote clients. Zero means "assign at runtime".
@@ -198,14 +198,16 @@ namespace Caelix
             guid = stored.IsZero ? Guid128.Random(ref globalEntityRandomState) : stored;
         }
 
+        /// <summary>
+        /// The serialized host, else a host on a parent, else the process host. See
+        /// <c>SERVER_CLIENT_ARCHITECTURE.md</c> section 4.
+        /// </summary>
         private CaelixHost ResolveHost()
         {
             if (host != null) return host;
             CaelixHost parent = GetComponentInParent<CaelixHost>(true);
             if (parent != null) return parent;
-            CaelixHost sceneHost = CaelixHost.FindForScene(gameObject.scene);
-            if (sceneHost != null) return sceneHost;
-            return CaelixHost.Any;
+            return CaelixHost.Current;
         }
 
         /// <summary>

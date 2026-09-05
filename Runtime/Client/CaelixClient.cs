@@ -50,7 +50,7 @@ namespace Caelix.Client
     /// </summary>
     public sealed class CaelixClient : IDisposable
     {
-        private static readonly ProfilerMarker s_BeginFrameMarker = new("Client.BeginFrame");
+        private static readonly ProfilerMarker s_ClearRequireUpdateMarker = new("Client.ClearRequireUpdate");
         private static readonly ProfilerMarker s_ReceiveMarker = new("Client.Receive");
         private static readonly ProfilerMarker s_ApplyBrickBatchMarker = new("Client.ApplyBrickBatch");
         private static readonly ProfilerMarker s_PropagateForRenderMarker = new("Client.PropagateForRender");
@@ -88,7 +88,17 @@ namespace Caelix.Client
 
         public IReadOnlyList<ClientWorld> Worlds => worldList;
 
+        /// <summary>
+        /// Raised after a replica was created, either by a <see cref="NetMessageType.WorldAdd"/> or
+        /// by the first message that named a world this client did not have yet.
+        /// </summary>
         public event Action<ClientWorld> WorldAdded;
+
+        /// <summary>
+        /// Raised when the server dropped a world, before the replica is disposed. Renderers and
+        /// tools release whatever they hold for its views here.
+        /// </summary>
+        public event Action<ClientWorld> WorldRemoving;
 
         public CaelixClient(INetChannel channel, NetTypeRegistry types = null)
         {
@@ -112,17 +122,36 @@ namespace Caelix.Client
             channel.Dispose();
         }
 
+        /// <summary>
+        /// The replica of <paramref name="worldId"/>, created on first use with the default slot
+        /// mask. A <see cref="NetMessageType.WorldAdd"/> normally arrives first and corrects the
+        /// mask; a message for an unknown world still gets a replica so nothing is lost.
+        /// </summary>
         public ClientWorld GetOrCreateWorld(ushort worldId)
         {
             if (!worlds.TryGetValue(worldId, out ClientWorld world))
             {
-                world = new ClientWorld(this, worldId, IsConnected ? Hello.ReplicatedSlotMask : Sector.DefaultReplicatedSlotMask);
+                world = new ClientWorld(this, worldId, Sector.DefaultReplicatedSlotMask);
                 worlds.Add(worldId, world);
                 worldList.Add(world);
                 WorldAdded?.Invoke(world);
             }
 
             return world;
+        }
+
+        /// <summary>Drops the replica of <paramref name="id"/>, if this client has one.</summary>
+        private void RemoveWorld(ushort id)
+        {
+            if (!worlds.TryGetValue(id, out ClientWorld world))
+            {
+                return;
+            }
+
+            WorldRemoving?.Invoke(world);
+            world.Dispose();
+            worlds.Remove(id);
+            worldList.Remove(world);
         }
 
         #region Authored views
@@ -144,20 +173,18 @@ namespace Caelix.Client
 
         #region Frame
 
-        // TODO: VibeReview: Should we rename this as BeginFrame or something?
-        // Tho the works here seems far beyond a regular BeginFrame.
         /// <summary>
-        /// Begins the client frame: clears last frame's require-update flags, applies every
-        /// pending message, and propagates Geometry bits so the renderers see this frame's
-        /// changes. Call <see cref="EndFrame"/> after the renderers ran.
+        /// Brings every replica up to the latest tick that arrived: clears last frame's
+        /// require-update flags, then applies every pending message. Call once per frame before
+        /// <see cref="PrepareRender"/>.
         /// </summary>
-        public void Update()
+        public void Receive()
         {
-            using (s_BeginFrameMarker.Auto())
+            using (s_ClearRequireUpdateMarker.Auto())
             {
                 for (int i = 0; i < worldList.Count; i++)
                 {
-                    worldList[i].BeginFrame();
+                    worldList[i].ClearRequireUpdate();
                 }
             }
 
@@ -175,7 +202,14 @@ namespace Caelix.Client
                     }
                 }
             }
+        }
 
+        /// <summary>
+        /// Turns this frame's applied bricks into require-update flags for the renderers. Call
+        /// after <see cref="Receive"/> and before the renderers run.
+        /// </summary>
+        public void PrepareRender()
+        {
             using (s_PropagateForRenderMarker.Auto())
             {
                 for (int i = 0; i < worldList.Count; i++)
@@ -203,6 +237,13 @@ namespace Caelix.Client
                 LastServerTick = header.Tick;
             }
 
+            // The sentinel world id belongs to Hello alone; every other message is world-scoped.
+            if (header.WorldId == NetHeader.NoWorld && header.Type != NetMessageType.Hello)
+            {
+                Debug.LogWarning($"[CaelixClient] Message type {header.Type} arrived with no world id; dropped.");
+                return;
+            }
+
             switch (header.Type)
             {
                 case NetMessageType.Hello:
@@ -216,8 +257,19 @@ namespace Caelix.Client
                             "must be registered in the same order on both ends.");
                     }
 
+                    break;
+                }
+                case NetMessageType.WorldAdd:
+                {
+                    var m = reader.Read<WorldAddMessage>();
                     ClientWorld world = GetOrCreateWorld(header.WorldId);
-                    world.ReplicatedSlotMask = Hello.ReplicatedSlotMask;
+                    world.ReplicatedSlotMask = m.ReplicatedSlotMask;
+                    break;
+                }
+                case NetMessageType.WorldRemove:
+                {
+                    reader.Read<WorldRemoveMessage>();
+                    RemoveWorld(header.WorldId);
                     break;
                 }
                 case NetMessageType.EntitySpawn:
@@ -342,7 +394,7 @@ namespace Caelix.Client
 
         /// <summary>
         /// Sends a typed query and calls <paramref name="onReply"/> when the reply arrives during a
-        /// later <see cref="Update"/>. Both the request and the reply may carry a trailing payload.
+        /// later <see cref="Receive"/>. Both the request and the reply may carry a trailing payload.
         /// </summary>
         public void SendQuery<TRequest, TReply>(
             in TRequest request,
@@ -438,7 +490,7 @@ namespace Caelix.Client
             channel.Send(NetDelivery.Reliable, writer.AsSpan());
         }
 
-        /// <summary>Registers an event type and its handler. Handlers run on the main thread during <see cref="Update"/>.</summary>
+        /// <summary>Registers an event type and its handler. Handlers run on the main thread during <see cref="Receive"/>.</summary>
         public void RegisterEvent<T>(Action<ushort, T> handler) where T : unmanaged
         {
             if (handler == null) throw new ArgumentNullException(nameof(handler));

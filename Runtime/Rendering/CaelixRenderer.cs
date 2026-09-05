@@ -113,7 +113,7 @@ public class CaelixRenderer : MonoBehaviour
 
         if (host == null)
         {
-            host = CaelixHost.Any;
+            host = CaelixHost.Current;
         }
 
         if (host == null)

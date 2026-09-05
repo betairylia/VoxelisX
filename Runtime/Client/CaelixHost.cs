@@ -5,7 +5,6 @@ using System.IO;
 using UnityEditor;
 #endif
 using UnityEngine;
-using UnityEngine.SceneManagement;
 using Unity.Profiling;
 using Caelix.Client;
 using Caelix.Net;
@@ -18,8 +17,9 @@ namespace Caelix
     /// <summary>
     /// Scene bootstrap for the Host role: runs a <see cref="CaelixServer"/> with one world and a
     /// <see cref="CaelixClient"/> in the same process, connected through an in-process channel
-    /// with real serialization. Scene-authored <see cref="VoxelEntity"/> components register
-    /// with this host by convention (see <c>SERVER_CLIENT_ARCHITECTURE.md</c> section 4).
+    /// with real serialization. There is one host per process; scene-authored
+    /// <see cref="VoxelEntity"/> components find it through their own serialized reference, a
+    /// parent, or <see cref="Current"/> (see <c>SERVER_CLIENT_ARCHITECTURE.md</c> section 4).
     /// </summary>
     /// <remarks>
     /// Client and Server roles are deferred. This component replaces the former
@@ -49,8 +49,7 @@ namespace Caelix
         private static readonly ProfilerMarker s_ClientFrameMarker = new("Host.ClientFrame");
         private static readonly ProfilerMarker s_RenderersMarker = new("Host.Renderers");
 
-        // TODO: VibeReview: Why do we even care about multiple `CaelixHost`s?
-        private static readonly List<CaelixHost> s_hosts = new();
+        private static CaelixHost s_current;
 
         // ---------------- COMPONENTS ------------------
         [Header("Components")]
@@ -84,8 +83,8 @@ namespace Caelix
 
         // ---------------- DEBUG ------------------
         [Header("Debug")]
-        [Tooltip("While frozen the server runs no ticks. The first frame always runs one tick so the " +
-                 "client receives the initial state.")]
+        [Tooltip("Authoring value for CaelixServer.Frozen; pushed every fixed step. The server still " +
+                 "runs its first tick while frozen so the client receives the initial state.")]
         public bool freeze = true;
 
         // ---------------- SAVE / LOAD ------------------
@@ -95,7 +94,6 @@ namespace Caelix
 
         private bool initialized;
         private bool destroyed;
-        private bool firstFrameDone;
         private int ticksSinceLastFrame;
         private long serverTicksElapsed;
         private LocalChannel serverEnd;
@@ -120,38 +118,32 @@ namespace Caelix
 
         #region Host lookup
 
-        public static IReadOnlyList<CaelixHost> All => s_hosts;
+        /// <summary>The host of this process. One per process; a second enabled host logs an error
+        /// and is ignored. Falls back to a scene search for components whose OnEnable runs before
+        /// the host's.</summary>
+        public static CaelixHost Current => s_current != null ? s_current : FindFirstObjectByType<CaelixHost>();
 
-        // TODO: VibeReview: And having `Any` instead of `Singleton`, again why should we care about multiple hosts?
-        // Because there could be multiple unity scenes? Maybe it should be scene-agnostic?
-        // Each host also creates their own server & client. I don't really understand tbh.
-        /// <summary>Any live host, preferring registered ones. Null when the scene has none.</summary>
-        public static CaelixHost Any
+        /// <summary>Old name of <see cref="Current"/>.</summary>
+        [Obsolete("Use CaelixHost.Current.")] public static CaelixHost Any => Current;
+
+        /// <summary>
+        /// Claims the process host slot, or reports that another host already holds it. Either way
+        /// this instance still initializes: a scene with two hosts must not throw.
+        /// </summary>
+        private void RegisterAsCurrent()
         {
-            get
+            if (s_current == null)
             {
-                for (int i = 0; i < s_hosts.Count; i++)
-                {
-                    if (s_hosts[i] != null) return s_hosts[i];
-                }
-
-                return FindFirstObjectByType<CaelixHost>();
-            }
-        }
-
-        public static CaelixHost FindForScene(Scene scene)
-        {
-            for (int i = 0; i < s_hosts.Count; i++)
-            {
-                if (s_hosts[i] != null && s_hosts[i].gameObject.scene == scene) return s_hosts[i];
+                s_current = this;
+                return;
             }
 
-            foreach (CaelixHost host in FindObjectsByType<CaelixHost>(FindObjectsSortMode.None))
+            if (s_current != this)
             {
-                if (host.gameObject.scene == scene) return host;
+                Debug.LogError(
+                    $"{name}: a second CaelixHost is enabled; only {s_current.name} runs. Disable one of them.",
+                    this);
             }
-
-            return null;
         }
 
         #endregion
@@ -166,15 +158,12 @@ namespace Caelix
         private void OnEnable()
         {
             EnsureInitialized();
-            if (!s_hosts.Contains(this))
-            {
-                s_hosts.Add(this);
-            }
+            RegisterAsCurrent();
         }
 
         private void OnDisable()
         {
-            s_hosts.Remove(this);
+            if (s_current == this) s_current = null;
         }
 
         /// <summary>
@@ -189,10 +178,7 @@ namespace Caelix
             }
 
             initialized = true;
-            if (!s_hosts.Contains(this))
-            {
-                s_hosts.Add(this);
-            }
+            RegisterAsCurrent();
 
             LocalChannel.CreatePair(out serverEnd, out clientEnd);
 
@@ -206,6 +192,13 @@ namespace Caelix
             Client = new CaelixClient(clientEnd, Server.Types) { Host = this };
             Server.AddConnection(serverEnd);
             // TODO: VibeReview: Should we abstract the connecting processes etc. similar to Core/Net/INetChannel?
+            // Answer (2026-09-05): yes, when the Unity Transport channel lands. The shape is an
+            // INetListener (Poll + TryAccept(out INetChannel)) on the server and an INetConnector
+            // (Connect(endpoint)) on the client, with a LocalTransport implementing both over the queue
+            // pair; CaelixServer.Listen(listener) polls accepts inside ProcessIncoming. Deliberately not
+            // built ahead of UTP: the driver update, per-delivery pipelines and connection events should
+            // shape the interface, and with LocalChannel alone it would have one implementation and no
+            // test of fit.
         }
 
         private void Start()
@@ -219,7 +212,7 @@ namespace Caelix
         private void OnDestroy()
         {
             destroyed = true;
-            s_hosts.Remove(this);
+            if (s_current == this) s_current = null;
             Client?.Dispose();
             Client = null;
             Server?.Dispose();
@@ -278,17 +271,31 @@ namespace Caelix
         /// </summary>
         private void FixedUpdate()
         {
-            if (Server == null || Client == null || freeze)
+            if (Server == null || Client == null)
             {
                 return;
             }
 
             PushSettings();
+            RunServerTick();
+        }
+
+        /// <summary>
+        /// One <see cref="CaelixServer.Tick"/>, timed. The server owns the freeze rule, so a frozen
+        /// server still runs its first tick here and nothing after it.
+        /// </summary>
+        private void RunServerTick()
+        {
             long start = Stopwatch.GetTimestamp();
-            using (s_ServerTickMarker.Auto()) Server.Step();
+            bool ran;
+            using (s_ServerTickMarker.Auto()) ran = Server.Tick();
+            if (!ran)
+            {
+                return;
+            }
+
             serverTicksElapsed += Stopwatch.GetTimestamp() - start;
             ticksSinceLastFrame++;
-            firstFrameDone = true;
         }
 
         private void Update()
@@ -299,19 +306,6 @@ namespace Caelix
             }
 
             long frameStart = Stopwatch.GetTimestamp();
-            PushSettings(); // TODO: VibeReview: This seems to be server-side only. Do we need it in Update?
-
-            // TODO: VibeReview: Why is this `if` needed? A bit confusing.
-            if (!firstFrameDone)
-            {
-                // The initial state reaches the client through replication, which runs inside a
-                // tick. A frozen scene therefore still gets exactly one tick, as it always did.
-                firstFrameDone = true;
-                long start = Stopwatch.GetTimestamp();
-                using (s_ServerTickMarker.Auto()) Server.Step();
-                serverTicksElapsed += Stopwatch.GetTimestamp() - start;
-                ticksSinceLastFrame++;
-            }
 
             // Get server info by cheating basically, since we are in local hosting mode
             long serverEnd = Stopwatch.GetTimestamp();
@@ -326,7 +320,8 @@ namespace Caelix
 
             using (s_ClientFrameMarker.Auto())
             {
-                Client.Update();
+                Client.Receive();
+                Client.PrepareRender();
                 rayCaster?.Tick();
             }
 
