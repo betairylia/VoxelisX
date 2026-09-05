@@ -137,8 +137,6 @@ namespace Caelix.Client
 
         #region Frame
 
-        // TODO: VibeReview: Should we rename this as BeginFrame or something?
-        // Tho the works here seems far beyond a regular BeginFrame.
         /// <summary>
         /// Begins the client frame: clears last frame's require-update flags, applies every
         /// pending message, and propagates Geometry bits so the renderers see this frame's

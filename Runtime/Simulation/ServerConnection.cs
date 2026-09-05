@@ -62,7 +62,6 @@ namespace Caelix.Simulation
             worlds.Remove(worldId);
         }
 
-        // TODO: VibeReview: Can we burst-ify the build process (and connection data holders)?
         internal unsafe void ReplicateWorld(CaelixWorld world, NetMessageWriter writer)
         {
             if (!IsSubscribed(world.Id))
