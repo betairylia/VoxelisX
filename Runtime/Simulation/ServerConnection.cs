@@ -39,7 +39,9 @@ namespace Caelix.Simulation
 
         /// <summary>
         /// Sectors this connection received in full during the current <see cref="ReplicateWorld"/>
-        /// call. Their shared-delta slices are redundant and are skipped. Reused across ticks.
+        /// call. Their shared-delta slices are redundant and are skipped. Cleared at the start of
+        /// <see cref="ReplicateWorld"/> and read afterwards, in the same <c>CaelixServer.Replicate</c>
+        /// call, by <see cref="ReceivedFullThisTick"/> and <see cref="SendDelta"/>. Reused across ticks.
         /// </summary>
         private readonly HashSet<(Guid128 Guid, int3 SectorPos)> sentFullThisTick = new();
 
@@ -137,12 +139,11 @@ namespace Caelix.Simulation
 
         /// <summary>
         /// Phase B of replication: the per-connection diff. Sends despawns, spawns, state,
-        /// transforms and sector adds and removes, packs the sectors this connection has not seen
-        /// into <paramref name="full"/> and sends them, then forwards the shared
-        /// <paramref name="delta"/> slices that are not already covered by a full sector.
+        /// transforms and sector adds and removes, then packs the sectors this connection has not
+        /// seen into <paramref name="full"/> and streams them chunk by chunk. Runs before phase A;
+        /// the shared delta follows through <see cref="SendDelta"/>.
         /// </summary>
-        internal unsafe void ReplicateWorld(
-            CaelixWorld world, NetMessageWriter writer, ReplicationBatch delta, ReplicationBatch full)
+        internal unsafe void ReplicateWorld(CaelixWorld world, NetMessageWriter writer, ReplicationBatch full)
         {
             using var _ = s_ReplicateWorldMarker.Auto();
             if (!IsSubscribed(world.Id))
@@ -289,27 +290,48 @@ namespace Caelix.Simulation
             }
 
             // Catch-up: the sectors this connection did not know. SectorAdd for each already went
-            // out above, in the same order the batch packed them.
+            // out above, in the same order the batch packs them. A join of a large world is far too
+            // much to hold in one buffer, so the batch streams it: build a chunk, send it, repeat.
             if (full.SectorCount > 0)
             {
                 using (s_ReplicationFullBuildMarker.Auto())
                 {
-                    full.Build(worldId, tick, slotMask);
+                    full.Prepare(worldId, tick, slotMask);
                 }
 
-                for (int i = 0; i < full.Count; i++)
+                while (true)
                 {
-                    if (full[i].Length > 0)
+                    bool more;
+                    using (s_ReplicationFullBuildMarker.Auto())
                     {
-                        Send(NetDelivery.Reliable, full.Slice(i));
+                        more = full.BuildNextChunk();
+                    }
+
+                    if (!more)
+                    {
+                        break;
+                    }
+
+                    for (int i = 0; i < full.Count; i++)
+                    {
+                        if (full[i].Length > 0)
+                        {
+                            Send(NetDelivery.Reliable, full.Slice(i));
+                        }
                     }
                 }
             }
+        }
 
-            // The shared delta. It can only name sectors this connection already knows, because a
-            // sector new to it got its SectorAdd earlier in this same call and is in
-            // sentFullThisTick. A range for a known sector holds exactly the bricks the old
-            // per-connection WriteBrickBatch produced.
+        /// <summary>
+        /// Forwards the ranges of the shared delta's CURRENT chunk. A delta range can only name a
+        /// sector this connection already knows, because a sector new to it got its SectorAdd in
+        /// <see cref="ReplicateWorld"/> earlier this tick and is in <c>sentFullThisTick</c>. A range
+        /// for a known sector holds exactly the bricks the old per-connection WriteBrickBatch
+        /// produced.
+        /// </summary>
+        internal void SendDelta(ReplicationBatch delta)
+        {
             for (int i = 0; i < delta.Count; i++)
             {
                 ReplicationRange range = delta[i];
@@ -321,6 +343,13 @@ namespace Caelix.Simulation
                 Send(NetDelivery.Reliable, delta.Slice(i));
             }
         }
+
+        /// <summary>
+        /// Whether this connection received that sector in full during this tick's
+        /// <see cref="ReplicateWorld"/>. The server drops a delta sector no connection still needs.
+        /// </summary>
+        internal bool ReceivedFullThisTick(Guid128 guid, int3 sectorPos)
+            => sentFullThisTick.Contains((guid, sectorPos));
 
         private static bool TransformEquals(in RigidTransform a, in RigidTransform b)
         {

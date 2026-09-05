@@ -145,23 +145,34 @@ the renderer is what makes it possible.
   happens after alien propagation and before `ClearDirtyFlags`. For more
   replicated slots later, add one dirty bit `SlotReplicate` that any write to
   a masked slot sets.
-- **Two phases.** Phase A, `ReplicationBatch`, packs BrickData messages for a
-  list of sectors into one byte buffer, in parallel over sectors, with a size
-  job, an exclusive prefix sum, and a write job over `UnsafeNetWriter`. It is
-  built once per world per tick from the world's dirty sectors and every
-  connection sends the same bytes. `CollectDirtySectors` walks the entity map
-  and picks the sectors whose `sectorDirtyFlags` meet the replication mask;
-  the packing walks `SectorDirtyBrickEnumerator`, the one legitimate reader of
-  the raw write-side dirty flags, because it runs inside the tick before
-  `ClearDirtyFlags`.
-- **Phase B** is `ServerConnection.ReplicateWorld`, one call per connection.
-  It diffs the connection's knowledge, sends the lifecycle messages, packs
-  whatever that connection still has to catch up on into a second batch and
-  sends it, then forwards the shared delta slices, skipping any sector it just
-  sent in full this tick. A connection that is new to an entity has all of its
-  sectors new, so it is served entirely by the catch-up batch; a shared delta
-  slice can only name a sector the connection already knows, because a new
-  one got its `SectorAdd` earlier in the same call.
+- **Two phases, phase B first.** Phase A, `ReplicationBatch`, packs BrickData
+  messages for a list of sectors, in parallel over sectors, with a size job, an
+  exclusive prefix sum, and a write job over `UnsafeNetWriter`. It is built
+  once per world per tick from the world's dirty sectors and every connection
+  sends the same bytes. `CollectDirtySectors` walks the entity map and picks
+  the sectors whose `sectorDirtyFlags` meet the replication mask; the packing
+  walks `SectorDirtyBrickEnumerator`, the one legitimate reader of the raw
+  write-side dirty flags, because it runs inside the tick before
+  `ClearDirtyFlags`. Phase B runs first, so phase A can pack only what is left.
+- **Phase B** is `ServerConnection.ReplicateWorld`, one call per connection,
+  and it runs before phase A. It diffs the connection's knowledge, sends the
+  lifecycle messages, then packs whatever that connection still has to catch up
+  on into a second batch and streams it. It records which sectors it sent in
+  full this tick. A connection that is new to an entity has all of its sectors
+  new, so it is served entirely by the catch-up batch; a shared delta slice can
+  only name a sector the connection already knows, because a new one got its
+  `SectorAdd` in phase B earlier in the same tick.
+- **Phase A packs only what somebody still needs, in chunks.** After phase B,
+  the server drops every collected delta sector that each connected, subscribed
+  connection already received in full; on the tick a world is loaded that is
+  all of them. Both batches then stream: `Prepare` sizes every sector once,
+  `BuildNextChunk` packs the next run of sectors that fits in
+  `ReplicationBatch.MaxChunkBytes` (64 MB by default, `CaelixServer.
+  ReplicationChunkBytes`), and every connection forwards that chunk with
+  `SendDelta` before the next one is built. One buffer for the whole batch does
+  not work: an 8K world is about 2.9 million bricks of roughly a kilobyte each,
+  near 3 GB, so the `int` prefix sum overflowed negative, the resize was a
+  no-op, and the write job wrote gigabytes into a 64 KB allocation.
 - **Topology.** Per connection, the server diffs the known entity set and the
   known sector set of each entity against the world every tick. New entities
   and sectors are sent in full. Removed ones are sent as despawn or remove.

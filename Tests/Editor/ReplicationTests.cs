@@ -506,6 +506,56 @@ namespace Caelix.Tests
         }
 
         [Test]
+        public void ChunkedReplication_JoinAndDeltaSurviveSmallChunks()
+        {
+            using var rig = new Rig();
+            // One one-brick sector message is roughly 1.1 KB, so this packs about two per chunk.
+            rig.Server.ReplicationChunkBytes = 2500;
+
+            rig.World.CreateEntity(EntityA, RigidTransform.identity, isStatic: true);
+            for (int x = 0; x < 12; x++)
+            {
+                rig.World.SetBlock(EntityA, new int3(x * 128, 0, 0), new Block(0x8001));
+            }
+
+            rig.Exchange();
+
+            Assert.That(rig.Client.World.TryGetView(EntityA, out EntityView view), Is.True);
+            AssertBlockSlotsEqual(rig.World.GetEntity(EntityA), view.Data);
+            Assert.That(rig.Server.FullBatchForTests.LastChunkCount, Is.GreaterThanOrEqualTo(4),
+                "12 sectors at ~2 per chunk take several chunks");
+
+            // Now every sector is known, so the same 12 sectors go out as a chunked delta.
+            for (int x = 0; x < 12; x++)
+            {
+                rig.World.SetBlock(EntityA, new int3(x * 128 + 1, 1, 1), new Block(0x8002));
+            }
+
+            rig.Exchange();
+
+            AssertBlockSlotsEqual(rig.World.GetEntity(EntityA), view.Data);
+            Assert.That(rig.Server.DeltaBatchForTests.LastChunkCount, Is.GreaterThanOrEqualTo(4));
+        }
+
+        [Test]
+        public void Delta_SkippedWhenEveryConnectionGotTheSectorInFull()
+        {
+            using var rig = new Rig();
+            rig.World.CreateEntity(EntityA, RigidTransform.identity, isStatic: true);
+            rig.World.SetBlock(EntityA, new int3(0, 0, 0), new Block(0x8001));
+            rig.World.SetBlock(EntityA, new int3(128, 0, 0), new Block(0x8002));
+            rig.World.SetBlock(EntityA, new int3(256, 0, 0), new Block(0x8003));
+
+            rig.Exchange();
+
+            // All three sectors were new to the only connection, so the shared delta drops them
+            // instead of packing bytes nobody sends.
+            Assert.That(rig.Server.DeltaBatchForTests.SectorCount, Is.EqualTo(0));
+            Assert.That(rig.Client.World.TryGetView(EntityA, out EntityView view), Is.True);
+            AssertBlockSlotsEqual(rig.World.GetEntity(EntityA), view.Data);
+        }
+
+        [Test]
         public void WorldLifecycle_AddAndRemoveReachTheClient()
         {
             using var rig = new Rig();

@@ -43,10 +43,16 @@ namespace Caelix.Simulation
         private readonly NetMessageWriter replyPayloadWriter = new(64 * 1024);
         private readonly HashSet<Type> unregisteredEventTypesWarned = new();
 
-        /// <summary>Phase A of replication for the world being replicated: the shared per-tick delta.</summary>
+        /// <summary>
+        /// Phase A of replication for the world being replicated: the shared per-tick delta, packed
+        /// and sent in chunks of <see cref="ReplicationChunkBytes"/>.
+        /// </summary>
         private readonly ReplicationBatch deltaBatch = new();
 
-        /// <summary>Phase A again, for the sectors one connection has not seen yet. Rebuilt per connection.</summary>
+        /// <summary>
+        /// Phase A again, for the sectors one connection has not seen yet. Rebuilt per connection
+        /// and, like the delta, streamed in chunks rather than packed whole.
+        /// </summary>
         private readonly ReplicationBatch fullBatch = new();
 
         private float accumulator;
@@ -80,6 +86,26 @@ namespace Caelix.Simulation
         public uint TickIndex { get; private set; }
 
         public float FixedDeltaTime => TickRate > 0f ? 1f / TickRate : 0f;
+
+        /// <summary>
+        /// Bytes one replication chunk packs at most, for both batches. See
+        /// <see cref="ReplicationBatch.MaxChunkBytes"/>.
+        /// </summary>
+        public int ReplicationChunkBytes
+        {
+            get => deltaBatch.MaxChunkBytes;
+            set
+            {
+                deltaBatch.MaxChunkBytes = value;
+                fullBatch.MaxChunkBytes = value;
+            }
+        }
+
+        /// <summary>The shared per-tick delta batch. For tests and stats.</summary>
+        public ReplicationBatch DeltaBatchForTests => deltaBatch;
+
+        /// <summary>The per-connection catch-up batch. For tests and stats.</summary>
+        public ReplicationBatch FullBatchForTests => fullBatch;
 
         public CaelixServer(NetTypeRegistry types = null)
         {
@@ -476,30 +502,89 @@ namespace Caelix.Simulation
         }
 
         /// <summary>
-        /// Replicates one world in two phases. Phase A packs the tick's dirty sectors once, in
-        /// parallel, into <see cref="deltaBatch"/>; every connection sends the same bytes. Phase B
-        /// is <see cref="ServerConnection.ReplicateWorld"/>: per connection it diffs entity and
-        /// sector knowledge, packs whatever that connection still has to catch up on into
-        /// <see cref="fullBatch"/>, and forwards the shared delta slices it does not already cover.
+        /// Replicates one world in two phases, phase B first. Phase B is
+        /// <see cref="ServerConnection.ReplicateWorld"/>: per connection it diffs entity and sector
+        /// knowledge, packs whatever that connection still has to catch up on into
+        /// <see cref="fullBatch"/> and streams it. It records, per connection, which sectors went
+        /// out in full. Phase A then packs the tick's dirty sectors once, in parallel, into
+        /// <see cref="deltaBatch"/> — minus the sectors every connection just received in full —
+        /// and streams them in chunks; every connection forwards a chunk before the next is built.
         /// </summary>
         private void Replicate(CaelixWorld world)
         {
-            using (s_ReplicationBuildMarker.Auto())
-            {
-                deltaBatch.Clear();
-                deltaBatch.CollectDirtySectors(world);
-                deltaBatch.Build(world.Id, world.TickIndex, world.Config.replicatedSlotMask);
-            }
-
             for (int c = 0; c < connections.Count; c++)
             {
                 if (connections[c].IsConnected && connections[c].IsSubscribed(world.Id))
                 {
-                    connections[c].ReplicateWorld(world, writer, deltaBatch, fullBatch);
+                    connections[c].ReplicateWorld(world, writer, fullBatch);
+                }
+            }
+
+            using (s_ReplicationBuildMarker.Auto())
+            {
+                deltaBatch.Clear();
+                deltaBatch.CollectDirtySectors(world);
+                DropDeltaSectorsNobodyNeeds(world.Id);
+                deltaBatch.Prepare(world.Id, world.TickIndex, world.Config.replicatedSlotMask);
+            }
+
+            while (true)
+            {
+                bool more;
+                using (s_ReplicationBuildMarker.Auto())
+                {
+                    more = deltaBatch.BuildNextChunk();
+                }
+
+                if (!more)
+                {
+                    break;
+                }
+
+                for (int c = 0; c < connections.Count; c++)
+                {
+                    if (connections[c].IsConnected && connections[c].IsSubscribed(world.Id))
+                    {
+                        connections[c].SendDelta(deltaBatch);
+                    }
                 }
             }
 
             DrainEvents(world);
+        }
+
+        /// <summary>
+        /// Drops every collected delta sector that each connected, subscribed connection already
+        /// received in full this tick. On the tick a world is loaded that is all of them, and
+        /// packing gigabytes nobody sends is what froze the Editor. With nobody to send to, the
+        /// whole delta goes.
+        /// </summary>
+        private void DropDeltaSectorsNobodyNeeds(ushort worldId)
+        {
+            for (int i = deltaBatch.SectorCount - 1; i >= 0; i--)
+            {
+                ReplicationSectorRef sectorRef = deltaBatch.GetSector(i);
+                bool needed = false;
+                for (int c = 0; c < connections.Count; c++)
+                {
+                    ServerConnection connection = connections[c];
+                    if (!connection.IsConnected || !connection.IsSubscribed(worldId))
+                    {
+                        continue;
+                    }
+
+                    if (!connection.ReceivedFullThisTick(sectorRef.Guid, sectorRef.SectorPos))
+                    {
+                        needed = true;
+                        break;
+                    }
+                }
+
+                if (!needed)
+                {
+                    deltaBatch.RemoveSectorAtSwapBack(i);
+                }
+            }
         }
 
         private void DrainEvents(CaelixWorld world)
