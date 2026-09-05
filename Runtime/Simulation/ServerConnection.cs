@@ -17,7 +17,8 @@ namespace Caelix.Simulation
     {
         private sealed class EntityKnown
         {
-            public readonly HashSet<int3> Sectors = new();
+            public readonly Dictionary<int3, long> Sectors = new();
+            public long InstanceId;
             public RigidTransform Transform;
             public bool IsStatic;
             public bool IsProtected;
@@ -27,6 +28,9 @@ namespace Caelix.Simulation
         private sealed class WorldKnown
         {
             public readonly Dictionary<Guid128, EntityKnown> Entities = new();
+            public CaelixWorld Instance;
+            public ushort SlotMask;
+            public bool ResetRequested;
         }
 
         private static readonly ProfilerMarker s_ReplicateWorldMarker = new("Server.ReplicateWorld");
@@ -79,7 +83,7 @@ namespace Caelix.Simulation
         /// <summary>Forgets a world so the next <see cref="SyncWorlds"/> sends it again in full.</summary>
         public void ForgetWorld(ushort worldId)
         {
-            worlds.Remove(worldId);
+            if (worlds.TryGetValue(worldId, out WorldKnown known)) known.ResetRequested = true;
         }
 
         /// <summary>
@@ -99,7 +103,10 @@ namespace Caelix.Simulation
                 bool stillThere = false;
                 for (int i = 0; i < serverWorlds.Count; i++)
                 {
-                    if (serverWorlds[i].Id == worldId)
+                    if (ReferenceEquals(serverWorlds[i], kvp.Value.Instance) &&
+                        serverWorlds[i].Id == worldId &&
+                        serverWorlds[i].Config.replicatedSlotMask == kvp.Value.SlotMask &&
+                        !kvp.Value.ResetRequested)
                     {
                         stillThere = true;
                         break;
@@ -129,7 +136,7 @@ namespace Caelix.Simulation
                     continue;
                 }
 
-                worlds.Add(world.Id, new WorldKnown());
+                worlds.Add(world.Id, new WorldKnown { Instance = world, SlotMask = world.Config.replicatedSlotMask });
                 writer.Reset();
                 NetHeader.Write(writer, NetMessageType.WorldAdd, world.Id, tick);
                 writer.Write(new WorldAddMessage { ReplicatedSlotMask = world.Config.replicatedSlotMask });
@@ -169,7 +176,7 @@ namespace Caelix.Simulation
             guidScratch.Clear();
             foreach (var kvp in known.Entities)
             {
-                if (!entities.ContainsKey(kvp.Key))
+                if (!entities.ContainsKey(kvp.Key) || world.GetEntityInstanceId(kvp.Key) != kvp.Value.InstanceId)
                 {
                     guidScratch.Add(kvp.Key);
                 }
@@ -196,6 +203,7 @@ namespace Caelix.Simulation
                 {
                     entityKnown = new EntityKnown
                     {
+                        InstanceId = world.GetEntityInstanceId(guid),
                         Transform = data.transform,
                         IsStatic = data.isStatic,
                         IsProtected = data.isProtected,
@@ -252,9 +260,11 @@ namespace Caelix.Simulation
 
                 // Sector removals.
                 sectorScratch.Clear();
-                foreach (int3 sectorPos in entityKnown.Sectors)
+                foreach (var sectorKnown in entityKnown.Sectors)
                 {
-                    if (!data.sectors.ContainsKey(sectorPos))
+                    int3 sectorPos = sectorKnown.Key;
+                    if (!data.sectors.TryGetValue(sectorPos, out SectorHandle current) ||
+                        current.InstanceId != sectorKnown.Value)
                     {
                         sectorScratch.Add(sectorPos);
                     }
@@ -274,10 +284,12 @@ namespace Caelix.Simulation
                 foreach (var sectorEntry in data.sectors)
                 {
                     int3 sectorPos = sectorEntry.Key;
-                    if (!entityKnown.Sectors.Add(sectorPos))
+                    if (entityKnown.Sectors.ContainsKey(sectorPos))
                     {
                         continue;
                     }
+
+                    entityKnown.Sectors.Add(sectorPos, sectorEntry.Value.InstanceId);
 
                     writer.Reset();
                     NetHeader.Write(writer, NetMessageType.SectorAdd, worldId, tick);

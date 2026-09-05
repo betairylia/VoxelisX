@@ -552,6 +552,12 @@ namespace Caelix.Rendering
         /// </summary>
         public void Dispose()
         {
+            if (jobScheduled)
+            {
+                jobHandle.Complete();
+                rendererJob.syncRecord.Dispose();
+                jobScheduled = false;
+            }
             if (hostAABBBuffer.IsCreated) hostAABBBuffer.Dispose();
             if (hostBrickBuffer.IsCreated) hostBrickBuffer.Dispose();
 #if !CAELIX_RENDER_DISABLE_CULLING

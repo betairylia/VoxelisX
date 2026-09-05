@@ -63,6 +63,7 @@ namespace Caelix.Client
         private readonly INetChannel channel;
         private readonly Dictionary<ushort, ClientWorld> worlds = new();
         private readonly List<ClientWorld> worldList = new();
+        private readonly Dictionary<(ushort World, Guid128 Guid), VoxelEntity> authoredViews = new();
         private readonly Dictionary<ushort, EventHandler> eventHandlers = new();
         private readonly Dictionary<uint, Action<VoxelQueryReply>> pendingQueries = new();
         private readonly Dictionary<uint, TypedReplyDispatch> pendingTypedQueries = new();
@@ -114,11 +115,13 @@ namespace Caelix.Client
 
             for (int i = 0; i < worldList.Count; i++)
             {
+                WorldRemoving?.Invoke(worldList[i]);
                 worldList[i].Dispose();
             }
 
             worldList.Clear();
             worlds.Clear();
+            authoredViews.Clear();
             channel.Dispose();
         }
 
@@ -134,6 +137,11 @@ namespace Caelix.Client
                 world = new ClientWorld(this, worldId, Sector.DefaultReplicatedSlotMask);
                 worlds.Add(worldId, world);
                 worldList.Add(world);
+                foreach (var entry in authoredViews)
+                {
+                    if (entry.Key.World == worldId && entry.Value != null)
+                        world.RegisterAuthored(entry.Value);
+                }
                 WorldAdded?.Invoke(world);
             }
 
@@ -158,11 +166,17 @@ namespace Caelix.Client
 
         public void RegisterAuthoredView(VoxelEntity component, ushort worldId = 0)
         {
+            if (component == null) return;
+            authoredViews[(worldId, component.PersistentGuid)] = component;
             GetOrCreateWorld(worldId).RegisterAuthored(component);
         }
 
         public void UnregisterAuthoredView(VoxelEntity component, ushort worldId = 0)
         {
+            if (component == null) return;
+            var key = (worldId, component.PersistentGuid);
+            if (authoredViews.TryGetValue(key, out VoxelEntity authored) && authored == component)
+                authoredViews.Remove(key);
             if (worlds.TryGetValue(worldId, out ClientWorld world))
             {
                 world.UnregisterAuthored(component);

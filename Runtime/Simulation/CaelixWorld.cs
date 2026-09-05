@@ -161,6 +161,10 @@ namespace Caelix.Simulation
         private AutomataStageInputs automataTickBuf;
         private NativeList<AlienEntityView> alienEntityViews;
         private bool disposed;
+        private long nextEntityInstanceId;
+        private readonly Dictionary<Guid128, long> entityInstances = new();
+
+        internal long GetEntityInstanceId(Guid128 guid) => entityInstances[guid];
 
         public CaelixWorld(CaelixWorldConfig config)
         {
@@ -267,6 +271,7 @@ namespace Caelix.Simulation
                 excludeFromSave = excludeFromSave,
             };
             Data.VoxelEntities.Add(guid, data);
+            entityInstances.Add(guid, ++nextEntityInstanceId);
             return true;
         }
 
@@ -281,6 +286,7 @@ namespace Caelix.Simulation
             RemoveBody(guid);
             data.Dispose();
             Data.VoxelEntities.Remove(guid);
+            entityInstances.Remove(guid);
 
             dragScratch.Clear();
             foreach (var kvp in drags)

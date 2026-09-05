@@ -31,12 +31,6 @@ namespace Caelix.Client
         public bool IsClientSpawned { get; internal set; }
 
         /// <summary>
-        /// Sectors removed since the ray traced renderer last ran. It dequeues them to release
-        /// their acceleration-structure instances.
-        /// </summary>
-        public Queue<int3> SectorsToRemove { get; } = new();
-
-        /// <summary>
         /// Set for the frame an entity flips to static (including the initial flip on a
         /// born-static body). Every sector renderer of the view consumes it; the renderer clears
         /// it after its per-view loop.

@@ -307,6 +307,10 @@ namespace Caelix
 
             long frameStart = Stopwatch.GetTimestamp();
 
+            // Queries must also work on frames with no fixed step (including timeScale == 0).
+            // This pump leaves every edit command in the channel until Server.Step consumes it.
+            Server.ProcessQueries();
+
             // Get server info by cheating basically, since we are in local hosting mode
             long serverEnd = Stopwatch.GetTimestamp();
             int serverTicks = ticksSinceLastFrame;
@@ -371,6 +375,7 @@ namespace Caelix
         public void Step(int count = 1)
         {
             EnsureInitialized();
+            PushSettings();
             Server.Step(Mathf.Max(1, count));
         }
 

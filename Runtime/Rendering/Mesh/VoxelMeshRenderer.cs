@@ -29,7 +29,34 @@ namespace Caelix.Rendering.Meshing
         private readonly HashSet<EntityView> currentViews = new HashSet<EntityView>();
 
         /// <summary>The client world whose views are rendered. Nothing renders until it is set.</summary>
-        public ClientWorld Source { get; set; }
+        private ClientWorld source;
+        public ClientWorld Source
+        {
+            get => source;
+            set
+            {
+                if (ReferenceEquals(source, value)) return;
+                if (source != null)
+                {
+                    source.ViewDespawning -= RemoveView;
+                    source.SectorRemoving -= RemoveSectorRenderer;
+                    source.Owner.WorldRemoving -= OnWorldRemoving;
+                }
+                ReleaseRenderers();
+                source = value != null && !value.IsDisposed ? value : null;
+                if (source != null)
+                {
+                    source.ViewDespawning += RemoveView;
+                    source.SectorRemoving += RemoveSectorRenderer;
+                    source.Owner.WorldRemoving += OnWorldRemoving;
+                }
+            }
+        }
+
+        private void OnWorldRemoving(ClientWorld world)
+        {
+            if (ReferenceEquals(source, world)) Source = null;
+        }
 
         /// <summary>
         /// Gets the number of currently tracked views.
@@ -60,6 +87,7 @@ namespace Caelix.Rendering.Meshing
 
             // Discover and track new views
             DiscoverViews();
+            RemoveMissingSectors();
 
             // Phase 1: Schedule mesh generation jobs for all invalidated chunks
             JobHandle meshJobs = default;
@@ -88,8 +116,6 @@ namespace Caelix.Rendering.Meshing
 
             // requireUpdate cleanup is owned by the client frame after consumers have read it.
 
-            // Cleanup removed sectors
-            RemoveMissingSectors();
         }
 
         /// <summary>
@@ -253,6 +279,12 @@ namespace Caelix.Rendering.Meshing
         /// Cleanup all resources.
         /// </summary>
         public void Dispose()
+        {
+            Source = null;
+            ReleaseRenderers();
+        }
+
+        private void ReleaseRenderers()
         {
             foreach (var kvp in sectorRenderers)
             {

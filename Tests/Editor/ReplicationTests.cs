@@ -620,6 +620,178 @@ namespace Caelix.Tests
             Assert.That(replica.ReplicatedSlotMask, Is.EqualTo(Sector.DefaultReplicatedSlotMask));
         }
 
+        [Test]
+        public void SaveReload_ExistingGuidRemovesExtraBricksAndSectors()
+        {
+            string path = System.IO.Path.Combine(Application.temporaryCachePath, $"replication-{Guid.NewGuid()}.cxw");
+            using var rig = new Rig();
+            try
+            {
+                rig.World.CreateEntity(EntityA, RigidTransform.identity, isStatic: true);
+                rig.World.SetBlock(EntityA, new int3(32), new Block(0x8001));
+                rig.World.Save(path);
+                rig.Exchange();
+                for (int cycle = 0; cycle < 3; cycle++)
+                {
+                    rig.Client.World.TryGetView(EntityA, out EntityView previous);
+                    rig.World.SetBlock(EntityA, new int3(48), new Block(0x8002));
+                    rig.World.SetBlock(EntityA, new int3(256), new Block(0x8003));
+                    rig.Exchange();
+                    rig.World.Load(path);
+                    rig.Exchange();
+                    rig.Client.World.TryGetView(EntityA, out EntityView current);
+                    Assert.That(current, Is.Not.SameAs(previous));
+                    Assert.That(current.Data.GetBlock(new int3(48)).isEmpty, Is.True);
+                    Assert.That(current.Data.GetBlock(new int3(256)).isEmpty, Is.True);
+                    AssertReplicaMatchesServer(rig, rig.Client);
+                }
+            }
+            finally { System.IO.File.Delete(path); }
+        }
+
+        [Test]
+        public void SectorReplacement_BetweenStepsSendsRemovalBeforeFullContents()
+        {
+            using var rig = new Rig();
+            rig.World.CreateEntity(EntityA, RigidTransform.identity, isStatic: true);
+            rig.World.SetBlock(EntityA, new int3(32), new Block(0x8001));
+            rig.Exchange();
+            rig.Client.World.TryGetView(EntityA, out EntityView view);
+            int removals = 0;
+            rig.Client.World.SectorRemoving += (v, pos) =>
+            {
+                Assert.That(v, Is.SameAs(view));
+                Assert.That(pos, Is.EqualTo(int3.zero));
+                Assert.That(v.Data.GetBlock(new int3(32)), Is.EqualTo(new Block(0x8001)),
+                    "consumers see live storage during the removal callback");
+                removals++;
+            };
+            var data = rig.World.GetEntity(EntityA);
+            data.RemoveSectorAt(int3.zero);
+            data.AddEmptySectorAt(int3.zero);
+            rig.World.SetBlock(EntityA, new int3(48), new Block(0x8002));
+            rig.Exchange();
+            Assert.That(removals, Is.EqualTo(1));
+            Assert.That(view.Data.GetBlock(new int3(32)).isEmpty, Is.True);
+            AssertReplicaMatchesServer(rig, rig.Client);
+        }
+
+        [Test]
+        public void WorldReplacement_BetweenStepsResetsInstanceAndSlotMask()
+        {
+            using var rig = new Rig();
+            rig.World.CreateEntity(EntityA, RigidTransform.identity, isStatic: true);
+            rig.World.SetBlock(EntityA, new int3(32), new Block(0x8001));
+            rig.Exchange();
+            ClientWorld oldReplica = rig.Client.World;
+            var lifecycle = new List<string>();
+            rig.Client.WorldRemoving += w => lifecycle.Add("remove");
+            rig.Client.WorldAdded += w => lifecycle.Add("add");
+            rig.Server.RemoveWorld(rig.World);
+            var config = CaelixWorldConfig.Default();
+            config.replicatedSlotMask |= 1 << 2;
+            var replacement = rig.Server.CreateWorld(config);
+            replacement.CreateEntity(EntityA, RigidTransform.identity, isStatic: true);
+            replacement.SetBlock(EntityA, new int3(48), new Block(0x8002));
+            replacement.SetSlot(EntityA, (SectorSlotId)2, new int3(48), (short)77);
+            rig.Exchange();
+            Assert.That(lifecycle, Is.EqualTo(new[] { "remove", "add" }));
+            Assert.That(oldReplica.IsDisposed, Is.True);
+            Assert.That(rig.Client.World, Is.Not.SameAs(oldReplica));
+            Assert.That(rig.Client.World.ReplicatedSlotMask, Is.EqualTo(config.replicatedSlotMask));
+            rig.Client.World.TryGetView(EntityA, out EntityView view);
+            Assert.That(view.Data.GetBlock(new int3(32)).isEmpty, Is.True);
+            Assert.That(view.Data.GetSlot<short>((SectorSlotId)2, new int3(48)), Is.EqualTo(77));
+            AssertBlockSlotsEqual(replacement.GetEntity(EntityA), view.Data);
+        }
+
+        [Test]
+        public void ForgetWorld_ResetsExistingReplicaBeforeResending()
+        {
+            using var rig = new Rig();
+            rig.World.CreateEntity(EntityA, RigidTransform.identity, isStatic: true);
+            rig.World.SetBlock(EntityA, new int3(32), new Block(0x8001));
+            rig.Exchange();
+            ClientWorld previous = rig.Client.World;
+            rig.Server.Connections[0].ForgetWorld(0);
+            rig.Exchange();
+            Assert.That(previous.IsDisposed, Is.True);
+            AssertReplicaMatchesServer(rig, rig.Client);
+        }
+
+        [Test]
+        public void FrozenInputs_QueriesPassQueuedEditsUntilOneManualStep()
+        {
+            using var rig = new Rig();
+            rig.Server.RegisterQuery<TestQuery, TestReply>(
+                (ServerConnection c, CaelixWorld w, in TestQuery q, ref NetMessageReader payload, NetMessageWriter reply) =>
+                    new TestReply { Count = w.GetEntity(EntityA).GetBlock(new int3(32)).data });
+            rig.World.CreateEntity(EntityA, RigidTransform.identity, isStatic: true);
+            rig.World.SetBlock(EntityA, new int3(32), new Block(0x8001));
+            rig.Exchange();
+            rig.Server.Frozen = true;
+            uint tick = rig.Server.TickIndex;
+            VoxelQueryReply voxelReply = null;
+            int typedValue = -1;
+            rig.Client.SetBlock(EntityA, new int3(32), new Block(0x8002));
+            rig.Client.QueryVoxel(EntityA, new int3(32), Sector.DefaultReplicatedSlotMask, r => voxelReply = r);
+            rig.Client.SetBlock(EntityA, new int3(32), new Block(0x8003));
+            rig.Client.SendQuery<TestQuery, TestReply>(default, ReadOnlySpan<byte>.Empty,
+                (ushort id, in TestReply r, ref NetMessageReader payload) => typedValue = r.Count);
+
+            Assert.That(rig.Server.Tick(), Is.False);
+            rig.Server.Update(1f);
+            rig.Server.ProcessIncoming();
+            rig.Client.Receive();
+            Assert.That(rig.Server.TickIndex, Is.EqualTo(tick));
+            Assert.That(rig.Server.Connections[0].Channel.PendingCount, Is.EqualTo(2), "edits remain in the channel");
+            Assert.That(voxelReply, Is.Not.Null);
+            Assert.That(voxelReply.TryGetSlot(SectorSlotId.Block, out Block block), Is.True);
+            Assert.That(block, Is.EqualTo(new Block(0x8001)));
+            Assert.That(typedValue, Is.EqualTo(0x8001));
+            Assert.That(rig.World.GetEntity(EntityA).GetBlock(new int3(32)), Is.EqualTo(block));
+
+            rig.Exchange(); // Step is unconditional even when frozen.
+            Assert.That(rig.Server.TickIndex, Is.EqualTo(tick + 1));
+            Assert.That(rig.Server.Connections[0].Channel.PendingCount, Is.Zero);
+            Assert.That(rig.World.GetEntity(EntityA).GetBlock(new int3(32)), Is.EqualTo(new Block(0x8003)));
+            AssertReplicaMatchesServer(rig, rig.Client);
+        }
+
+        [Test]
+        public void FrozenInitialTick_LeavesCommandsQueued()
+        {
+            using var rig = new Rig();
+            rig.World.CreateEntity(EntityA, RigidTransform.identity, isStatic: true);
+            rig.Server.Frozen = true;
+            rig.Client.SetBlock(EntityA, new int3(32), new Block(0x8001));
+            Assert.That(rig.Server.Tick(), Is.True);
+            Assert.That(rig.Server.Connections[0].Channel.PendingCount, Is.EqualTo(1));
+            Assert.That(rig.World.GetEntity(EntityA).GetBlock(new int3(32)).isEmpty, Is.True);
+            rig.Server.Step();
+            Assert.That(rig.World.GetEntity(EntityA).GetBlock(new int3(32)), Is.EqualTo(new Block(0x8001)));
+        }
+
+        [Test]
+        public void MultipleStepsBeforeClientFrame_ReplacementLeavesOnlyLatestEntity()
+        {
+            using var rig = new Rig();
+            rig.World.CreateEntity(EntityA, RigidTransform.identity, isStatic: true);
+            rig.World.SetBlock(EntityA, new int3(32), new Block(0x8001));
+            rig.Exchange();
+            rig.World.RemoveEntity(EntityA);
+            rig.Server.Step();
+            rig.World.CreateEntity(EntityA, RigidTransform.identity, isStatic: true);
+            rig.World.SetBlock(EntityA, new int3(48), new Block(0x8002));
+            rig.Server.Step();
+            rig.World.SetBlock(EntityA, new int3(64), new Block(0x8003));
+            rig.Server.Step();
+            rig.Client.Receive();
+            rig.Client.PrepareRender();
+            rig.Client.EndFrame();
+            AssertReplicaMatchesServer(rig, rig.Client);
+        }
+
         private static ClientWorld FindClientWorld(CaelixClient client, ushort worldId)
         {
             IReadOnlyList<ClientWorld> worlds = client.Worlds;
@@ -648,6 +820,8 @@ namespace Caelix.Tests
                 for (int brick = 0; brick < Sector.BRICKS_IN_SECTOR; brick++)
                 {
                     bool serverHas = s.brickMap.indices[brick] != Sector.BRICKID_EMPTY;
+                    Assert.That(r.brickMap.indices[brick] != Sector.BRICKID_EMPTY, Is.EqualTo(serverHas),
+                        $"sector {kvp.Key} brick {brick} allocation differs");
                     if (!serverHas) continue;
                     int3 origin = Sector.ToBrickPos((short)brick) * Sector.SIZE_IN_BLOCKS;
                     for (int z = 0; z < Sector.SIZE_IN_BLOCKS; z++)

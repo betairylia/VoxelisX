@@ -141,6 +141,8 @@ namespace Caelix.Simulation
 
         public CaelixWorld CreateWorld(CaelixWorldConfig config)
         {
+            if (config.worldId == NetHeader.NoWorld)
+                throw new ArgumentException("The no-world sentinel cannot identify a world.", nameof(config));
             if (FindWorld(config.worldId) != null)
             {
                 throw new InvalidOperationException($"World id {config.worldId} already exists.");
@@ -281,14 +283,32 @@ namespace Caelix.Simulation
             };
         }
 
-        /// <summary>Drains every connection's inbox and dispatches commands and queries.</summary>
+        /// <summary>
+        /// Drains commands and queries while running; while frozen only services queries.
+        /// Step explicitly consumes commands even while frozen.
+        /// </summary>
         public void ProcessIncoming()
+            => ProcessIncoming(includeCommands: !Frozen);
+
+        /// <summary>Services queries against committed state, leaving commands in the channel.</summary>
+        public void ProcessQueries() => ProcessIncoming(includeCommands: false);
+
+        private static readonly Predicate<byte[]> IsQuery = message =>
+            message.Length >= NetHeader.Size &&
+            ((NetMessageType)message[0] == NetMessageType.Query ||
+             (NetMessageType)message[0] == NetMessageType.TypedQuery);
+
+        private void ProcessIncoming(bool includeCommands)
         {
             using var _ = s_ProcessIncomingMarker.Auto();
             for (int c = 0; c < connections.Count; c++)
             {
                 ServerConnection connection = connections[c];
-                while (connection.Channel.TryReceive(out byte[] message))
+                if (!connection.IsConnected) continue;
+                byte[] message;
+                while (includeCommands
+                    ? connection.Channel.TryReceive(out message)
+                    : connection.Channel.TryReceive(IsQuery, out message))
                 {
                     try
                     {
@@ -448,8 +468,12 @@ namespace Caelix.Simulation
         /// </summary>
         public bool Tick()
         {
-            if (Frozen && TickIndex > 0) return false;
-            Step();
+            if (Frozen && TickIndex > 0)
+            {
+                ProcessQueries();
+                return false;
+            }
+            RunStep(includeCommands: !Frozen);
             return true;
         }
 
@@ -459,8 +483,11 @@ namespace Caelix.Simulation
         /// takes effect in this tick.
         /// </summary>
         public void Step()
+            => RunStep(includeCommands: true);
+
+        private void RunStep(bool includeCommands)
         {
-            ProcessIncoming();
+            ProcessIncoming(includeCommands);
 
             for (int c = 0; c < connections.Count; c++)
             {

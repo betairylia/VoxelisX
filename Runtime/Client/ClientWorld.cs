@@ -22,6 +22,7 @@ namespace Caelix.Client
         private bool disposed;
 
         public ushort Id { get; }
+        public bool IsDisposed => disposed;
         public ushort ReplicatedSlotMask { get; internal set; }
 
         /// <summary>The client that owns this replica.</summary>
@@ -34,6 +35,9 @@ namespace Caelix.Client
 
         /// <summary>Raised before a view's data is disposed. Renderers release their resources here.</summary>
         public event Action<EntityView> ViewDespawning;
+
+        /// <summary>Raised while the sector is still alive. Consumers must release jobs and handles here.</summary>
+        public event Action<EntityView, int3> SectorRemoving;
 
         internal ClientWorld(CaelixClient owner, ushort id, ushort replicatedSlotMask)
         {
@@ -170,6 +174,11 @@ namespace Caelix.Client
                 {
                     DestroyViewObject(component.gameObject);
                 }
+                else if (component.isActiveAndEnabled)
+                {
+                    // A replacement with the same GUID must bind back to its authored component.
+                    pendingAuthored[message.Guid] = component;
+                }
             }
 
             view.Data.Dispose();
@@ -237,10 +246,9 @@ namespace Caelix.Client
                 return;
             }
 
-            if (view.Data.RemoveSectorAt(message.SectorPos))
-            {
-                view.SectorsToRemove.Enqueue(message.SectorPos);
-            }
+            if (!view.Data.sectors.ContainsKey(message.SectorPos)) return;
+            SectorRemoving?.Invoke(view, message.SectorPos);
+            view.Data.RemoveSectorAt(message.SectorPos);
         }
 
         internal void OnBrickBatch(in BrickBatchHeader header, ref NetMessageReader reader)
