@@ -3,7 +3,8 @@
 **Status:** v1 landed (branch `dev/fable/server-client-v1`, started 2026-09-03,
 commits `532b157` to `aa97d84`; later branches carry it forward). Then world lifecycle
 messages, two-phase replication and one host per process, 2026-09-05. Section 10 lists
-what is still open. Last checked against the code on 2026-09-05.
+what is still open. Lifecycle and pause hardening checked on 2026-09-06;
+see `RND_VALIDATION.md` for the supported use and measured checks.
 **Decided by:** owner, after the design discussion recorded in the family `CLAUDE.md` notes.
 
 This document is the boundary contract. Code that crosses it without going
@@ -54,7 +55,10 @@ Rejected alternatives, and why:
   runs its very first tick, because replication happens inside a tick and a
   client that never received one has no state at all. So `Frozen` means "no
   tick after the first", and `Tick()` returning false is the normal steady
-  state of a frozen scene.
+  state of a frozen scene. That initial frozen tick leaves edit commands queued.
+  `Step()` explicitly consumes queued commands, then simulates and replicates one tick.
+  Queries are serviced while frozen against the committed server data; they pass
+  pending edits in the channel without applying them or changing their relative order.
 - Two ways to drive the clock. `CaelixHost` calls `Tick()` once per Unity
   fixed step and nothing anywhere else (section 10). `CaelixServer.Update(deltaTime)`
   is a self-clocked driver with its own accumulator and a `MaxTicksPerUpdate`
@@ -174,8 +178,18 @@ the renderer is what makes it possible.
   near 3 GB, so the `int` prefix sum overflowed negative, the resize was a
   no-op, and the write job wrote gigabytes into a 64 KB allocation.
 - **Topology.** Per connection, the server diffs the known entity set and the
-  known sector set of each entity against the world every tick. New entities
-  and sectors are sent in full. Removed ones are sent as despawn or remove.
+  known sector set of each entity against the world every tick. It also compares
+  world object identity, entity creation identity, and sector attachment identity.
+  Reusing an ID or coordinate between ticks therefore produces remove then add,
+  followed by full contents. `ForgetWorld` and a changed replicated slot mask also
+  force a world reset. Identity is server bookkeeping; the local ordered channel
+  carries the existing lifecycle messages, with no new wire format.
+- **Renderer lifetime.** `WorldRemoving`, `ViewDespawning`, and `SectorRemoving`
+  run while the corresponding storage is still alive. Mesh and ray renderers
+  unsubscribe, complete their jobs, and release cached resources before disposal.
+  Removing a sector invalidates surviving neighbor boundary geometry. A fresh
+  renderer uploads a quiet replica in full, including after disable/re-enable.
+  Authored components rebind to their replacement entity and world.
 - **Transforms and flags.** Sent per entity when changed.
 - **Never replicate** `PhysicsInfo`. It is derived, and the serializer already
   discards it.
@@ -190,8 +204,11 @@ the renderer is what makes it possible.
   never grows phantom sectors.
 - **Frozen server.** Replication runs inside the tick. Freeze is a server-level
   switch (`CaelixServer.Frozen`, driven by the host's `freeze` field), not a
-  per-world flag; a frozen server sends nothing after its first tick, and that
-  first tick is what gives a frozen scene its initial state (section 2).
+  per-world flag. The first tick gives a frozen scene its initial state (section 2).
+  Later frozen frames send query replies, while edits remain queued until explicit
+  stepping or unfreezing. `INetChannel.TryReceive(predicate, out message)` provides
+  selective receipt and preserves unmatched message order. Typed query handlers
+  must be read-only; a handler with side effects would break the pause contract.
 
 ## 6. Messages, v1
 
@@ -326,15 +343,17 @@ Deferred:
 - **No Burst direct calls on the tick path.** `[BurstCompile]` static methods called from
   managed code compile synchronously in the Editor. Use a Burst job and `Run()` instead
   (`CollectBrickJob`, `PreviewBuilder`).
-- **Host frame order.** `FixedUpdate` is the only place a tick runs: push the
+- **Host frame order.** `FixedUpdate` drives automatic ticks: push the
   inspector settings, then one `Server.Tick()`, timed. `driveFixedTimestep` sets
   `Time.fixedDeltaTime` from `targetTPS`. `Update` never ticks and never pushes
-  settings; it runs `Client.Receive()`, `Client.PrepareRender()`, the raycast tick,
+  settings; it pumps `Server.ProcessQueries()` even when `Time.timeScale == 0`,
+  then runs `Client.Receive()`, `Client.PrepareRender()`, the raycast tick,
   the renderer ticks, then `Client.EndFrame()`, and collects the timings.
   `HostTimingStats.ServerTicks` is how many ticks ran since the last frame, so 0 on a
   frozen scene and n after a hitch. Render frame rate and tick rate are independent;
   the client applies whatever ticks landed since the last frame. No interpolation yet,
-  so bodies show the latest tick's pose.
+  so bodies show the latest tick's pose. The explicit `Host.Step(count)` API pushes
+  current settings and runs exactly that many ticks while frozen.
 - **Profiler markers.** Server: `Server.ProcessIncoming`, `Server.TickSimulate`,
   `Server.Replicate`, `Server.ReplicationBuild` (phase A, the shared delta),
   `Server.ReplicateWorld` (phase B, per connection), `Server.ReplicationFullBuild`
