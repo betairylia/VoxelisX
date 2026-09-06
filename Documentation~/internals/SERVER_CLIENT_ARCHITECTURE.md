@@ -5,6 +5,8 @@ commits `532b157` to `aa97d84`; later branches carry it forward). Then world lif
 messages, two-phase replication and one host per process, 2026-09-05. Section 10 lists
 what is still open. Lifecycle and pause hardening checked on 2026-09-06;
 see `RND_VALIDATION.md` for the supported use and measured checks.
+Section 4's component API cleanup was reviewed against the working tree after
+checkpoint `69c54a7` on 2026-09-06.
 **Decided by:** owner, after the design discussion recorded in the family `CLAUDE.md` notes.
 
 This document is the boundary contract. Code that crosses it without going
@@ -92,7 +94,17 @@ Rejected alternatives, and why:
 
 ## 4. Authoring without a bake step
 
-`VoxelEntity` and `VoxelBody` are **authoring and client view components**.
+`VoxelEntity` handles authoring and client view binding. `VoxelBody` supplies
+**body authoring settings** and registers scene-authored bodies on the local
+server. Replicated objects use `EntityView.HasBody` and do not carry `VoxelBody`.
+Client tools send forces and drag input through `CaelixClient`. `VoxelBody` retains
+`AddForce`, `AddTorque`, and `AddForceAtPosition` as convenience wrappers around
+client commands. It exposes no drag wrappers, body-record copy, mass-property
+computation, or direct velocity setter. The
+server's `CaelixWorld.TickSimulate` calls `VoxelBodyData.ComputePhysicsProperties`
+after dirty propagation and before forces and physics. Server systems inspect
+bodies with `TryGetBody` and set velocity with `SetBodyVelocity`.
+
 They live in the client assembly. In `OnEnable` a `VoxelEntity` finds its
 host by convention and registers:
 
@@ -120,7 +132,9 @@ keep working, because in a process that runs the server the component's data
 API is a direct write into the server world. In a process that does not run
 the server the API splits: `SetBlock` and `IsStatic` send a command, `GetBlock`
 and `GetSlot` read the view, and the sector-level API (`SetSlot`, sector
-add/remove, dirty-flag calls) throws.
+add/remove, authoring propagation) throws. Unused entity-record copy, dirty-clear,
+voxel-collection, and explicit transform-sync wrappers have been removed; their
+owning server data or client view APIs remain available.
 
 The guid is serialized on the component (generated once in the editor). A
 prefab instance needs a fresh guid on first placement. That handling is

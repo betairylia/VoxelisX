@@ -144,12 +144,6 @@ namespace Caelix.Client
             go.SetActive(false);
             var component = go.AddComponent<VoxelEntity>();
             component.InitializeAsClientView(view.Guid, Owner?.Host);
-            if (view.HasBody)
-            {
-                // View-only body: gives tools the same component surface as an authored body.
-                go.AddComponent<VoxelBody>();
-            }
-
             go.SetActive(true);
             Bind(view, component, clientSpawned: true);
         }

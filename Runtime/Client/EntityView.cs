@@ -1,4 +1,3 @@
-using System.Collections.Generic;
 using Unity.Mathematics;
 using UnityEngine;
 using Caelix.Utils;
@@ -43,8 +42,6 @@ namespace Caelix.Client
         public string Name => Component != null ? Component.name : Guid.ToString();
 
         public Matrix4x4 LocalToWorld => float4x4.TRS(Data.transform.pos, Data.transform.rot, 1f);
-
-        public Matrix4x4 WorldToLocal => math.inverse(float4x4.TRS(Data.transform.pos, Data.transform.rot, 1f));
 
         internal EntityView(Guid128 guid, VoxelEntityData data, ushort worldId)
         {

@@ -351,16 +351,6 @@ namespace Caelix.Simulation
 
         public bool TryGetBody(Guid128 guid, out VoxelBodyData body) => Data.VoxelBodies.TryGetValue(guid, out body);
 
-        public void SetBody(Guid128 guid, in VoxelBodyData body)
-        {
-            if (!Data.VoxelBodies.ContainsKey(guid))
-            {
-                throw new KeyNotFoundException($"Body {guid} is not in world {Name}.");
-            }
-
-            Data.VoxelBodies[guid] = body;
-        }
-
         /// <summary>Adds a body to an existing entity. Returns false if the entity is missing or already has one.</summary>
         public bool AddBody(Guid128 guid, bool accuratePhysics = true)
         {

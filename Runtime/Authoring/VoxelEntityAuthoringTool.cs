@@ -25,7 +25,6 @@ namespace Caelix.Authoring
         private bool rebuildRequested = true;
 
         public VoxelEntity OwnedEntity => GetComponent<VoxelEntity>();
-        public VoxelBody OwnedBody => GetComponent<VoxelBody>();
 
         public VoxelEntity BakeTarget
         {

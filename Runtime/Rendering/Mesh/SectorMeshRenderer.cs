@@ -19,7 +19,6 @@ namespace Caelix.Rendering.Meshing
         private readonly int3 sectorPosition;
         private readonly int chunkSize;
         private readonly Material material;
-        private readonly Transform parentTransform;
 
         private const DirtyFlags MeshUpdateFlags =
             DirtyFlags.BlockBrickAdded |
@@ -191,19 +190,6 @@ namespace Caelix.Rendering.Meshing
             }
 
             dirtyChunks.Clear();
-        }
-
-        /// <summary>
-        /// Completes jobs and applies meshes to renderers.
-        /// Called during update phase 2.
-        /// </summary>
-        public void CompleteJobs()
-        {
-            if (meshDataList.Count == 0)
-                return;
-
-            jobHandle.Complete();
-            ApplyCompletedJobs();
         }
 
         internal bool TryGetScheduledJobHandle(out JobHandle handle)

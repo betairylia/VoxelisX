@@ -149,13 +149,6 @@ namespace Caelix.Rendering
             (ulong)((hostBrickBuffer.IsCreated ? hostBrickBuffer.Capacity * sizeof(int) : 0)
                   + (hostAABBBuffer.IsCreated ? hostAABBBuffer.Capacity * sizeof(float) * 6 : 0));
 
-        /// <summary>
-        /// Gets the estimated VRAM usage in bytes for this renderer's GPU buffers.
-        /// </summary>
-        public ulong VRAMUsage =>
-            (ulong)(Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * 24 +
-                    currentGPUBrickBufferCapacity * BRICK_DATA_LENGTH * 4);
-
         private GraphicsBuffer aabbBuffer;
         private GraphicsBuffer brickBuffer;
         private int currentGPUBrickBufferCapacity;

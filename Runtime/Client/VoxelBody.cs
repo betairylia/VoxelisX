@@ -6,9 +6,10 @@ using Caelix.Utils;
 namespace Caelix
 {
     /// <summary>
-    /// Authoring and client view component of a voxel rigid body. The body record lives in the
-    /// server world; this component adds it when enabled and removes it when disabled. Forces go
-    /// through the client as commands, so gameplay code reads the same in every role.
+    /// Authors a voxel rigid body in the local server world. This component adds the body when
+    /// enabled and removes it when disabled. Client tools read EntityView.HasBody and send
+    /// force and drag commands through CaelixClient; replicated views do not need this component.
+    /// Force convenience methods on authored bodies also enqueue client commands.
     /// </summary>
     [RequireComponent(typeof(VoxelEntity))]
     public class VoxelBody : MonoBehaviour
@@ -44,7 +45,7 @@ namespace Caelix
             }
         }
 
-        public VoxelEntity entity
+        private VoxelEntity entity
         {
             get
             {
@@ -57,12 +58,12 @@ namespace Caelix
             }
         }
 
-        public Guid128 PersistentGuid => entity.PersistentGuid;
+        private Guid128 PersistentGuid => entity.PersistentGuid;
 
         private CaelixWorld World => entity.ServerWorld;
 
         /// <summary>True when this process runs the server and the body exists in it.</summary>
-        public bool HasServerData => entity.HasServerData && World.HasBody(PersistentGuid);
+        private bool HasServerData => entity.HasServerData && World.HasBody(PersistentGuid);
 
         private void OnEnable()
         {
@@ -100,68 +101,19 @@ namespace Caelix
         }
 #endif
 
-        #region Server data API (host mode)
-
-        public VoxelBodyData GetDataCopy()
-        {
-            if (!HasServerData)
-            {
-                throw new System.InvalidOperationException(
-                    $"{name}: body data is not available in this process.");
-            }
-
-            World.TryGetBody(PersistentGuid, out VoxelBodyData data);
-            return data;
-        }
-
-        public void CopyDataFrom(VoxelBodyData srcData)
-        {
-            if (HasServerData)
-            {
-                srcData.accuratePhysics = _accuratePhysics;
-                World.SetBody(PersistentGuid, srcData);
-            }
-        }
-
-        /// <summary>Overwrites the body's physics velocity. Host mode only.</summary>
-        public void SetVelocity(float3 linearVelocity, float3 angularVelocity)
-        {
-            if (HasServerData)
-            {
-                World.SetBodyVelocity(PersistentGuid, linearVelocity, angularVelocity);
-            }
-        }
-
-        public VoxelBodyData.MassProperties massProperties =>
-            HasServerData ? GetDataCopy().massProperties : default;
-
-        /// <summary>
-        /// Recomputes mass properties from the entity's current voxels. The tick does this every
-        /// step; call it only when a value is needed between ticks.
-        /// </summary>
-        public void ComputeMassProperties()
-        {
-            if (!HasServerData) return;
-            VoxelBodyData data = GetDataCopy();
-            data.accuratePhysics = _accuratePhysics;
-            data.ComputePhysicsProperties(entity.GetDataCopy());
-            World.SetBody(PersistentGuid, data);
-        }
-
-        #endregion
-
-        #region Forces (commands)
-
+        /// <summary>Queues a force command for the server's next step.</summary>
         public void AddForce(Vector3 force, VoxelBodyForceMode mode = VoxelBodyForceMode.Force)
         {
             Send(VoxelBodyForceCommand.Force(PersistentGuid, ToFloat3(force), mode));
         }
 
+        /// <summary>Queues a torque command for the server's next step.</summary>
         public void AddTorque(Vector3 torque, VoxelBodyForceMode mode = VoxelBodyForceMode.Force)
         {
             Send(VoxelBodyForceCommand.Torque(PersistentGuid, ToFloat3(torque), mode));
         }
 
+        /// <summary>Queues a force at a world-space position for the server's next step.</summary>
         public void AddForceAtPosition(
             Vector3 force,
             Vector3 worldPosition,
@@ -170,61 +122,15 @@ namespace Caelix
             Send(VoxelBodyForceCommand.ForceAtPosition(PersistentGuid, ToFloat3(force), ToFloat3(worldPosition), mode));
         }
 
-        /// <summary>
-        /// Holds this body by <paramref name="anchorLocal"/> and pulls it toward
-        /// <paramref name="targetWorld"/> with a spring the server computes every tick. Call again
-        /// whenever the target moves, and at least once per half second to keep the drag alive.
-        /// </summary>
-        public void SetDrag(Vector3 anchorLocal, Vector3 targetWorld, float spring, float damping, float maxAcceleration)
-        {
-            CaelixHost host = entity.Host != null ? entity.Host : CaelixHost.Current;
-            if (host == null || host.Client == null)
-            {
-                return;
-            }
-
-            ushort worldId = World != null ? World.Id : (ushort)0;
-            host.Client.SetDrag(new DragCommand
-            {
-                Entity = PersistentGuid,
-                AnchorLocal = ToFloat3(anchorLocal),
-                TargetWorld = ToFloat3(targetWorld),
-                Spring = spring,
-                Damping = damping,
-                MaxAcceleration = maxAcceleration,
-            }, worldId);
-        }
-
-        /// <summary>Ends this client's drag on the body.</summary>
-        public void ReleaseDrag()
-        {
-            CaelixHost host = entity.Host != null ? entity.Host : CaelixHost.Current;
-            if (host == null || host.Client == null)
-            {
-                return;
-            }
-
-            ushort worldId = World != null ? World.Id : (ushort)0;
-            host.Client.ReleaseDrag(PersistentGuid, worldId);
-        }
-
         private void Send(in VoxelBodyForceCommand command)
         {
             CaelixHost host = entity.Host != null ? entity.Host : CaelixHost.Current;
-            if (host == null || host.Client == null)
-            {
-                return;
-            }
+            if (host == null || host.Client == null) return;
 
             ushort worldId = World != null ? World.Id : (ushort)0;
             host.Client.AddForce(in command, worldId);
         }
 
-        private static float3 ToFloat3(Vector3 value)
-        {
-            return new float3(value.x, value.y, value.z);
-        }
-
-        #endregion
+        private static float3 ToFloat3(Vector3 value) => new(value.x, value.y, value.z);
     }
 }

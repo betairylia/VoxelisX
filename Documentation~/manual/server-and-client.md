@@ -2,6 +2,8 @@
 
 Status: Current implementation and integration guidance. Checked against Caelix
 `253d632` and Core `e5ead50` on 2026-09-06.
+Component API cleanup reviewed against the working tree after Caelix checkpoint
+`69c54a7`; the rest of this page retains the review baseline above.
 
 Use the server as the owner of simulation and persistent state. Use the client
 replica for rendering and interactive tools. A local game uses these same roles
@@ -21,6 +23,7 @@ client replica. Queries can complete while edit commands remain queued during pa
 | `CaelixClient` / `ClientWorld` | Received world state and views, commands, query callbacks, event callbacks. |
 | `CaelixHost` | Unity lifecycle and local server/client setup; one process host. |
 | `VoxelEntity` | Scene authoring and a client view binding to an entity GUID. |
+| `VoxelBody` | Scene-authored body registration, solver settings, and force command convenience methods. |
 
 ```text
 Tool input -> Client command -> Server handler -> World mutation
@@ -66,6 +69,34 @@ In local Host mode, `VoxelEntity`'s data API writes directly to server storage.
 That is useful for trusted importers and generators. These writes are immediate
 and bypass the queued-client pause behavior. For player interactions that must
 obey stepping and server validation, use `host.Client` commands even in a local game.
+
+`VoxelBody` is an authoring component; replicated objects carry body presence in
+`EntityView.HasBody` and do not receive a `VoxelBody` component. It has no
+mass-computation, body-record copy, direct velocity, or drag API. Its `AddForce`,
+`AddTorque`, and `AddForceAtPosition` convenience methods enqueue client commands
+for the server's next step.
+The server tick derives mass, center of mass, inertia, and `PhysicsInfo` after voxel
+edits and before applying forces. Use `client.AddForce` with
+`VoxelBodyForceCommand.Force`, `Torque`, or `ForceAtPosition`, and
+`client.SetDrag` / `ReleaseDrag` for client input. Server code can inspect `world.TryGetBody`
+and change velocity through `world.SetBodyVelocity`.
+
+`VoxelEntity` keeps the host authoring helpers used by importers and generators,
+including slot/sector writes and allocated-brick refresh. Its unused record-copy,
+dirty-clear, voxel-collection, and explicit transform-sync wrappers have been
+removed. Server systems use `CaelixWorld` and `VoxelEntityData`; presentation reads
+`EntityView.Data`. The server owns simulation propagation and dirty lifetimes;
+`ClientWorld` owns the Geometry work needed by renderers.
+
+`BodyProperties_UpdateOnServerTicksWithoutClientFrames` checks mass/inertia updates
+before any client frame, the absence of client `PhysicsInfo` storage and body
+components, and replicated body add/remove state.
+`AuthoredBody_ClientForcesWaitForServerStep` checks queued client forces and
+authored body removal. These are local Host checks.
+All 271 EditMode tests passed with this cleanup on 2026-09-06 using Unity
+6000.5.6f1 in the isolated Titania project.
+After restoring the component force wrappers, all 51 targeted lifecycle, Host,
+replication, meshing, and channel tests passed; the Host test calls `VoxelBody.AddForce`.
 
 Keep presentation behavior on the Unity side, and resolve simulation targets by
 world ID and entity GUID. Use [registered events](commands-and-events.md) to trigger

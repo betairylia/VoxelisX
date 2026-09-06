@@ -323,6 +323,62 @@ namespace Caelix.Tests
         }
 
         [Test]
+        public void BodyProperties_UpdateOnServerTicksWithoutClientFrames()
+        {
+            using var rig = new Rig();
+            rig.World.Config.physics.gravity = float3.zero;
+            rig.World.CreateEntity(EntityA, RigidTransform.identity, isStatic: false);
+            rig.World.AddBody(EntityA);
+            rig.World.SetBlock(EntityA, new int3(8, 8, 8), new Block(0x8001));
+
+            // No view or VoxelBody component exists while the server computes these properties.
+            rig.Server.Step();
+            Assert.That(rig.Client.World.Views.Count, Is.Zero);
+            Assert.That(rig.World.TryGetBody(EntityA, out var initial), Is.True);
+            float initialMass = initial.massProperties.mass;
+            float3 initialInertia = initial.massProperties.inertiaTensor;
+            Assert.That(initialMass, Is.GreaterThan(0));
+            Assert.That(initial.massProperties.centerOfMass, Is.EqualTo(new float3(8.5f)));
+
+            rig.Client.SetBlock(EntityA, new int3(10, 8, 8), new Block(0x8001));
+            rig.Server.Step();
+            Assert.That(rig.World.TryGetBody(EntityA, out var expanded), Is.True);
+            Assert.That(expanded.massProperties.mass, Is.EqualTo(initialMass * 2).Within(0.0001f));
+            Assert.That(expanded.massProperties.centerOfMass, Is.EqualTo(new float3(9.5f, 8.5f, 8.5f)));
+            Assert.That(expanded.massProperties.inertiaTensor.y, Is.GreaterThan(initialInertia.y));
+
+            rig.Client.SetBlock(EntityA, new int3(10, 8, 8), Block.Empty);
+            rig.Server.Step();
+            Assert.That(rig.World.TryGetBody(EntityA, out var reduced), Is.True);
+            Assert.That(reduced.massProperties.mass, Is.EqualTo(initialMass).Within(0.0001f));
+            Assert.That(math.distance(reduced.massProperties.inertiaTensor, initialInertia), Is.LessThan(0.0001f));
+
+            rig.Client.Receive();
+            rig.Client.PrepareRender();
+            Assert.That(rig.Client.World.TryGetView(EntityA, out var view), Is.True);
+            Assert.That(view.HasBody, Is.True);
+            Assert.That(view.Component.GetComponent<VoxelBody>(), Is.Null,
+                "replicated body presence is carried by EntityView, without an authoring component");
+            Assert.That(rig.World.GetEntity(EntityA).sectors[int3.zero].Get()
+                .slots[(int)SectorSlotId.PhysicsInfo].IsCreated, Is.True);
+            foreach (var sector in view.Data.sectors)
+            {
+                Assert.That(sector.Value.Get().slots[(int)SectorSlotId.PhysicsInfo].IsCreated, Is.False,
+                    "client presentation must not allocate derived physics data");
+            }
+            rig.Client.EndFrame();
+
+            rig.World.RemoveBody(EntityA);
+            rig.Exchange();
+            Assert.That(view.HasBody, Is.False);
+            Assert.That(view.Component.GetComponent<VoxelBody>(), Is.Null);
+            rig.World.AddBody(EntityA);
+            rig.Exchange();
+            Assert.That(view.HasBody, Is.True);
+            Assert.That(view.Component.GetComponent<VoxelBody>(), Is.Null);
+        }
+
+        [Test]
         public void Drag_PullsBodyTowardTargetAndTimesOut()
         {
             using var rig = new Rig();
@@ -1075,6 +1131,52 @@ namespace Caelix.Tests
 
     public class HostIntegrationTests
     {
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator AuthoredBody_ClientForcesWaitForServerStep()
+        {
+            UnityEditor.SceneManagement.EditorSceneManager.NewScene(
+                UnityEditor.SceneManagement.NewSceneSetup.EmptyScene,
+                UnityEditor.SceneManagement.NewSceneMode.Single);
+            yield return new UnityEngine.TestTools.EnterPlayMode();
+            float oldScale = Time.timeScale;
+            float oldFixed = Time.fixedDeltaTime;
+            var root = new GameObject("body-command-test");
+            try
+            {
+                Time.timeScale = 0;
+                var host = root.AddComponent<CaelixHost>();
+                host.World.Config.physics.gravity = float3.zero;
+                var authoredObject = new GameObject("authored-body");
+                authoredObject.transform.SetParent(root.transform);
+                var entity = authoredObject.AddComponent<VoxelEntity>();
+                entity.IsStatic = false;
+                var component = authoredObject.AddComponent<VoxelBody>();
+                entity.SetBlock(new int3(8), new Block(0x8001));
+                host.Step();
+                yield return null;
+
+                Assert.That(host.World.TryGetBody(entity.PersistentGuid, out var before), Is.True);
+                Assert.That(before.massProperties.mass, Is.GreaterThan(0));
+                component.AddForce(Vector3.right, VoxelBodyForceMode.VelocityChange);
+                yield return null;
+                Assert.That(host.World.TryGetBody(entity.PersistentGuid, out var queued), Is.True);
+                Assert.That(queued.motionVelocity.LinearVelocity, Is.EqualTo(before.motionVelocity.LinearVelocity));
+                Assert.That(host.Server.Connections[0].Channel.PendingCount, Is.EqualTo(1));
+
+                host.Step();
+                Assert.That(host.World.TryGetBody(entity.PersistentGuid, out var stepped), Is.True);
+                Assert.That(stepped.motionVelocity.LinearVelocity.x, Is.GreaterThan(0.9f));
+                component.enabled = false;
+                Assert.That(host.World.HasBody(entity.PersistentGuid), Is.False);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+                Time.timeScale = oldScale;
+                Time.fixedDeltaTime = oldFixed;
+            }
+        }
+
         [UnityEngine.TestTools.UnityTest]
         public System.Collections.IEnumerator PausedHost_QueriesRunAtZeroTimeScaleAndAuthoredViewsSurviveReload()
         {
