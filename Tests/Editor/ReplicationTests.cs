@@ -23,6 +23,94 @@ namespace Caelix.Tests
             public float3 Position;
         }
 
+        [Test]
+        public void Receive_MessageLimitAndInvalidPacketPreserveLaterWritesAcrossWorlds()
+        {
+            LocalChannel.CreatePair(out LocalChannel sender, out LocalChannel receiver);
+            using (sender)
+            using (var client = new CaelixClient(receiver))
+            {
+                var writer = new NetMessageWriter();
+                for (ushort world = 0; world < 2; world++)
+                {
+                    NetHeader.Write(writer, NetMessageType.EntitySpawn, world, 0);
+                    writer.Write(new EntitySpawnMessage { Guid = EntityA, Transform = RigidTransform.identity, IsStatic = 1 });
+                    sender.Send(NetDelivery.Reliable, writer.AsSpan());
+                    writer.Reset();
+                }
+                client.Receive();
+
+                for (int i = 0; i < 1030; i++)
+                {
+                    // The same guid and coordinates in different worlds must never share work.
+                    NetHeader.Write(writer, NetMessageType.BrickData, (ushort)(i % 2), (uint)i);
+                    writer.Write(new BrickBatchHeader { Guid = EntityA, SectorPos = int3.zero, BrickCount = 1 });
+                    writer.Write((ushort)0);
+                    writer.Write((ushort)0);
+                    writer.Write((byte)1);
+                    writer.Write((byte)SectorSlotId.Block);
+                    writer.Write((ushort)2);
+                    for (int v = 0; v < Sector.BLOCKS_IN_BRICK; v++) writer.Write((ushort)(0x8000 + i));
+                    sender.Send(NetDelivery.Reliable, writer.AsSpan());
+                    writer.Reset();
+                    if (i != 1025) continue;
+                    NetHeader.Write(writer, NetMessageType.BrickData, 0, (uint)i);
+                    writer.Write(new BrickBatchHeader { Guid = EntityA, SectorPos = int3.zero, BrickCount = 1 });
+                    writer.Write((ushort)4096);
+                    writer.Write((ushort)0);
+                    writer.Write((byte)0);
+                    sender.Send(NetDelivery.Reliable, writer.AsSpan());
+                    writer.Reset();
+                }
+                UnityEngine.TestTools.LogAssert.Expect(LogType.Exception,
+                    new System.Text.RegularExpressions.Regex("Invalid replicated brick batch: InvalidBrickIndex"));
+                client.Receive();
+                for (ushort world = 0; world < 2; world++)
+                {
+                    Assert.That(client.GetOrCreateWorld(world).TryGetView(EntityA, out EntityView view), Is.True);
+                    Assert.That(view.Data.GetBlock(new int3(7)), Is.EqualTo(new Block((ushort)(0x8000 + 1028 + world))));
+                    Assert.That(view.Data.sectors[int3.zero].Get().NonEmptyBricks.Length, Is.EqualTo(1));
+                }
+            }
+        }
+
+        [Test]
+        public void Receive_QueuedSectorDeltasAreVisibleInOrderToEventsAndRemoval()
+        {
+            using var rig = new Rig();
+            rig.World.CreateEntity(EntityA, RigidTransform.identity, isStatic: true);
+            var events = new List<int>();
+            rig.Client.RegisterEvent<TestEvent>((world, evt) =>
+            {
+                Assert.That(rig.Client.World.TryGetView(EntityA, out EntityView view), Is.True);
+                for (int s = 0; s < 12; s++)
+                    Assert.That(view.Data.GetBlock(new int3(s * 128 + 1, 1, 1)),
+                        Is.EqualTo(new Block((ushort)(0x8000 + evt.Value))));
+                events.Add(evt.Value);
+            });
+            for (int tick = 1; tick <= 4; tick++)
+            {
+                for (int s = 0; s < 12; s++)
+                    rig.World.SetBlock(EntityA, new int3(s * 128 + 1, 1, 1), new Block((ushort)(0x8000 + tick)));
+                // Leave two ticks adjacent without callbacks to exercise ordered sector chains.
+                if (tick >= 3) rig.World.EmitEvent(new TestEvent { Value = tick });
+                rig.Server.Step();
+            }
+            int removals = 0;
+            rig.Client.World.SectorRemoving += (view, pos) =>
+            {
+                Assert.That(view.Data.GetBlock(new int3(1)), Is.EqualTo(new Block(0x8004)));
+                removals++;
+            };
+            rig.World.GetEntity(EntityA).RemoveSectorAt(int3.zero);
+            rig.World.SetBlock(EntityA, new int3(2), new Block(0x8010));
+            rig.Server.Step();
+            rig.Client.Receive();
+            Assert.That(events, Is.EqualTo(new[] { 3, 4 }));
+            Assert.That(removals, Is.EqualTo(1));
+            AssertReplicaMatchesServer(rig, rig.Client);
+        }
+
         private struct TestBatchCommand
         {
             public int Count;

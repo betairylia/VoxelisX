@@ -1,0 +1,93 @@
+using System;
+using System.Diagnostics;
+using NUnit.Framework;
+using Caelix.Client;
+using Caelix.Net;
+using Caelix.Utils;
+using Unity.Mathematics;
+
+namespace Caelix.Tests
+{
+    /// <summary>Opt-in receive-only measurements; run with Burst enabled and synchronous compilation.</summary>
+    public class ClientReceivePerformanceTests
+    {
+        [TestCase(1, 1)]
+        [TestCase(1, 1024)]
+        [TestCase(128, 1)]
+        [TestCase(128, 1024)]
+        [Explicit("Receive microbenchmark: excludes sending, rendering and server simulation.")]
+        public void Receive_InitialAndQueuedDeltaMilliseconds(int sectorCount, int bricksPerSector)
+        {
+            var guid = new Guid128(101, 102, 103, 104);
+            var packets = new byte[sectorCount][];
+            var writer = new NetMessageWriter();
+            for (int s = 0; s < sectorCount; s++)
+            {
+                writer.Reset();
+                NetHeader.Write(writer, NetMessageType.BrickData, 0, 1);
+                writer.Write(new BrickBatchHeader { Guid = guid, SectorPos = new int3(s, 0, 0),
+                    BrickCount = (ushort)bricksPerSector });
+                for (int b = 0; b < bricksPerSector; b++)
+                {
+                    writer.Write((ushort)b);
+                    writer.Write((ushort)0);
+                    writer.Write((byte)1);
+                    writer.Write((byte)SectorSlotId.Block);
+                    writer.Write((ushort)2);
+                    for (int v = 0; v < Sector.BLOCKS_IN_BRICK; v++) writer.Write((ushort)(0x8001 + s));
+                }
+                packets[s] = writer.AsSpan().ToArray();
+            }
+
+            var initial = new double[7];
+            var deltas = new double[7];
+            // First run warms Burst jobs; exclude it from the reported medians.
+            for (int run = -1; run < initial.Length; run++)
+            {
+                LocalChannel.CreatePair(out LocalChannel sender, out LocalChannel receiver);
+                using (sender)
+                using (var client = new CaelixClient(receiver))
+                {
+                    writer.Reset();
+                    NetHeader.Write(writer, NetMessageType.EntitySpawn, 0, 0);
+                    writer.Write(new EntitySpawnMessage { Guid = guid, Transform = RigidTransform.identity, IsStatic = 1 });
+                    sender.Send(NetDelivery.Reliable, writer.AsSpan());
+                    for (int s = 0; s < sectorCount; s++)
+                    {
+                        writer.Reset();
+                        NetHeader.Write(writer, NetMessageType.SectorAdd, 0, 0);
+                        writer.Write(new SectorMessage { Guid = guid, SectorPos = new int3(s, 0, 0) });
+                        sender.Send(NetDelivery.Reliable, writer.AsSpan());
+                    }
+                    client.Receive();
+                    foreach (byte[] packet in packets) sender.Send(NetDelivery.Reliable, packet);
+                    var timer = Stopwatch.StartNew();
+                    client.Receive();
+                    timer.Stop();
+                    if (run >= 0) initial[run] = timer.Elapsed.TotalMilliseconds;
+                    client.EndFrame();
+                    for (int tick = 0; tick < 3; tick++)
+                        foreach (byte[] packet in packets) sender.Send(NetDelivery.Reliable, packet);
+                    timer.Restart();
+                    client.Receive();
+                    timer.Stop();
+                    if (run >= 0) deltas[run] = timer.Elapsed.TotalMilliseconds;
+                    Assert.That(client.World.TryGetView(guid, out EntityView view), Is.True);
+                    for (int s = 0; s < sectorCount; s++)
+                    {
+                        SectorHandle sector = view.Data.sectors[new int3(s, 0, 0)];
+                        Assert.That(sector.Get().NonEmptyBricks.Length, Is.EqualTo(bricksPerSector));
+                        int3 p = Sector.ToBrickPos((short)(bricksPerSector - 1)) * Sector.SIZE_IN_BLOCKS + new int3(7);
+                        Assert.That(sector.GetBlock(p.x, p.y, p.z), Is.EqualTo(new Block((ushort)(0x8001 + s))));
+                    }
+                    client.EndFrame();
+                }
+            }
+            Array.Sort(initial);
+            Array.Sort(deltas);
+            TestContext.Out.WriteLine($"Receive benchmark: sectors={sectorCount}, bricks/sector={bricksPerSector}, " +
+                $"Burst={Unity.Burst.BurstCompiler.IsEnabled}, workers={Unity.Jobs.LowLevel.Unsafe.JobsUtility.JobWorkerCount}, " +
+                $"initial median ms={initial[3]:F4}, three queued deltas median ms={deltas[3]:F4}");
+        }
+    }
+}
