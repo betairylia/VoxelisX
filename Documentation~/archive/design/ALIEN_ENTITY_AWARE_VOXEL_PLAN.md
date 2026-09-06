@@ -1,5 +1,8 @@
 # Alien-Entity Aware Voxel Reader Plan
 
+> Historical proposal, archived on 2026-09-06. The original body follows.
+> Use [Write an automaton](../../manual/automata.md) for current reader usage.
+
 ## Summary
 
 This plan describes a simplified alien-entity aware voxel reader for Caelix automata.

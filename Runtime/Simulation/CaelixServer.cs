@@ -308,7 +308,7 @@ namespace Caelix.Simulation
                 byte[] message;
                 while (includeCommands
                     ? connection.Channel.TryReceive(out message)
-                    : connection.Channel.TryReceive(IsQuery, out message))
+                    : connection.Channel.TryReceive_RotateQueue(IsQuery, out message))
                 {
                     try
                     {

@@ -1,5 +1,8 @@
 # Caelix: ECS vs Non-ECS Architecture Decision
 
+> Historical decision report, archived on 2026-09-06. The original date and body follow.
+> Use [Server and client usage](../../manual/server-and-client.md) for the current integration model.
+
 **Date:** 2025-11-02
 **Decision:** Abandon Unity ECS implementation, return to MonoBehaviour + Jobs + Burst architecture
 **Primary Reason:** ECS complexity doesn't provide sufficient benefits for voxel engine's specific requirements

@@ -307,6 +307,7 @@ namespace Caelix
 
             long frameStart = Stopwatch.GetTimestamp();
 
+            // TODO: VibeReview: Remove this and rely on FixedUpdate one?
             // Queries must also work on frames with no fixed step (including timeScale == 0).
             // This pump leaves every edit command in the channel until Server.Step consumes it.
             Server.ProcessQueries();

@@ -5,6 +5,7 @@ using Unity.Mathematics;
 using UnityEngine;
 using Caelix.Net;
 using Caelix.Utils;
+using Unity.Jobs;
 
 namespace Caelix.Client
 {
@@ -350,6 +351,8 @@ namespace Caelix.Client
                 DirtyFlags.Geometry | DirtyFlags.GeometryWithLocalNeighbor |
                 DirtyFlags.BlockBrickAdded | DirtyFlags.BlockBrickRemoved;
 
+            JobHandle dirtyPropagationHandle = default;
+
             for (int i = 0; i < viewList.Count; i++)
             {
                 EntityView view = viewList[i];
@@ -358,8 +361,13 @@ namespace Caelix.Client
                     continue;
                 }
 
-                view.Data.PropagateDirtyFlags(renderFlags, async: false);
+                dirtyPropagationHandle = JobHandle.CombineDependencies(
+                    dirtyPropagationHandle,
+                    view.Data.PropagateDirtyFlags(renderFlags, async: true)
+                );
             }
+            
+            dirtyPropagationHandle.Complete();
         }
 
         /// <summary>Ends the dirty lifetime of this frame's applied bricks. Call after the renderers ran.</summary>

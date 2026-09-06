@@ -226,13 +226,15 @@ namespace Caelix
                 if (!warnedNoHost)
                 {
                     warnedNoHost = true;
-                    Debug.LogError($"{name}: no CaelixHost in the scene; the entity is not simulated.", this);
+                    Debug.LogError($"{name}: no CaelixHost in the scene; the entity is not simulated. Is Caelix running in local hosting mode?", this);
                 }
 
                 return false;
             }
 
             resolvedHost.EnsureInitialized();
+            
+            // Local authoring workflow, modify the server directly
             serverWorld = resolvedHost.World;
             if (serverWorld == null)
             {
