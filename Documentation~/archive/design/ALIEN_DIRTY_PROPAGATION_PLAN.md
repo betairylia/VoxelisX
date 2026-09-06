@@ -1,5 +1,8 @@
 # Alien Dirty Propagation Plan
 
+> Historical proposal, archived on 2026-09-06. The original body follows.
+> Use [Tick and dirty propagation](../../internals/tick-and-dirty.md) for the current execution model.
+
 ## Goal
 
 Make automata dirty propagation aware of alien voxel entities without using the physics engine as the owner of this behavior.

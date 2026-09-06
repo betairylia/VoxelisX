@@ -6,6 +6,10 @@ This package contains rendering, authoring, and world orchestration. It uses Cae
 
 This is an early research and development release.
 
+Start with the [documentation](Documentation~/index.md), including
+[getting started](Documentation~/manual/get-started.md) and the
+[documentation writing guide](Documentation~/documentation-guide.md).
+
 ## Related Repositories
 
 - [Caelix-Core](https://github.com/betairylia/Caelix-Core) — Basic voxel data layouts + I/O.

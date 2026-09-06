@@ -1,6 +1,4 @@
-using System;
 using System.Collections.Generic;
-using System.Linq;
 using Unity.Collections;
 using Unity.Mathematics;
 using UnityEngine;
@@ -20,11 +18,6 @@ namespace Caelix
     public abstract class InfiniteLoader : MonoBehaviour
     {
         /// <summary>
-        /// Whether to allow parallel loading of sectors (not yet implemented).
-        /// </summary>
-        public bool allowParallelization = false;
-
-        /// <summary>
         /// The transform whose position determines which sectors to load.
         /// Typically set to the player's transform.
         /// </summary>
@@ -38,18 +31,11 @@ namespace Caelix
         public abstract void LoadSector(int3 sectorPos);
 
         /// <summary>
-        /// Called at the end of each load tick after all sectors have been processed.
-        /// Can be overridden to perform cleanup or batch operations.
-        /// </summary>
-        public virtual void EndLoadTick() { }
-
-        /// <summary>
         /// The voxel entity that owns the loaded sectors.
         /// </summary>
         protected VoxelEntity entity;
 
         private List<int3> sectorLoadOrder = new();
-        private int currentIndex;
         private bool initialized;
 
         /// <summary>
@@ -72,23 +58,6 @@ namespace Caelix
         /// </summary>
         protected HashSet<int3> loadingSectors = new();
         
-        /// <summary>
-        /// Generates all integer points that are within both a bounding box and a cylindrical volume (ignoring Y),
-        /// ordered by Manhattan distance from the origin.
-        /// </summary>
-        /// <param name="bounds">The box bounds, representing the maximum absolute value for each coordinate.</param>
-        /// <param name="radius">The radius of the cylinder in the XZ plane centered at the origin.</param>
-        /// <param name="result">Output list to populate with generated points, ordered by Manhattan distance.</param>
-        /// <remarks>
-        /// This method generates points by iterating through Manhattan distance shells, ensuring
-        /// points closer to the origin are added first. The Y component is ignored for distance checks,
-        /// creating a cylindrical loading volume which is typical for voxel games.
-        /// </remarks>
-        public static void GeneratePointsInIntersection(int3 bounds, float radius, ref List<int3> result)
-        {
-            SectorLoadGeometry.GeneratePointsInIntersection(bounds, radius, ref result);
-        }
-
         /// <summary>
         /// Initializes the loader by finding the VoxelEntity component and calculating load order.
         /// </summary>
@@ -154,7 +123,7 @@ namespace Caelix
         public void ResetSectorLoadOrder()
         {
             // Fill sector load order list
-            GeneratePointsInIntersection(sectorLoadBounds, sectorLoadRadiusInBlocks / Sector.SECTOR_SIZE_IN_BLOCKS, ref sectorLoadOrder);
+            SectorLoadGeometry.GeneratePointsInIntersection(sectorLoadBounds, sectorLoadRadiusInBlocks / Sector.SECTOR_SIZE_IN_BLOCKS, ref sectorLoadOrder);
         }
 
         /// <summary>
@@ -167,6 +136,9 @@ namespace Caelix
         /// </remarks>
         public virtual void Tick()
         {
+            // The loader writes server data through the entity; without it there is nothing to stream.
+            if (entity == null || !entity.HasServerData) return;
+
             int3 lsp = loadCenterSectorPos;
 
             // Unload sectors
@@ -182,7 +154,7 @@ namespace Caelix
 
             // Load sectors
             // TODO: Split to frames
-            for (currentIndex = 0; currentIndex < sectorLoadOrder.Count; currentIndex++)
+            for (int currentIndex = 0; currentIndex < sectorLoadOrder.Count; currentIndex++)
             {
                 int3 targetSectorPos = lsp + sectorLoadOrder[currentIndex];
                 // Debug.Log($"Loaded sector @ {targetSectorPos}");
@@ -194,8 +166,6 @@ namespace Caelix
                 loadingSectors.Add(targetSectorPos);
                 LoadSector(targetSectorPos);
             }
-
-            EndLoadTick();
         }
 
         /// <summary>

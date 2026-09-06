@@ -1,4 +1,3 @@
-using System.Collections.Generic;
 using Unity.Mathematics;
 using UnityEngine;
 using Caelix.Utils;
@@ -13,6 +12,7 @@ namespace Caelix.Client
     public sealed class EntityView
     {
         public Guid128 Guid { get; }
+        public ushort WorldId { get; }
 
         /// <summary>
         /// Replica data. Only the replicated slots are populated. The transform is the last
@@ -31,12 +31,6 @@ namespace Caelix.Client
         public bool IsClientSpawned { get; internal set; }
 
         /// <summary>
-        /// Sectors removed since the ray traced renderer last ran. It dequeues them to release
-        /// their acceleration-structure instances.
-        /// </summary>
-        public Queue<int3> SectorsToRemove { get; } = new();
-
-        /// <summary>
         /// Set for the frame an entity flips to static (including the initial flip on a
         /// born-static body). Every sector renderer of the view consumes it; the renderer clears
         /// it after its per-view loop.
@@ -49,11 +43,10 @@ namespace Caelix.Client
 
         public Matrix4x4 LocalToWorld => float4x4.TRS(Data.transform.pos, Data.transform.rot, 1f);
 
-        public Matrix4x4 WorldToLocal => math.inverse(float4x4.TRS(Data.transform.pos, Data.transform.rot, 1f));
-
-        internal EntityView(Guid128 guid, VoxelEntityData data)
+        internal EntityView(Guid128 guid, VoxelEntityData data, ushort worldId)
         {
             Guid = guid;
+            WorldId = worldId;
             Data = data;
         }
     }

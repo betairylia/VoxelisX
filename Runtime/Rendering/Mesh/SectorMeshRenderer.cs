@@ -19,7 +19,6 @@ namespace Caelix.Rendering.Meshing
         private readonly int3 sectorPosition;
         private readonly int chunkSize;
         private readonly Material material;
-        private readonly Transform parentTransform;
 
         private const DirtyFlags MeshUpdateFlags =
             DirtyFlags.BlockBrickAdded |
@@ -193,19 +192,6 @@ namespace Caelix.Rendering.Meshing
             dirtyChunks.Clear();
         }
 
-        /// <summary>
-        /// Completes jobs and applies meshes to renderers.
-        /// Called during update phase 2.
-        /// </summary>
-        public void CompleteJobs()
-        {
-            if (meshDataList.Count == 0)
-                return;
-
-            jobHandle.Complete();
-            ApplyCompletedJobs();
-        }
-
         internal bool TryGetScheduledJobHandle(out JobHandle handle)
         {
             handle = jobHandle;
@@ -356,15 +342,22 @@ namespace Caelix.Rendering.Meshing
             {
                 if (meshes[i] != null)
                 {
-                    UnityEngine.Object.Destroy(meshes[i]);
+                    DestroyObject(meshes[i]);
                 }
             }
 
             // Destroy GameObjects
             if (SectorObject != null)
             {
-                UnityEngine.Object.Destroy(SectorObject);
+                DestroyObject(SectorObject);
+                SectorObject = null;
             }
+        }
+
+        private static void DestroyObject(UnityEngine.Object value)
+        {
+            if (Application.isPlaying) UnityEngine.Object.Destroy(value);
+            else UnityEngine.Object.DestroyImmediate(value);
         }
     }
 }

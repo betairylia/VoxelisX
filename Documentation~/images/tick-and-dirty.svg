@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="670" viewBox="0 0 1000 670" role="img" aria-labelledby="title desc">
+<title id="title">One world tick: consume work, publish changes, clear dirty</title><desc id="desc">Top row: consume previous requireUpdate work in snapshots, commit writes, then clear consumed work and propagate local dirty. Bottom row continues from right to left through physics and alien propagation, replication, and EndTick. Raw dirty survives until EndTick. New requireUpdate survives into the next automata stage.</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#60768a"/></marker></defs>
+<rect width="1000" height="670" rx="16" fill="#f5f8fc"/>
+<g font-family="Segoe UI, Arial, sans-serif" fill="#172d43">
+<text x="36" y="43" font-size="25" font-weight="bold" fill="#172d43">One world tick: consume work, publish changes, clear dirty</text>
+<text x="36" y="77" font-size="16" font-weight="normal" fill="#172d43">Execution follows the arrows. The server repeats this sequence for each world.</text>
+<rect x="36" y="110" width="285" height="125" rx="10" fill="#ffffff" stroke="#c3d2df"/>
+<rect x="36" y="110" width="5" height="125" rx="2" fill="#176baf" stroke="#176baf"/>
+<text x="54" y="140" font-size="19" font-weight="bold" fill="#176baf">1  Automata</text>
+<text x="54" y="168" font-size="16" font-weight="normal" fill="#172d43">Read previous requireUpdate</text>
+<text x="54" y="191" font-size="16" font-weight="normal" fill="#172d43">Read live state; write snapshots</text>
+<text x="54" y="214" font-size="16" font-weight="normal" fill="#172d43">Complete hook jobs</text>
+<rect x="357" y="110" width="285" height="125" rx="10" fill="#ffffff" stroke="#c3d2df"/>
+<rect x="357" y="110" width="5" height="125" rx="2" fill="#176baf" stroke="#176baf"/>
+<text x="375" y="140" font-size="19" font-weight="bold" fill="#176baf">2  Commit</text>
+<text x="375" y="168" font-size="16" font-weight="normal" fill="#172d43">Apply sector snapshots</text>
+<text x="375" y="191" font-size="16" font-weight="normal" fill="#172d43">Clear consumed requireUpdate</text>
+<text x="375" y="214" font-size="16" font-weight="normal" fill="#172d43">Keep this tick’s source dirty</text>
+<rect x="678" y="110" width="286" height="125" rx="10" fill="#ffffff" stroke="#c3d2df"/>
+<rect x="678" y="110" width="5" height="125" rx="2" fill="#176baf" stroke="#176baf"/>
+<text x="696" y="140" font-size="19" font-weight="bold" fill="#176baf">3  Local propagation</text>
+<text x="696" y="168" font-size="16" font-weight="normal" fill="#172d43">dirty → new requireUpdate</text>
+<text x="696" y="191" font-size="16" font-weight="normal" fill="#172d43">May create neighbor sectors</text>
+<text x="696" y="214" font-size="16" font-weight="normal" fill="#172d43">Refresh occupancy and mass</text>
+<path d="M 321 173 H 347" fill="none" stroke="#60768a" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M 642 173 H 668" fill="none" stroke="#60768a" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M 821 235 V 309" fill="none" stroke="#60768a" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="678" y="320" width="286" height="125" rx="10" fill="#ffffff" stroke="#c3d2df"/>
+<rect x="678" y="320" width="5" height="125" rx="2" fill="#176baf" stroke="#176baf"/>
+<text x="696" y="350" font-size="19" font-weight="bold" fill="#176baf">4  Physics + alien work</text>
+<text x="696" y="378" font-size="16" font-weight="normal" fill="#172d43">Apply forces; simulate physics</text>
+<text x="696" y="401" font-size="16" font-weight="normal" fill="#172d43">Use stepped poses for overlaps</text>
+<text x="696" y="424" font-size="16" font-weight="normal" fill="#172d43">Mark existing target bricks</text>
+<rect x="357" y="320" width="285" height="125" rx="10" fill="#ffffff" stroke="#c3d2df"/>
+<rect x="357" y="320" width="5" height="125" rx="2" fill="#176baf" stroke="#176baf"/>
+<text x="375" y="350" font-size="19" font-weight="bold" fill="#176baf">5  Replication</text>
+<text x="375" y="378" font-size="16" font-weight="normal" fill="#172d43">Read source dirty before clear</text>
+<text x="375" y="401" font-size="16" font-weight="normal" fill="#172d43">Publish lifecycle and brick data</text>
+<text x="375" y="424" font-size="16" font-weight="normal" fill="#172d43">Send queued world events</text>
+<rect x="36" y="320" width="285" height="125" rx="10" fill="#ffffff" stroke="#c3d2df"/>
+<rect x="36" y="320" width="5" height="125" rx="2" fill="#176baf" stroke="#176baf"/>
+<text x="54" y="350" font-size="19" font-weight="bold" fill="#176baf">6  EndTick</text>
+<text x="54" y="378" font-size="16" font-weight="normal" fill="#172d43">Clear source dirty flags</text>
+<text x="54" y="401" font-size="16" font-weight="normal" fill="#172d43">Advance world tick index</text>
+<text x="54" y="424" font-size="16" font-weight="normal" fill="#172d43">Keep new requireUpdate</text>
+<path d="M 678 382 H 652" fill="none" stroke="#60768a" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M 357 382 H 331" fill="none" stroke="#60768a" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="36" y="491" width="928" height="57" rx="10" fill="#fff1df" stroke="#e2bc86"/>
+<text x="54" y="517" font-size="18" font-weight="bold" fill="#ac580a">dirty = source edits</text>
+<text x="292" y="517" font-size="16" font-weight="normal" fill="#172d43">Writes set it; propagation and replication read it.</text>
+<text x="292" y="538" font-size="16" font-weight="normal" fill="#172d43">EndTick clears it after its consumers finish.</text>
+<rect x="36" y="559" width="928" height="72" rx="10" fill="#e4f4ef" stroke="#9dc9bc"/>
+<text x="54" y="587" font-size="18" font-weight="bold" fill="#087f75">requireUpdate = work</text>
+<text x="292" y="587" font-size="16" font-weight="normal" fill="#172d43">The automata stage consumes prior work; propagation schedules new work.</text>
+<text x="292" y="612" font-size="16" font-weight="normal" fill="#172d43">That new work remains available to the next automata stage.</text>
+</g></svg>

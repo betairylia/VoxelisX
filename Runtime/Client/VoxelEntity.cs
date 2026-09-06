@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
@@ -19,15 +18,10 @@ namespace Caelix
     /// code keep working unchanged. In a process that does not run the server, writes go through
     /// commands and reads come from the view.
     /// </summary>
-    public unsafe partial class VoxelEntity : MonoBehaviour
+    public class VoxelEntity : MonoBehaviour
     {
         private static Unity.Mathematics.Random globalEntityRandomState =
             new((uint)(DateTime.Now.Ticks & 0xFFFFFFFF) | 1u);
-
-        public static void InitializeRandomState(uint seed)
-        {
-            globalEntityRandomState = new Unity.Mathematics.Random(seed == 0 ? 1u : seed);
-        }
 
         [Tooltip("Marks this entity as never moving.")]
         [SerializeField] private bool isStatic = true;
@@ -40,7 +34,7 @@ namespace Caelix
         [SerializeField, HideInInspector] private bool excludeFromWorldSave;
 
         [Tooltip("Host this entity registers with. Leave empty to use a host on a parent, then the " +
-                 "host of this scene, then any host.")]
+                 "process host.")]
         [SerializeField] private CaelixHost host;
 
         // Stable identity across play sessions and remote clients. Zero means "assign at runtime".
@@ -66,7 +60,7 @@ namespace Caelix
             }
         }
 
-        public CaelixHost Host => resolvedHost;
+        internal CaelixHost Host => resolvedHost;
 
         /// <summary>The server world this entity lives in, when this process runs it.</summary>
         public CaelixWorld ServerWorld => serverWorld;
@@ -198,14 +192,16 @@ namespace Caelix
             guid = stored.IsZero ? Guid128.Random(ref globalEntityRandomState) : stored;
         }
 
+        /// <summary>
+        /// The serialized host, else a host on a parent, else the process host. See
+        /// <c>SERVER_CLIENT_ARCHITECTURE.md</c> section 4.
+        /// </summary>
         private CaelixHost ResolveHost()
         {
             if (host != null) return host;
             CaelixHost parent = GetComponentInParent<CaelixHost>(true);
             if (parent != null) return parent;
-            CaelixHost sceneHost = CaelixHost.FindForScene(gameObject.scene);
-            if (sceneHost != null) return sceneHost;
-            return CaelixHost.Any;
+            return CaelixHost.Current;
         }
 
         /// <summary>
@@ -224,13 +220,15 @@ namespace Caelix
                 if (!warnedNoHost)
                 {
                     warnedNoHost = true;
-                    Debug.LogError($"{name}: no CaelixHost in the scene; the entity is not simulated.", this);
+                    Debug.LogError($"{name}: no CaelixHost in the scene; the entity is not simulated. Is Caelix running in local hosting mode?", this);
                 }
 
                 return false;
             }
 
             resolvedHost.EnsureInitialized();
+            
+            // Local authoring workflow, modify the server directly
             serverWorld = resolvedHost.World;
             if (serverWorld == null)
             {
@@ -288,6 +286,8 @@ namespace Caelix
         internal void BindView(EntityView boundView)
         {
             view = boundView;
+            // The same authored component may rebind after its world was replaced.
+            serverWorld = resolvedHost?.Server?.FindWorld(boundView.WorldId);
         }
 
         internal void UnbindView()
@@ -310,28 +310,11 @@ namespace Caelix
             return serverWorld.GetEntity(guid);
         }
 
-        /// <summary>A copy of the server record. Sector storage inside it is shared, scalars are a snapshot.</summary>
-        public VoxelEntityData GetDataCopy() => RequireServerData();
-
-        /// <summary>Writes scalar fields of a record back to the server.</summary>
-        public void CopyDataFrom(VoxelEntityData srcData)
-        {
-            if (HasServerData)
-            {
-                serverWorld.SetEntity(guid, srcData);
-            }
-        }
-
         /// <summary>The server entity's sectors. Not created when this process does not run the server.</summary>
         public SharedHashMap<int3, SectorHandle> Sectors =>
             HasServerData ? serverWorld.GetEntity(guid).sectors : default;
 
-        public SharedHashMap<int3, SectorNeighborHandles> Neighbors =>
-            HasServerData ? serverWorld.GetEntity(guid).sectorNeighbors : default;
-
         public void AddEmptySectorAt(int3 pos) => RequireServerData().AddEmptySectorAt(pos);
-
-        public void ShallowCopyAndAddSectorAt(int3 pos, Sector sector) => RequireServerData().ShallowCopyAndAddSectorAt(pos, sector);
 
         public void AddSectorAt(int3 pos, SectorHandle sector) => RequireServerData().AddSectorAt(pos, sector);
 
@@ -373,31 +356,10 @@ namespace Caelix
             RequireServerData().SetSlot(slotId, pos, value);
         }
 
-        /// <summary>Appends the entity-local position of every non-empty block. See <see cref="VoxelEntityData.CollectSolidVoxelPositions"/>.</summary>
-        public bool CollectSolidVoxelPositions(List<int3> into, int maxCount = 0)
-        {
-            if (HasServerData) return serverWorld.GetEntity(guid).CollectSolidVoxelPositions(into, maxCount);
-            if (view != null) return view.Data.CollectSolidVoxelPositions(into, maxCount);
-            return true;
-        }
-
+        /// <summary>Host authoring helper. Runtime propagation is driven by the server tick.</summary>
         public JobHandle PropagateDirtyFlags(DirtyFlags flags = DirtyFlags.All, bool async = false)
         {
             return RequireServerData().PropagateDirtyFlags(flags, async);
-        }
-
-        public void ClearDirtyFlags()
-        {
-            VoxelEntityData data = RequireServerData();
-            data.ClearDirtyFlags();
-            serverWorld.SetEntity(guid, data);
-        }
-
-        public void ClearRequireUpdates()
-        {
-            VoxelEntityData data = RequireServerData();
-            data.ClearRequireUpdates();
-            serverWorld.SetEntity(guid, data);
         }
 
         public void RefreshAllocatedBrickLists() => RequireServerData().RefreshAllocatedBrickLists();
@@ -408,33 +370,6 @@ namespace Caelix
             if (view != null) return view.Data.GetHostMemoryUsageKB();
             return 0;
         }
-
-        /// <summary>Teleports the server entity to this component's Transform.</summary>
-        public void SyncTransformToData()
-        {
-            if (HasServerData)
-            {
-                serverWorld.SetEntityTransform(guid, new RigidTransform(transform.rotation, transform.position), teleport: true);
-                transform.hasChanged = false;
-            }
-        }
-
-        /// <summary>Moves this component's Transform to the server pose (host mode) or the view pose.</summary>
-        public void SyncTransformFromData()
-        {
-            RigidTransform pose;
-            if (HasServerData) pose = serverWorld.GetEntity(guid).transform;
-            else if (view != null) pose = view.Data.transform;
-            else return;
-            transform.SetPositionAndRotation(pose.pos, pose.rot);
-            transform.hasChanged = false;
-        }
-
-        public static int3 GetSectorBlockPos(int3 sectorPos) => VoxelEntityData.GetSectorBlockPos(sectorPos);
-
-        public float4x4 ObjectToWorld() => transform.localToWorldMatrix;
-
-        public float4x4 WorldToObject() => transform.worldToLocalMatrix;
 
         #endregion
     }

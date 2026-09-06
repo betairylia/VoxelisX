@@ -148,10 +148,9 @@ To go back to DXR, reverse steps 3 and 4.
 ## One scene renderer at a time
 
 Enable exactly one of `CaelixRenderer` and `CaelixRayQueryRenderer`. Both read the same
-`ClientWorld`, and two pieces of that state are single-consumer:
+`ClientWorld`, and one piece of that state is single-consumer (sector removal itself is an event,
+`ClientWorld.SectorRemoving`, that every subscriber receives):
 
-* `EntityView.SectorsToRemove` is a queue its consumer **drains**, so whichever renderer ticks first
-  takes the removals and the other one leaks acceleration-structure instances and pool ranges.
 * `EntityView.ShouldResetMotionVectors` is a flag its consumer **clears** after its per-view loop, so
   the second renderer never sees the frame an entity settled and keeps reprojecting it.
 

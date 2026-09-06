@@ -5,7 +5,7 @@ using System.IO;
 using UnityEditor;
 #endif
 using UnityEngine;
-using UnityEngine.SceneManagement;
+using Unity.Profiling;
 using Caelix.Client;
 using Caelix.Net;
 using Caelix.Rendering.Meshing;
@@ -18,14 +18,15 @@ namespace Caelix
     /// <summary>
     /// Scene bootstrap for the Host role: runs a <see cref="CaelixServer"/> with one world and a
     /// <see cref="CaelixClient"/> in the same process, connected through an in-process channel
-    /// with real serialization. Scene-authored <see cref="VoxelEntity"/> components register
-    /// with this host by convention (see <c>SERVER_CLIENT_ARCHITECTURE.md</c> section 4).
+    /// with real serialization. There is one host per process; scene-authored
+    /// <see cref="VoxelEntity"/> components find it through their own serialized reference, a
+    /// parent, or <see cref="Current"/> (see <c>SERVER_CLIENT_ARCHITECTURE.md</c> section 4).
     /// </summary>
     /// <remarks>
     /// Client and Server roles are deferred. This component replaces the former
     /// <c>CaelixWorld</c> MonoBehaviour and keeps its script identity so existing scenes stay wired.
     /// </remarks>
-    public class CaelixHost : MonoBehaviour
+    public class CaelixHost : MonoSingleton<CaelixHost>
     {
         /// <summary>Exclusive CPU timing buckets from the last host frame.</summary>
         public struct HostTimingStats
@@ -45,7 +46,9 @@ namespace Caelix
 
         private const string DefaultSaveLoadFileName = "caelix-world.cxw";
 
-        private static readonly List<CaelixHost> s_hosts = new();
+        private static readonly ProfilerMarker s_ServerTickMarker = new("Host.ServerTick");
+        private static readonly ProfilerMarker s_ClientFrameMarker = new("Host.ClientFrame");
+        private static readonly ProfilerMarker s_RenderersMarker = new("Host.Renderers");
 
         // ---------------- COMPONENTS ------------------
         [Header("Components")]
@@ -83,8 +86,8 @@ namespace Caelix
 
         // ---------------- DEBUG ------------------
         [Header("Debug")]
-        [Tooltip("While frozen the server runs no ticks. The first frame always runs one tick so the " +
-                 "client receives the initial state.")]
+        [Tooltip("Authoring value for CaelixServer.Frozen; pushed every fixed step. The server still " +
+                 "runs its first tick while frozen so the client receives the initial state.")]
         public bool freeze = true;
 
         // ---------------- SAVE / LOAD ------------------
@@ -93,8 +96,6 @@ namespace Caelix
         [SerializeField] private string saveLoadPath = DefaultSaveLoadFileName;
 
         private bool initialized;
-        private bool destroyed;
-        private bool firstFrameDone;
         private int ticksSinceLastFrame;
         private long serverTicksElapsed;
         private LocalChannel serverEnd;
@@ -111,66 +112,20 @@ namespace Caelix
 
         public HostTimingStats LastTickTimings { get; private set; }
 
+        /// <summary>Old name of <see cref="MonoSingleton{T}.Current"/>. Titania still calls it.</summary>
+        [Obsolete("Use CaelixHost.Current.")] public static CaelixHost Any => Current;
+
         /// <summary>Counters of the last alien propagation pass.</summary>
         public BrickOverlapPropagationStats LastBrickOverlapPropagationStats =>
             World != null ? World.LastBrickOverlapPropagationStats : default;
 
         public BrickOverlapGraph BrickOverlapGraph => World != null ? World.BrickOverlapGraph : default;
 
-        #region Host lookup
-
-        public static IReadOnlyList<CaelixHost> All => s_hosts;
-
-        /// <summary>Any live host, preferring registered ones. Null when the scene has none.</summary>
-        public static CaelixHost Any
-        {
-            get
-            {
-                for (int i = 0; i < s_hosts.Count; i++)
-                {
-                    if (s_hosts[i] != null) return s_hosts[i];
-                }
-
-                return FindFirstObjectByType<CaelixHost>();
-            }
-        }
-
-        public static CaelixHost FindForScene(Scene scene)
-        {
-            for (int i = 0; i < s_hosts.Count; i++)
-            {
-                if (s_hosts[i] != null && s_hosts[i].gameObject.scene == scene) return s_hosts[i];
-            }
-
-            foreach (CaelixHost host in FindObjectsByType<CaelixHost>(FindObjectsSortMode.None))
-            {
-                if (host.gameObject.scene == scene) return host;
-            }
-
-            return null;
-        }
-
-        #endregion
-
         #region Lifecycle
 
-        private void Awake()
+        protected override void OnSingletonEnabled()
         {
             EnsureInitialized();
-        }
-
-        private void OnEnable()
-        {
-            EnsureInitialized();
-            if (!s_hosts.Contains(this))
-            {
-                s_hosts.Add(this);
-            }
-        }
-
-        private void OnDisable()
-        {
-            s_hosts.Remove(this);
         }
 
         /// <summary>
@@ -179,28 +134,40 @@ namespace Caelix
         /// </summary>
         public void EnsureInitialized()
         {
-            if (initialized || destroyed)
+            if (!TryClaimSingleton() || initialized)
             {
                 return;
             }
 
-            initialized = true;
-            if (!s_hosts.Contains(this))
+            try
             {
-                s_hosts.Add(this);
+                LocalChannel.CreatePair(out serverEnd, out clientEnd);
+
+                Server = new CaelixServer
+                {
+                    TickRate = targetTPS,
+                    Frozen = freeze,
+                };
+                Server.CreateWorld(BuildWorldConfig());
+
+                Client = new CaelixClient(clientEnd, Server.Types) { Host = this };
+                Server.AddConnection(serverEnd);
+                initialized = true;
             }
-
-            LocalChannel.CreatePair(out serverEnd, out clientEnd);
-
-            Server = new CaelixServer
+            catch
             {
-                TickRate = targetTPS,
-                Frozen = freeze,
-            };
-            Server.CreateWorld(BuildWorldConfig());
-
-            Client = new CaelixClient(clientEnd, Server.Types) { Host = this };
-            Server.AddConnection(serverEnd);
+                DisposeResources();
+                enabled = false;
+                throw;
+            }
+            // TODO: VibeReview: Should we abstract the connecting processes etc. similar to Core/Net/INetChannel?
+            // Answer (2026-09-05): yes, when the Unity Transport channel lands. The shape is an
+            // INetListener (Poll + TryAccept(out INetChannel)) on the server and an INetConnector
+            // (Connect(endpoint)) on the client, with a LocalTransport implementing both over the queue
+            // pair; CaelixServer.Listen(listener) polls accepts inside ProcessIncoming. Deliberately not
+            // built ahead of UTP: the driver update, per-delivery pipelines and connection events should
+            // shape the interface, and with LocalChannel alone it would have one implementation and no
+            // test of fit.
         }
 
         private void Start()
@@ -211,14 +178,19 @@ namespace Caelix
             }
         }
 
-        private void OnDestroy()
+        protected override void OnSingletonDestroyed() => DisposeResources();
+
+        private void DisposeResources()
         {
-            destroyed = true;
-            s_hosts.Remove(this);
+            initialized = false;
             Client?.Dispose();
             Client = null;
             Server?.Dispose();
             Server = null;
+            clientEnd?.Dispose();
+            clientEnd = null;
+            serverEnd?.Dispose();
+            serverEnd = null;
         }
 
         private CaelixWorldConfig BuildWorldConfig()
@@ -273,40 +245,48 @@ namespace Caelix
         /// </summary>
         private void FixedUpdate()
         {
-            if (Server == null || Client == null || freeze)
+            if (!IsCurrent || Server == null || Client == null)
             {
                 return;
             }
 
             PushSettings();
+            RunServerTick();
+        }
+
+        /// <summary>
+        /// One <see cref="CaelixServer.Tick"/>, timed. The server owns the freeze rule, so a frozen
+        /// server still runs its first tick here and nothing after it.
+        /// </summary>
+        private void RunServerTick()
+        {
             long start = Stopwatch.GetTimestamp();
-            Server.Step();
+            bool ran;
+            using (s_ServerTickMarker.Auto()) ran = Server.Tick();
+            if (!ran)
+            {
+                return;
+            }
+
             serverTicksElapsed += Stopwatch.GetTimestamp() - start;
             ticksSinceLastFrame++;
-            firstFrameDone = true;
         }
 
         private void Update()
         {
-            if (Server == null || Client == null)
+            if (!IsCurrent || Server == null || Client == null)
             {
                 return;
             }
 
             long frameStart = Stopwatch.GetTimestamp();
-            PushSettings();
 
-            if (!firstFrameDone)
-            {
-                // The initial state reaches the client through replication, which runs inside a
-                // tick. A frozen scene therefore still gets exactly one tick, as it always did.
-                firstFrameDone = true;
-                long start = Stopwatch.GetTimestamp();
-                Server.Step();
-                serverTicksElapsed += Stopwatch.GetTimestamp() - start;
-                ticksSinceLastFrame++;
-            }
+            // TODO: VibeReview: Remove this and rely on FixedUpdate one?
+            // Queries must also work on frames with no fixed step (including timeScale == 0).
+            // This pump leaves every edit command in the channel until Server.Step consumes it.
+            Server.ProcessQueries();
 
+            // Get server info by cheating basically, since we are in local hosting mode
             long serverEnd = Stopwatch.GetTimestamp();
             int serverTicks = ticksSinceLastFrame;
             long serverElapsed = serverTicksElapsed;
@@ -317,20 +297,33 @@ namespace Caelix
             // Client frame: apply replication, run input, render.
             /////////////////////////////////////////////////////////////////////////
 
-            Client.Update();
-            rayCaster?.Tick();
+            using (s_ClientFrameMarker.Auto())
+            {
+                Client.Receive();
+                Client.PrepareRender();
+                rayCaster?.Tick();
+            }
+
             long clientEnd = Stopwatch.GetTimestamp();
 
             bool usedRayTracing = rayTracedRenderer != null && rayTracedRenderer.enabled;
             bool usedRayQuery = rayQueryRenderer != null && rayQueryRenderer.enabled;
             bool usedMeshing = meshingRenderer != null && meshingRenderer.enabled;
-            if (usedRayTracing) rayTracedRenderer.Tick();
-            if (usedRayQuery) rayQueryRenderer.Tick();
-            if (usedMeshing) meshingRenderer.Tick();
+            using (s_RenderersMarker.Auto())
+            {
+                if (usedRayTracing) rayTracedRenderer.Tick();
+                if (usedRayQuery) rayQueryRenderer.Tick();
+                if (usedMeshing) meshingRenderer.Tick();
+            }
+
             long renderEnd = Stopwatch.GetTimestamp();
 
             Client.EndFrame();
-
+            
+            /////////////////////////////////////////////////////////////////////////
+            // Collect timing metrics
+            /////////////////////////////////////////////////////////////////////////
+            
             // Server buckets are the LAST tick's split; ServerMilliseconds is the sum of every
             // tick that ran since the previous frame (FixedUpdate may run several, or none).
             TickTimingStats worldTimings = World != null ? World.LastTickTimings : default;
@@ -359,6 +352,8 @@ namespace Caelix
         public void Step(int count = 1)
         {
             EnsureInitialized();
+            if (!IsCurrent || !initialized) return;
+            PushSettings();
             Server.Step(Mathf.Max(1, count));
         }
 
@@ -395,6 +390,8 @@ namespace Caelix
         public void Save(string path)
         {
             EnsureInitialized();
+            if (!IsCurrent || !initialized)
+                throw new InvalidOperationException("Save/load requires an enabled, initialized host that owns the singleton slot.");
             path = EnsureWorldSaveExtension(path);
             World.Save(path);
         }
@@ -420,6 +417,8 @@ namespace Caelix
         public void Load(string path)
         {
             EnsureInitialized();
+            if (!IsCurrent || !initialized)
+                throw new InvalidOperationException("Save/load requires an enabled, initialized host that owns the singleton slot.");
             path = EnsureWorldSaveExtension(path);
             World.Load(path);
             Debug.Log($"Loaded Caelix world from {path}", this);

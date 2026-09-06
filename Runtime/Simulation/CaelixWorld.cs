@@ -87,7 +87,6 @@ namespace Caelix.Simulation
         private static readonly ProfilerMarker s_WorkDispatchMarker = new("Work Dispatch");
         private static readonly ProfilerMarker s_ApplySectorSnapshotsMarker = new("Apply Sector Snapshots");
         private static readonly ProfilerMarker s_DirtyPropagationMarker = new("Dirty Propagation");
-        private static readonly ProfilerMarker s_UpdateVelocityMarker = new("Update Velocity");
         private static readonly ProfilerMarker s_ClearRequireUpdatesMarker = new("Clear Require Updates");
         private static readonly ProfilerMarker s_PropagateDirtyFlagsMarker = new("Propagate Dirty Flags");
         private static readonly ProfilerMarker s_BurstMarker = new("Burst");
@@ -161,6 +160,10 @@ namespace Caelix.Simulation
         private AutomataStageInputs automataTickBuf;
         private NativeList<AlienEntityView> alienEntityViews;
         private bool disposed;
+        private long nextEntityInstanceId;
+        private readonly Dictionary<Guid128, long> entityInstances = new();
+
+        internal long GetEntityInstanceId(Guid128 guid) => entityInstances[guid];
 
         public CaelixWorld(CaelixWorldConfig config)
         {
@@ -267,6 +270,7 @@ namespace Caelix.Simulation
                 excludeFromSave = excludeFromSave,
             };
             Data.VoxelEntities.Add(guid, data);
+            entityInstances.Add(guid, ++nextEntityInstanceId);
             return true;
         }
 
@@ -281,6 +285,7 @@ namespace Caelix.Simulation
             RemoveBody(guid);
             data.Dispose();
             Data.VoxelEntities.Remove(guid);
+            entityInstances.Remove(guid);
 
             dragScratch.Clear();
             foreach (var kvp in drags)
@@ -344,16 +349,6 @@ namespace Caelix.Simulation
         public bool HasBody(Guid128 guid) => Data.VoxelBodies.ContainsKey(guid);
 
         public bool TryGetBody(Guid128 guid, out VoxelBodyData body) => Data.VoxelBodies.TryGetValue(guid, out body);
-
-        public void SetBody(Guid128 guid, in VoxelBodyData body)
-        {
-            if (!Data.VoxelBodies.ContainsKey(guid))
-            {
-                throw new KeyNotFoundException($"Body {guid} is not in world {Name}.");
-            }
-
-            Data.VoxelBodies[guid] = body;
-        }
 
         /// <summary>Adds a body to an existing entity. Returns false if the entity is missing or already has one.</summary>
         public bool AddBody(Guid128 guid, bool accuratePhysics = true)
@@ -598,6 +593,10 @@ namespace Caelix.Simulation
                 for (int i = 0; i < entityKeys.Length; i++)
                 {
                     VoxelEntityData e = entities[entityKeys[i]];
+                    // Velocity of the interval that just ended (last tick's motion plus any pose set
+                    // between ticks), computed BEFORE previousTransform is reset to mark the start of
+                    // this tick.
+                    e.ComputeVelocityForDirtyPropagation(dt);
                     e.previousTransform = e.transform;
                     entities[entityKeys[i]] = e;
                 }
@@ -685,16 +684,6 @@ namespace Caelix.Simulation
 
             using (s_DirtyPropagationMarker.Auto())
             {
-                using (s_UpdateVelocityMarker.Auto())
-                {
-                    for (int i = 0; i < entityKeys.Length; i++)
-                    {
-                        VoxelEntityData e = entities[entityKeys[i]];
-                        e.ComputeVelocityForDirtyPropagation(dt);
-                        entities[entityKeys[i]] = e;
-                    }
-                }
-
                 using (s_ClearRequireUpdatesMarker.Auto())
                 {
                     for (int i = 0; i < entityKeys.Length; i++)

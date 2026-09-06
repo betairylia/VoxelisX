@@ -209,14 +209,14 @@ public class CaelixRenderer : MonoBehaviour
     /// <summary>Binds to the host's client world. Safe to call every frame.</summary>
     private bool EnsureSource()
     {
-        if (source != null)
+        if (source != null && !source.IsDisposed)
         {
             return true;
         }
 
         if (host == null)
         {
-            host = CaelixHost.Any;
+            host = CaelixHost.Current;
         }
 
         if (host == null)
@@ -225,13 +225,50 @@ public class CaelixRenderer : MonoBehaviour
         }
 
         host.EnsureInitialized();
-        source = host.ClientWorld;
+        SetSource(host.ClientWorld);
+        return source != null;
+    }
+
+    /// <summary>Binds a replica and releases all resources belonging to the previous one.</summary>
+    public void SetSource(ClientWorld world)
+    {
+        if (ReferenceEquals(source, world)) return;
+        if (source != null)
+        {
+            source.ViewDespawning -= OnViewDespawning;
+            source.SectorRemoving -= RemoveSectorRenderer;
+            source.Owner.WorldRemoving -= OnWorldRemoving;
+        }
+
+        foreach (var renderer in sectorRenderers.Values)
+        {
+            renderer.MarkRemove();
+            if (_voxelScene != null) renderer.RemoveMe(ref _voxelScene, ActivePool, ActiveInstances);
+            else renderer.Dispose();
+        }
+        sectorRenderers.Clear();
+        source = world != null && !world.IsDisposed ? world : null;
         if (source != null)
         {
             source.ViewDespawning += OnViewDespawning;
+            source.SectorRemoving += RemoveSectorRenderer;
+            source.Owner.WorldRemoving += OnWorldRemoving;
         }
+    }
 
-        return source != null;
+    private void OnWorldRemoving(ClientWorld world)
+    {
+        if (ReferenceEquals(source, world)) SetSource(null);
+    }
+
+    private void RemoveSectorRenderer(EntityView view, int3 sectorPos)
+    {
+        var key = (view, sectorPos);
+        if (!sectorRenderers.TryGetValue(key, out SectorRenderer renderer)) return;
+        renderer.MarkRemove();
+        if (_voxelScene != null) renderer.RemoveMe(ref _voxelScene, ActivePool, ActiveInstances);
+        else renderer.Dispose();
+        sectorRenderers.Remove(key);
     }
 
     private void OnViewDespawning(EntityView view)
@@ -247,10 +284,8 @@ public class CaelixRenderer : MonoBehaviour
 
         for (int i = 0; i < removalScratch.Count; i++)
         {
-            SectorRenderer renderer = sectorRenderers[removalScratch[i]];
-            renderer.MarkRemove();
-            renderer.RemoveMe(ref _voxelScene, ActivePool, ActiveInstances);
-            sectorRenderers.Remove(removalScratch[i]);
+            var key = removalScratch[i];
+            RemoveSectorRenderer(key.entity, key.sectorPos);
         }
     }
 
@@ -377,11 +412,7 @@ public class CaelixRenderer : MonoBehaviour
     /// </summary>
     void ReleaseResources()
     {
-        if (source != null)
-        {
-            source.ViewDespawning -= OnViewDespawning;
-            source = null;
-        }
+        SetSource(null);
 
         if (aabbBuffer != null && aabbBuffer.IsValid())
         {
@@ -439,6 +470,7 @@ public class CaelixRenderer : MonoBehaviour
     /// </remarks>
     public void Tick()
     {
+        SectorRenderer.sectorMaterial = brickMat;
         if (!EnsureSource())
         {
             return;
@@ -464,18 +496,6 @@ public class CaelixRenderer : MonoBehaviour
         for (int v = 0; v < views.Count; v++)
         {
             EntityView view = views[v];
-
-            // Handle sector removal
-            while (view.SectorsToRemove.TryDequeue(out int3 sectorPos))
-            {
-                var key = (view, sectorPos);
-                if (sectorRenderers.TryGetValue(key, out SectorRenderer removed))
-                {
-                    removed.MarkRemove();
-                    removed.RemoveMe(ref _voxelScene, pool, instances);
-                    sectorRenderers.Remove(key);
-                }
-            }
 
             // Emit render jobs for all sectors
             foreach (var kvp in view.Data.sectors)

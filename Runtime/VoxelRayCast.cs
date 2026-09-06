@@ -509,40 +509,5 @@ namespace Caelix
         }
 
         #endregion
-
-        #region Public API
-
-        /// <summary>
-        /// Gets whether the last raycast hit a voxel.
-        /// </summary>
-        public bool IsHitting => hitted;
-
-        /// <summary>
-        /// Gets the position of the voxel that was hit (in world space).
-        /// Only valid if IsHitting is true.
-        /// </summary>
-        public Vector3 HitPositionWorld => hitTarget != null
-            ? hitTarget.transform.TransformPoint(hit.ToVector3Int())
-            : Vector3.zero;
-
-        /// <summary>
-        /// Gets the position of the voxel that was hit (in entity local space).
-        /// Only valid if IsHitting is true.
-        /// </summary>
-        public int3 HitPositionLocal => hit;
-
-        /// <summary>
-        /// Gets the normal of the face that was hit (in entity local space).
-        /// Only valid if IsHitting is true.
-        /// </summary>
-        public int3 HitNormal => hitNormal;
-
-        /// <summary>
-        /// Gets the voxel entity that was hit.
-        /// Only valid if IsHitting is true.
-        /// </summary>
-        public VoxelEntity HitEntity => hitTarget;
-
-        #endregion
     }
 }

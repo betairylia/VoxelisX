@@ -4,6 +4,8 @@ using Caelix.Utils;
 
 namespace Caelix.Simulation
 {
+    // TODO: VibeReview: Should we replace this with SetSlotCommand?
+    // Maybe not yet but I can see it become useful in the future.
     /// <summary>Client request: write one block into an entity.</summary>
     public struct SetBlockCommand
     {

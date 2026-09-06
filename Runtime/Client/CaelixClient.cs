@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
 using UnityEngine;
+using Unity.Profiling;
 using Caelix.Net;
 using Caelix.Simulation;
 using Caelix.Utils;
@@ -49,6 +50,11 @@ namespace Caelix.Client
     /// </summary>
     public sealed class CaelixClient : IDisposable
     {
+        private static readonly ProfilerMarker s_ClearRequireUpdateMarker = new("Client.ClearRequireUpdate");
+        private static readonly ProfilerMarker s_ReceiveMarker = new("Client.Receive");
+        private static readonly ProfilerMarker s_PropagateForRenderMarker = new("Client.PropagateForRender");
+        private static readonly ProfilerMarker s_EndFrameMarker = new("Client.EndFrame");
+
         private delegate void EventHandler(ushort worldId, ref NetMessageReader reader);
 
         private delegate void TypedReplyDispatch(ushort worldId, ushort typeId, ref NetMessageReader reader);
@@ -56,10 +62,12 @@ namespace Caelix.Client
         private readonly INetChannel channel;
         private readonly Dictionary<ushort, ClientWorld> worlds = new();
         private readonly List<ClientWorld> worldList = new();
+        private readonly Dictionary<(ushort World, Guid128 Guid), VoxelEntity> authoredViews = new();
         private readonly Dictionary<ushort, EventHandler> eventHandlers = new();
         private readonly Dictionary<uint, Action<VoxelQueryReply>> pendingQueries = new();
         private readonly Dictionary<uint, TypedReplyDispatch> pendingTypedQueries = new();
         private readonly NetMessageWriter writer = new(4096);
+        private readonly BrickReceiveBatch brickReceiveBatch;
         private uint nextRequestId = 1;
         private bool disposed;
 
@@ -81,13 +89,24 @@ namespace Caelix.Client
 
         public IReadOnlyList<ClientWorld> Worlds => worldList;
 
+        /// <summary>
+        /// Raised after a replica was created, either by a <see cref="NetMessageType.WorldAdd"/> or
+        /// by the first message that named a world this client did not have yet.
+        /// </summary>
         public event Action<ClientWorld> WorldAdded;
+
+        /// <summary>
+        /// Raised when the server dropped a world, before the replica is disposed. Renderers and
+        /// tools release whatever they hold for its views here.
+        /// </summary>
+        public event Action<ClientWorld> WorldRemoving;
 
         public CaelixClient(INetChannel channel, NetTypeRegistry types = null)
         {
             this.channel = channel ?? throw new ArgumentNullException(nameof(channel));
             Types = types ?? new NetTypeRegistry();
             EngineNetTypes.RegisterAll(Types);
+            brickReceiveBatch = new BrickReceiveBatch();
         }
 
         public void Dispose()
@@ -95,38 +114,72 @@ namespace Caelix.Client
             if (disposed) return;
             disposed = true;
 
+            brickReceiveBatch.Dispose();
+
             for (int i = 0; i < worldList.Count; i++)
             {
+                WorldRemoving?.Invoke(worldList[i]);
                 worldList[i].Dispose();
             }
 
             worldList.Clear();
             worlds.Clear();
+            authoredViews.Clear();
             channel.Dispose();
         }
 
+        /// <summary>
+        /// The replica of <paramref name="worldId"/>, created on first use with the default slot
+        /// mask. A <see cref="NetMessageType.WorldAdd"/> normally arrives first and corrects the
+        /// mask; a message for an unknown world still gets a replica so nothing is lost.
+        /// </summary>
         public ClientWorld GetOrCreateWorld(ushort worldId)
         {
             if (!worlds.TryGetValue(worldId, out ClientWorld world))
             {
-                world = new ClientWorld(this, worldId, IsConnected ? Hello.ReplicatedSlotMask : Sector.DefaultReplicatedSlotMask);
+                world = new ClientWorld(this, worldId, Sector.DefaultReplicatedSlotMask);
                 worlds.Add(worldId, world);
                 worldList.Add(world);
+                foreach (var entry in authoredViews)
+                {
+                    if (entry.Key.World == worldId && entry.Value != null)
+                        world.RegisterAuthored(entry.Value);
+                }
                 WorldAdded?.Invoke(world);
             }
 
             return world;
         }
 
+        /// <summary>Drops the replica of <paramref name="id"/>, if this client has one.</summary>
+        private void RemoveWorld(ushort id)
+        {
+            if (!worlds.TryGetValue(id, out ClientWorld world))
+            {
+                return;
+            }
+
+            WorldRemoving?.Invoke(world);
+            world.Dispose();
+            worlds.Remove(id);
+            worldList.Remove(world);
+        }
+
         #region Authored views
 
         public void RegisterAuthoredView(VoxelEntity component, ushort worldId = 0)
         {
+            if (component == null) return;
+            authoredViews[(worldId, component.PersistentGuid)] = component;
             GetOrCreateWorld(worldId).RegisterAuthored(component);
         }
 
         public void UnregisterAuthoredView(VoxelEntity component, ushort worldId = 0)
         {
+            if (component == null) return;
+            var key = (worldId, component.PersistentGuid);
+            if (authoredViews.TryGetValue(key, out VoxelEntity authored) && authored == component)
+                authoredViews.Remove(key);
             if (worlds.TryGetValue(worldId, out ClientWorld world))
             {
                 world.UnregisterAuthored(component);
@@ -138,37 +191,61 @@ namespace Caelix.Client
         #region Frame
 
         /// <summary>
-        /// Begins the client frame: clears last frame's require-update flags, applies every
-        /// pending message, and propagates Geometry bits so the renderers see this frame's
-        /// changes. Call <see cref="EndFrame"/> after the renderers ran.
+        /// Brings every replica up to the latest tick that arrived: clears last frame's
+        /// require-update flags, then applies every pending message. Call once per frame before
+        /// <see cref="PrepareRender"/>.
         /// </summary>
-        public void Update()
+        public void Receive()
         {
-            for (int i = 0; i < worldList.Count; i++)
+            using (s_ClearRequireUpdateMarker.Auto())
             {
-                worldList[i].BeginFrame();
+                for (int i = 0; i < worldList.Count; i++)
+                {
+                    worldList[i].ClearRequireUpdate();
+                }
             }
 
-            while (channel.TryReceive(out byte[] message))
+            using (s_ReceiveMarker.Auto())
             {
                 try
                 {
-                    Apply(message);
+                    while (channel.TryReceive(out byte[] message))
+                    {
+                        try
+                        {
+                            Apply(message);
+                        }
+                        catch (Exception exception)
+                        {
+                            Debug.LogException(exception);
+                        }
+                    }
                 }
-                catch (Exception exception)
+                finally
                 {
-                    Debug.LogException(exception);
+                    brickReceiveBatch.Flush();
                 }
             }
+        }
 
-            for (int i = 0; i < worldList.Count; i++)
+        /// <summary>
+        /// Turns this frame's applied bricks into require-update flags for the renderers. Call
+        /// after <see cref="Receive"/> and before the renderers run.
+        /// </summary>
+        public void PrepareRender()
+        {
+            using (s_PropagateForRenderMarker.Auto())
             {
-                worldList[i].PropagateForRender();
+                for (int i = 0; i < worldList.Count; i++)
+                {
+                    worldList[i].PropagateForRender();
+                }
             }
         }
 
         public void EndFrame()
         {
+            using var _ = s_EndFrameMarker.Auto();
             for (int i = 0; i < worldList.Count; i++)
             {
                 worldList[i].EndFrame();
@@ -179,9 +256,19 @@ namespace Caelix.Client
         {
             var reader = new NetMessageReader(message);
             NetHeader header = NetHeader.Read(ref reader);
+            // All observable messages are ordering barriers: callbacks and lifecycle handlers
+            // must see preceding voxel writes, and may replace or free their storage.
+            if (header.Type != NetMessageType.BrickData) brickReceiveBatch.Flush();
             if (header.Tick > LastServerTick)
             {
                 LastServerTick = header.Tick;
+            }
+
+            // The sentinel world id belongs to Hello alone; every other message is world-scoped.
+            if (header.WorldId == NetHeader.NoWorld && header.Type != NetMessageType.Hello)
+            {
+                Debug.LogWarning($"[CaelixClient] Message type {header.Type} arrived with no world id; dropped.");
+                return;
             }
 
             switch (header.Type)
@@ -197,8 +284,19 @@ namespace Caelix.Client
                             "must be registered in the same order on both ends.");
                     }
 
+                    break;
+                }
+                case NetMessageType.WorldAdd:
+                {
+                    var m = reader.Read<WorldAddMessage>();
                     ClientWorld world = GetOrCreateWorld(header.WorldId);
-                    world.ReplicatedSlotMask = Hello.ReplicatedSlotMask;
+                    world.ReplicatedSlotMask = m.ReplicatedSlotMask;
+                    break;
+                }
+                case NetMessageType.WorldRemove:
+                {
+                    reader.Read<WorldRemoveMessage>();
+                    RemoveWorld(header.WorldId);
                     break;
                 }
                 case NetMessageType.EntitySpawn:
@@ -240,7 +338,10 @@ namespace Caelix.Client
                 case NetMessageType.BrickData:
                 {
                     var m = reader.Read<BrickBatchHeader>();
-                    GetOrCreateWorld(header.WorldId).OnBrickBatch(in m, ref reader);
+                    // Creating a world raises a user callback, so it is also an apply barrier.
+                    if (!worlds.ContainsKey(header.WorldId)) brickReceiveBatch.Flush();
+                    if (GetOrCreateWorld(header.WorldId).TryResolveBrickBatch(in m, out SectorHandle sector))
+                        brickReceiveBatch.Add(sector, message, reader.Position, m.BrickCount);
                     break;
                 }
                 case NetMessageType.Event:
@@ -322,7 +423,7 @@ namespace Caelix.Client
 
         /// <summary>
         /// Sends a typed query and calls <paramref name="onReply"/> when the reply arrives during a
-        /// later <see cref="Update"/>. Both the request and the reply may carry a trailing payload.
+        /// later <see cref="Receive"/>. Both the request and the reply may carry a trailing payload.
         /// </summary>
         public void SendQuery<TRequest, TReply>(
             in TRequest request,
@@ -418,7 +519,7 @@ namespace Caelix.Client
             channel.Send(NetDelivery.Reliable, writer.AsSpan());
         }
 
-        /// <summary>Registers an event type and its handler. Handlers run on the main thread during <see cref="Update"/>.</summary>
+        /// <summary>Registers an event type and its handler. Handlers run on the main thread during <see cref="Receive"/>.</summary>
         public void RegisterEvent<T>(Action<ushort, T> handler) where T : unmanaged
         {
             if (handler == null) throw new ArgumentNullException(nameof(handler));

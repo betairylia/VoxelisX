@@ -1,6 +1,8 @@
+using System;
 using System.Collections.Generic;
 using Unity.Collections;
 using Unity.Mathematics;
+using Unity.Profiling;
 using Caelix.Net;
 using Caelix.Utils;
 
@@ -15,7 +17,8 @@ namespace Caelix.Simulation
     {
         private sealed class EntityKnown
         {
-            public readonly HashSet<int3> Sectors = new();
+            public readonly Dictionary<int3, long> Sectors = new();
+            public long InstanceId;
             public RigidTransform Transform;
             public bool IsStatic;
             public bool IsProtected;
@@ -25,11 +28,26 @@ namespace Caelix.Simulation
         private sealed class WorldKnown
         {
             public readonly Dictionary<Guid128, EntityKnown> Entities = new();
+            public CaelixWorld Instance;
+            public ushort SlotMask;
+            public bool ResetRequested;
         }
+
+        private static readonly ProfilerMarker s_ReplicateWorldMarker = new("Server.ReplicateWorld");
+        private static readonly ProfilerMarker s_ReplicationFullBuildMarker = new("Server.ReplicationFullBuild");
 
         private readonly Dictionary<ushort, WorldKnown> worlds = new();
         private readonly List<Guid128> guidScratch = new();
         private readonly List<int3> sectorScratch = new();
+        private readonly List<ushort> worldScratch = new();
+
+        /// <summary>
+        /// Sectors this connection received in full during the current <see cref="ReplicateWorld"/>
+        /// call. Their shared-delta slices are redundant and are skipped. Cleared at the start of
+        /// <see cref="ReplicateWorld"/> and read afterwards, in the same <c>CaelixServer.Replicate</c>
+        /// call, by <see cref="ReceivedFullThisTick"/> and <see cref="SendDelta"/>. Reused across ticks.
+        /// </summary>
+        private readonly HashSet<(Guid128 Guid, int3 SectorPos)> sentFullThisTick = new();
 
         public int Id { get; }
         public INetChannel Channel { get; }
@@ -56,14 +74,85 @@ namespace Caelix.Simulation
             Channel.Send(delivery, writer.AsSpan());
         }
 
-        /// <summary>Forgets everything about a world so the next replication resends it in full.</summary>
-        public void ForgetWorld(ushort worldId)
+        /// <summary>Sends bytes a <see cref="ReplicationBatch"/> packed. The span is copied by the channel.</summary>
+        public void Send(NetDelivery delivery, ReadOnlySpan<byte> payload)
         {
-            worlds.Remove(worldId);
+            Channel.Send(delivery, payload);
         }
 
-        internal unsafe void ReplicateWorld(CaelixWorld world, NetMessageWriter writer)
+        /// <summary>Forgets a world so the next <see cref="SyncWorlds"/> sends it again in full.</summary>
+        public void ForgetWorld(ushort worldId)
         {
+            if (worlds.TryGetValue(worldId, out WorldKnown known)) known.ResetRequested = true;
+        }
+
+        /// <summary>
+        /// Brings this connection's world set in line with the server's: a WorldRemove for every
+        /// world it knew that is gone or no longer subscribed, then a WorldAdd for every subscribed
+        /// world it does not know yet. Runs once per <c>Step</c>, before any world replicates, so
+        /// <see cref="ReplicateWorld"/> can rely on the world being known.
+        /// </summary>
+        internal void SyncWorlds(IReadOnlyList<CaelixWorld> serverWorlds, NetMessageWriter writer, uint tick)
+        {
+            // Removes first: a world id that is freed and reused in the same tick must reach the
+            // client as remove-then-add, not add-then-remove.
+            worldScratch.Clear();
+            foreach (var kvp in worlds)
+            {
+                ushort worldId = kvp.Key;
+                bool stillThere = false;
+                for (int i = 0; i < serverWorlds.Count; i++)
+                {
+                    if (ReferenceEquals(serverWorlds[i], kvp.Value.Instance) &&
+                        serverWorlds[i].Id == worldId &&
+                        serverWorlds[i].Config.replicatedSlotMask == kvp.Value.SlotMask &&
+                        !kvp.Value.ResetRequested)
+                    {
+                        stillThere = true;
+                        break;
+                    }
+                }
+
+                if (!stillThere || !IsSubscribed(worldId))
+                {
+                    worldScratch.Add(worldId);
+                }
+            }
+
+            for (int i = 0; i < worldScratch.Count; i++)
+            {
+                worlds.Remove(worldScratch[i]);
+                writer.Reset();
+                NetHeader.Write(writer, NetMessageType.WorldRemove, worldScratch[i], tick);
+                writer.Write(new WorldRemoveMessage());
+                Send(NetDelivery.Reliable, writer);
+            }
+
+            for (int i = 0; i < serverWorlds.Count; i++)
+            {
+                CaelixWorld world = serverWorlds[i];
+                if (!IsSubscribed(world.Id) || worlds.ContainsKey(world.Id))
+                {
+                    continue;
+                }
+
+                worlds.Add(world.Id, new WorldKnown { Instance = world, SlotMask = world.Config.replicatedSlotMask });
+                writer.Reset();
+                NetHeader.Write(writer, NetMessageType.WorldAdd, world.Id, tick);
+                writer.Write(new WorldAddMessage { ReplicatedSlotMask = world.Config.replicatedSlotMask });
+                Send(NetDelivery.Reliable, writer);
+            }
+        }
+
+        /// <summary>
+        /// Phase B of replication: the per-connection diff. Sends despawns, spawns, state,
+        /// transforms and sector adds and removes, then packs the sectors this connection has not
+        /// seen into <paramref name="full"/> and streams them chunk by chunk. Runs before phase A;
+        /// the shared delta follows through <see cref="SendDelta"/>.
+        /// </summary>
+        internal unsafe void ReplicateWorld(CaelixWorld world, NetMessageWriter writer, ReplicationBatch full)
+        {
+            using var _ = s_ReplicateWorldMarker.Auto();
             if (!IsSubscribed(world.Id))
             {
                 return;
@@ -71,9 +160,12 @@ namespace Caelix.Simulation
 
             if (!worlds.TryGetValue(world.Id, out WorldKnown known))
             {
-                known = new WorldKnown();
-                worlds.Add(world.Id, known);
+                // SyncWorlds runs first every tick and creates it; nothing to do before it did.
+                return;
             }
+
+            sentFullThisTick.Clear();
+            full.Clear();
 
             ushort worldId = world.Id;
             uint tick = world.TickIndex;
@@ -84,7 +176,7 @@ namespace Caelix.Simulation
             guidScratch.Clear();
             foreach (var kvp in known.Entities)
             {
-                if (!entities.ContainsKey(kvp.Key))
+                if (!entities.ContainsKey(kvp.Key) || world.GetEntityInstanceId(kvp.Key) != kvp.Value.InstanceId)
                 {
                     guidScratch.Add(kvp.Key);
                 }
@@ -99,7 +191,7 @@ namespace Caelix.Simulation
                 Send(NetDelivery.Reliable, writer);
             }
 
-            // Spawns, state, transforms, sectors, bricks.
+            // Spawns, state, transforms, sectors.
             foreach (var kvp in entities)
             {
                 Guid128 guid = kvp.Key;
@@ -111,6 +203,7 @@ namespace Caelix.Simulation
                 {
                     entityKnown = new EntityKnown
                     {
+                        InstanceId = world.GetEntityInstanceId(guid),
                         Transform = data.transform,
                         IsStatic = data.isStatic,
                         IsProtected = data.isProtected,
@@ -167,9 +260,11 @@ namespace Caelix.Simulation
 
                 // Sector removals.
                 sectorScratch.Clear();
-                foreach (int3 sectorPos in entityKnown.Sectors)
+                foreach (var sectorKnown in entityKnown.Sectors)
                 {
-                    if (!data.sectors.ContainsKey(sectorPos))
+                    int3 sectorPos = sectorKnown.Key;
+                    if (!data.sectors.TryGetValue(sectorPos, out SectorHandle current) ||
+                        current.InstanceId != sectorKnown.Value)
                     {
                         sectorScratch.Add(sectorPos);
                     }
@@ -184,70 +279,89 @@ namespace Caelix.Simulation
                     Send(NetDelivery.Reliable, writer);
                 }
 
-                // Sector adds and brick deltas.
+                // Sector adds. An entity that is new to this connection has every sector new, so it
+                // is served entirely by the catch-up batch and never by a shared delta slice.
                 foreach (var sectorEntry in data.sectors)
                 {
                     int3 sectorPos = sectorEntry.Key;
-                    ref Sector sector = ref sectorEntry.Value.Get();
-
-                    bool sectorIsNew = entityKnown.Sectors.Add(sectorPos);
-                    if (sectorIsNew)
+                    if (entityKnown.Sectors.ContainsKey(sectorPos))
                     {
-                        writer.Reset();
-                        NetHeader.Write(writer, NetMessageType.SectorAdd, worldId, tick);
-                        writer.Write(new SectorMessage { Guid = guid, SectorPos = sectorPos });
-                        Send(NetDelivery.Reliable, writer);
+                        continue;
+                    }
 
-                        if (sector.NonEmptyBrickCount > 0)
+                    entityKnown.Sectors.Add(sectorPos, sectorEntry.Value.InstanceId);
+
+                    writer.Reset();
+                    NetHeader.Write(writer, NetMessageType.SectorAdd, worldId, tick);
+                    writer.Write(new SectorMessage { Guid = guid, SectorPos = sectorPos });
+                    Send(NetDelivery.Reliable, writer);
+
+                    full.Add(guid, sectorPos, sectorEntry.Value, fullSector: true);
+                    sentFullThisTick.Add((guid, sectorPos));
+                }
+            }
+
+            // Catch-up: the sectors this connection did not know. SectorAdd for each already went
+            // out above, in the same order the batch packs them. A join of a large world is far too
+            // much to hold in one buffer, so the batch streams it: build a chunk, send it, repeat.
+            if (full.SectorCount > 0)
+            {
+                using (s_ReplicationFullBuildMarker.Auto())
+                {
+                    full.Prepare(worldId, tick, slotMask);
+                }
+
+                while (true)
+                {
+                    bool more;
+                    using (s_ReplicationFullBuildMarker.Auto())
+                    {
+                        more = full.BuildNextChunk();
+                    }
+
+                    if (!more)
+                    {
+                        break;
+                    }
+
+                    for (int i = 0; i < full.Count; i++)
+                    {
+                        if (full[i].Length > 0)
                         {
-                            WriteBrickBatch(writer, worldId, tick, guid, sectorPos, ref sector, slotMask, fullSector: true);
+                            Send(NetDelivery.Reliable, full.Slice(i));
                         }
                     }
-                    else if ((sector.sectorDirtyFlags & (ushort)Sector.ReplicationDirtyMask) != 0)
-                    {
-                        WriteBrickBatch(writer, worldId, tick, guid, sectorPos, ref sector, slotMask, fullSector: false);
-                    }
                 }
             }
         }
 
-        private unsafe void WriteBrickBatch(
-            NetMessageWriter writer, ushort worldId, uint tick, Guid128 guid, int3 sectorPos,
-            ref Sector sector, ushort slotMask, bool fullSector)
+        /// <summary>
+        /// Forwards the ranges of the shared delta's CURRENT chunk. A delta range can only name a
+        /// sector this connection already knows, because a sector new to it got its SectorAdd in
+        /// <see cref="ReplicateWorld"/> earlier this tick and is in <c>sentFullThisTick</c>. A range
+        /// for a known sector holds exactly the bricks the old per-connection WriteBrickBatch
+        /// produced.
+        /// </summary>
+        internal void SendDelta(ReplicationBatch delta)
         {
-            writer.Reset();
-            NetHeader.Write(writer, NetMessageType.BrickData, worldId, tick);
-            int headerOffset = writer.Reserve<BrickBatchHeader>();
-
-            ushort count = 0;
-            ushort dirtyMask = (ushort)Sector.ReplicationDirtyMask;
-            for (int brickIdx = 0; brickIdx < Sector.BRICKS_IN_SECTOR; brickIdx++)
+            for (int i = 0; i < delta.Count; i++)
             {
-                if (sector.brickMap.indices[brickIdx] == Sector.BRICKID_EMPTY)
+                ReplicationRange range = delta[i];
+                if (range.Length == 0 || sentFullThisTick.Contains((range.Guid, range.SectorPos)))
                 {
                     continue;
                 }
 
-                ushort dirty = sector.brickDirtyFlags[brickIdx];
-                if (!fullSector && (dirty & dirtyMask) == 0)
-                {
-                    continue;
-                }
-
-                writer.Write((ushort)brickIdx);
-                writer.Write(dirty);
-                sector.WriteReplicatedBrick(writer, brickIdx, slotMask);
-                count++;
+                Send(NetDelivery.Reliable, delta.Slice(i));
             }
-
-            if (count == 0)
-            {
-                return;
-            }
-
-            writer.Patch(headerOffset, new BrickBatchHeader { Guid = guid, SectorPos = sectorPos, BrickCount = count });
-            Send(NetDelivery.Reliable, writer);
         }
+
+        /// <summary>
+        /// Whether this connection received that sector in full during this tick's
+        /// <see cref="ReplicateWorld"/>. The server drops a delta sector no connection still needs.
+        /// </summary>
+        internal bool ReceivedFullThisTick(Guid128 guid, int3 sectorPos)
+            => sentFullThisTick.Contains((guid, sectorPos));
 
         private static bool TransformEquals(in RigidTransform a, in RigidTransform b)
         {

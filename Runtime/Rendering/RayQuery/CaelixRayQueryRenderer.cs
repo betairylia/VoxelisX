@@ -16,10 +16,9 @@ namespace Caelix.Rendering.RayQuery
     /// the same kind of RTAS from the same render-data job; this one publishes per-instance data
     /// through GPU buffers rather than a shader table, because a ray query has no hit group.
     /// <para>
-    /// Enable exactly ONE of the two at a time. <see cref="EntityView.SectorsToRemove"/> is a queue
-    /// that its consumer drains and <see cref="EntityView.ShouldResetMotionVectors"/> is a flag its
-    /// consumer clears, so two renderers reading the same client world would steal each other's
-    /// events.
+    /// Enable exactly ONE of the two at a time. <see cref="EntityView.ShouldResetMotionVectors"/>
+    /// is a flag its consumer clears, so two renderers reading the same client world would steal
+    /// each other's reset.
     /// </para>
     /// </remarks>
     public class CaelixRayQueryRenderer : MonoBehaviour
@@ -160,7 +159,7 @@ namespace Caelix.Rendering.RayQuery
 
             if (host == null)
             {
-                host = CaelixHost.Any;
+                host = CaelixHost.Current;
             }
 
             if (host == null)
@@ -173,9 +172,20 @@ namespace Caelix.Rendering.RayQuery
             if (source != null)
             {
                 source.ViewDespawning += OnViewDespawning;
+                source.SectorRemoving += RemoveSectorRenderer;
             }
 
             return source != null;
+        }
+
+        /// <summary>Runs from <see cref="ClientWorld.SectorRemoving"/> while the sector storage is still alive.</summary>
+        private void RemoveSectorRenderer(EntityView view, int3 sectorPos)
+        {
+            var key = (view, sectorPos);
+            if (!sectorRenderers.TryGetValue(key, out RayQuerySectorRenderer renderer)) return;
+            renderer.MarkRemove();
+            renderer.RemoveMe(ref _voxelScene, Instances, Pool);
+            sectorRenderers.Remove(key);
         }
 
         private void OnViewDespawning(EntityView view)
@@ -241,21 +251,10 @@ namespace Caelix.Rendering.RayQuery
             {
                 EntityView view = views[v];
 
-                // Handle sector removal
-                while (view.SectorsToRemove.TryDequeue(out int3 sectorPos))
-                {
-                    var key = (view, sectorPos);
-                    if (sectorRenderers.TryGetValue(key, out RayQuerySectorRenderer removed))
-                    {
-                        removed.MarkRemove();
-                        removed.RemoveMe(ref _voxelScene, Instances, Pool);
-                        sectorRenderers.Remove(key);
-                    }
-                }
-
-                // The removal queue is the fast path, but a sector can also vanish without one
-                // (a replicated world rebuild, for instance). Sweeping the tracked keys against the
-                // live sector map is what keeps the pool from leaking ranges in that case.
+                // Sector removal arrives through ClientWorld.SectorRemoving (RemoveSectorRenderer).
+                // A sector can also vanish without it (a replicated world rebuild, for instance).
+                // Sweeping the tracked keys against the live sector map is what keeps the pool from
+                // leaking ranges in that case.
                 removalScratch.Clear();
                 foreach (var kvp in sectorRenderers)
                 {
@@ -377,6 +376,7 @@ namespace Caelix.Rendering.RayQuery
             if (source != null)
             {
                 source.ViewDespawning -= OnViewDespawning;
+                source.SectorRemoving -= RemoveSectorRenderer;
                 source = null;
             }
 

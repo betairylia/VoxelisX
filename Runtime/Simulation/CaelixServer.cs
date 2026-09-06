@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
+using Unity.Profiling;
 using Caelix.Net;
 using Caelix.Utils;
 
@@ -27,6 +28,13 @@ namespace Caelix.Simulation
 
         private delegate void QueryDispatch(ServerConnection connection, CaelixWorld world, uint requestId, ref NetMessageReader reader);
 
+        private static readonly ProfilerMarker s_ProcessIncomingMarker = new("Server.ProcessIncoming");
+        private static readonly ProfilerMarker s_TickSimulateMarker = new("Server.TickSimulate");
+        private static readonly ProfilerMarker s_ReplicateMarker = new("Server.Replicate");
+        private static readonly ProfilerMarker s_ReplicationBuildMarker = new("Server.ReplicationBuild");
+        private static readonly ProfilerMarker s_EndTickMarker = new("Server.EndTick");
+        private static readonly ProfilerMarker s_DrainEventsMarker = new("Server.DrainEvents");
+
         private readonly List<CaelixWorld> worlds = new();
         private readonly List<ServerConnection> connections = new();
         private readonly Dictionary<ushort, CommandHandler> commandHandlers = new();
@@ -34,6 +42,19 @@ namespace Caelix.Simulation
         private readonly NetMessageWriter writer = new(64 * 1024);
         private readonly NetMessageWriter replyPayloadWriter = new(64 * 1024);
         private readonly HashSet<Type> unregisteredEventTypesWarned = new();
+
+        /// <summary>
+        /// Phase A of replication for the world being replicated: the shared per-tick delta, packed
+        /// and sent in chunks of <see cref="ReplicationChunkBytes"/>.
+        /// </summary>
+        private readonly ReplicationBatch deltaBatch = new();
+
+        /// <summary>
+        /// Phase A again, for the sectors one connection has not seen yet. Rebuilt per connection
+        /// and, like the delta, streamed in chunks rather than packed whole.
+        /// </summary>
+        private readonly ReplicationBatch fullBatch = new();
+
         private float accumulator;
         private int nextConnectionId = 1;
         private bool disposed;
@@ -48,7 +69,10 @@ namespace Caelix.Simulation
         /// <summary>Ticks per second for every world. The fixed step is 1 / TickRate.</summary>
         public float TickRate { get; set; } = 100f;
 
-        /// <summary>While frozen, <see cref="Update"/> runs no ticks. <see cref="Step"/> still works.</summary>
+        /// <summary>
+        /// While frozen, <see cref="Tick"/> runs nothing after the first tick. <see cref="Step()"/>
+        /// always runs.
+        /// </summary>
         public bool Frozen { get; set; }
 
         /// <summary>
@@ -62,6 +86,26 @@ namespace Caelix.Simulation
         public uint TickIndex { get; private set; }
 
         public float FixedDeltaTime => TickRate > 0f ? 1f / TickRate : 0f;
+
+        /// <summary>
+        /// Bytes one replication chunk packs at most, for both batches. See
+        /// <see cref="ReplicationBatch.MaxChunkBytes"/>.
+        /// </summary>
+        public int ReplicationChunkBytes
+        {
+            get => deltaBatch.MaxChunkBytes;
+            set
+            {
+                deltaBatch.MaxChunkBytes = value;
+                fullBatch.MaxChunkBytes = value;
+            }
+        }
+
+        /// <summary>The shared per-tick delta batch. For tests and stats.</summary>
+        public ReplicationBatch DeltaBatchForTests => deltaBatch;
+
+        /// <summary>The per-connection catch-up batch. For tests and stats.</summary>
+        public ReplicationBatch FullBatchForTests => fullBatch;
 
         public CaelixServer(NetTypeRegistry types = null)
         {
@@ -88,12 +132,17 @@ namespace Caelix.Simulation
             }
 
             worlds.Clear();
+
+            deltaBatch.Dispose();
+            fullBatch.Dispose();
         }
 
         #region Worlds
 
         public CaelixWorld CreateWorld(CaelixWorldConfig config)
         {
+            if (config.worldId == NetHeader.NoWorld)
+                throw new ArgumentException("The no-world sentinel cannot identify a world.", nameof(config));
             if (FindWorld(config.worldId) != null)
             {
                 throw new InvalidOperationException($"World id {config.worldId} already exists.");
@@ -104,16 +153,15 @@ namespace Caelix.Simulation
             return world;
         }
 
+        /// <summary>
+        /// Removes a world and disposes it. Connections learn about it on the next
+        /// <see cref="Step()"/> through <see cref="NetMessageType.WorldRemove"/>.
+        /// </summary>
         public bool RemoveWorld(CaelixWorld world)
         {
             if (!worlds.Remove(world))
             {
                 return false;
-            }
-
-            for (int i = 0; i < connections.Count; i++)
-            {
-                connections[i].ForgetWorld(world.Id);
             }
 
             world.Dispose();
@@ -160,17 +208,18 @@ namespace Caelix.Simulation
             return true;
         }
 
+        /// <summary>
+        /// Sends the handshake. It is not scoped to a world, so its header carries
+        /// <see cref="NetHeader.NoWorld"/>; the worlds follow as WorldAdd messages.
+        /// </summary>
         private void SendHello(ServerConnection connection)
         {
-            CaelixWorld world = DefaultWorld;
             writer.Reset();
-            NetHeader.Write(writer, NetMessageType.Hello, world?.Id ?? 0, TickIndex);
+            NetHeader.Write(writer, NetMessageType.Hello, NetHeader.NoWorld, TickIndex);
             writer.Write(new HelloMessage
             {
-                ReplicatedSlotMask = world?.Config.replicatedSlotMask ?? Sector.DefaultReplicatedSlotMask,
                 TickRate = TickRate,
                 RegistryHash = Types.Hash,
-                WorldCount = (ushort)worlds.Count,
             });
             connection.Send(NetDelivery.Reliable, writer);
         }
@@ -234,13 +283,33 @@ namespace Caelix.Simulation
             };
         }
 
-        /// <summary>Drains every connection's inbox and dispatches commands and queries.</summary>
+        /// <summary>
+        /// Drains commands and queries while running; while frozen only services queries.
+        /// Step explicitly consumes commands even while frozen.
+        /// </summary>
         public void ProcessIncoming()
+            => ProcessIncoming(includeCommands: !Frozen);
+
+        /// <summary>Services queries against committed state, leaving commands in the channel.</summary>
+        public void ProcessQueries() => ProcessIncoming(includeCommands: false);
+
+        private static readonly Predicate<byte[]> IsQuery = message =>
         {
+            NetMessageType type = NetHeader.PeekType(message);
+            return type == NetMessageType.Query || type == NetMessageType.TypedQuery;
+        };
+
+        private void ProcessIncoming(bool includeCommands)
+        {
+            using var _ = s_ProcessIncomingMarker.Auto();
             for (int c = 0; c < connections.Count; c++)
             {
                 ServerConnection connection = connections[c];
-                while (connection.Channel.TryReceive(out byte[] message))
+                if (!connection.IsConnected) continue;
+                byte[] message;
+                while (includeCommands
+                    ? connection.Channel.TryReceive(out message)
+                    : connection.Channel.TryReceive(IsQuery, out message))
                 {
                     try
                     {
@@ -258,6 +327,13 @@ namespace Caelix.Simulation
         {
             var reader = new NetMessageReader(message);
             NetHeader header = NetHeader.Read(ref reader);
+            if (header.WorldId == NetHeader.NoWorld)
+            {
+                Debug.LogWarning(
+                    $"[CaelixServer] World-agnostic message type {header.Type} from connection {connection.Id} has no handler.");
+                return;
+            }
+
             CaelixWorld world = FindWorld(header.WorldId);
             if (world == null)
             {
@@ -358,7 +434,7 @@ namespace Caelix.Simulation
         {
             ProcessIncoming();
 
-            if (Frozen || TickRate <= 0f)
+            if (TickRate <= 0f)
             {
                 return;
             }
@@ -368,7 +444,13 @@ namespace Caelix.Simulation
             int steps = 0;
             while (accumulator >= dt && steps < MaxTicksPerUpdate)
             {
-                Step();
+                if (!Tick())
+                {
+                    // Frozen past the first tick: nothing will run, so do not bank the time.
+                    accumulator = 0f;
+                    break;
+                }
+
                 accumulator -= dt;
                 steps++;
             }
@@ -381,13 +463,32 @@ namespace Caelix.Simulation
         }
 
         /// <summary>
+        /// Runs one tick unless the server is frozen. A frozen server still runs its very first
+        /// tick, so a client always receives the initial state. Returns whether a tick ran.
+        /// <see cref="Step()"/> is the unconditional form.
+        /// </summary>
+        public bool Tick()
+        {
+            if (Frozen && TickIndex > 0)
+            {
+                ProcessQueries();
+                return false;
+            }
+            RunStep(includeCommands: !Frozen);
+            return true;
+        }
+
+        /// <summary>
         /// Runs exactly one tick of every world and replicates the result. Works while frozen.
         /// Pending commands and queries are applied first, so a command sent before this call
         /// takes effect in this tick.
         /// </summary>
         public void Step()
+            => RunStep(includeCommands: true);
+
+        private void RunStep(bool includeCommands)
         {
-            ProcessIncoming();
+            ProcessIncoming(includeCommands);
 
             for (int c = 0; c < connections.Count; c++)
             {
@@ -398,13 +499,23 @@ namespace Caelix.Simulation
                 }
             }
 
+            // World lifecycle before any world replicates: WorldAdd must precede the first
+            // BrickData of a world, and ReplicateWorld relies on the world already being known.
+            for (int c = 0; c < connections.Count; c++)
+            {
+                if (connections[c].IsConnected)
+                {
+                    connections[c].SyncWorlds(worlds, writer, TickIndex);
+                }
+            }
+
             float dt = FixedDeltaTime;
             for (int w = 0; w < worlds.Count; w++)
             {
                 CaelixWorld world = worlds[w];
-                world.TickSimulate(dt);
-                Replicate(world);
-                world.EndTick();
+                using (s_TickSimulateMarker.Auto()) world.TickSimulate(dt);
+                using (s_ReplicateMarker.Auto()) Replicate(world);
+                using (s_EndTickMarker.Auto()) world.EndTick();
             }
 
             TickIndex++;
@@ -418,17 +529,90 @@ namespace Caelix.Simulation
             }
         }
 
+        /// <summary>
+        /// Replicates one world in two phases, phase B first. Phase B is
+        /// <see cref="ServerConnection.ReplicateWorld"/>: per connection it diffs entity and sector
+        /// knowledge, packs whatever that connection still has to catch up on into
+        /// <see cref="fullBatch"/> and streams it. It records, per connection, which sectors went
+        /// out in full. Phase A then packs the tick's dirty sectors once, in parallel, into
+        /// <see cref="deltaBatch"/> — minus the sectors every connection just received in full —
+        /// and streams them in chunks; every connection forwards a chunk before the next is built.
+        /// </summary>
         private void Replicate(CaelixWorld world)
         {
             for (int c = 0; c < connections.Count; c++)
             {
-                if (connections[c].IsConnected)
+                if (connections[c].IsConnected && connections[c].IsSubscribed(world.Id))
                 {
-                    connections[c].ReplicateWorld(world, writer);
+                    connections[c].ReplicateWorld(world, writer, fullBatch);
+                }
+            }
+
+            using (s_ReplicationBuildMarker.Auto())
+            {
+                deltaBatch.Clear();
+                deltaBatch.CollectDirtySectors(world);
+                DropDeltaSectorsNobodyNeeds(world.Id);
+                deltaBatch.Prepare(world.Id, world.TickIndex, world.Config.replicatedSlotMask);
+            }
+
+            while (true)
+            {
+                bool more;
+                using (s_ReplicationBuildMarker.Auto())
+                {
+                    more = deltaBatch.BuildNextChunk();
+                }
+
+                if (!more)
+                {
+                    break;
+                }
+
+                for (int c = 0; c < connections.Count; c++)
+                {
+                    if (connections[c].IsConnected && connections[c].IsSubscribed(world.Id))
+                    {
+                        connections[c].SendDelta(deltaBatch);
+                    }
                 }
             }
 
             DrainEvents(world);
+        }
+
+        /// <summary>
+        /// Drops every collected delta sector that each connected, subscribed connection already
+        /// received in full this tick. On the tick a world is loaded that is all of them, and
+        /// packing gigabytes nobody sends is what froze the Editor. With nobody to send to, the
+        /// whole delta goes.
+        /// </summary>
+        private void DropDeltaSectorsNobodyNeeds(ushort worldId)
+        {
+            for (int i = deltaBatch.SectorCount - 1; i >= 0; i--)
+            {
+                ReplicationSectorRef sectorRef = deltaBatch.GetSector(i);
+                bool needed = false;
+                for (int c = 0; c < connections.Count; c++)
+                {
+                    ServerConnection connection = connections[c];
+                    if (!connection.IsConnected || !connection.IsSubscribed(worldId))
+                    {
+                        continue;
+                    }
+
+                    if (!connection.ReceivedFullThisTick(sectorRef.Guid, sectorRef.SectorPos))
+                    {
+                        needed = true;
+                        break;
+                    }
+                }
+
+                if (!needed)
+                {
+                    deltaBatch.RemoveSectorAtSwapBack(i);
+                }
+            }
         }
 
         private void DrainEvents(CaelixWorld world)
@@ -438,6 +622,8 @@ namespace Caelix.Simulation
             {
                 return;
             }
+
+            using var _ = s_DrainEventsMarker.Auto();
 
             for (int i = 0; i < events.Count; i++)
             {

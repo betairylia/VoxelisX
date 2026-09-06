@@ -5,6 +5,7 @@ using Unity.Mathematics;
 using UnityEngine;
 using Caelix.Net;
 using Caelix.Utils;
+using Unity.Jobs;
 
 namespace Caelix.Client
 {
@@ -22,6 +23,7 @@ namespace Caelix.Client
         private bool disposed;
 
         public ushort Id { get; }
+        public bool IsDisposed => disposed;
         public ushort ReplicatedSlotMask { get; internal set; }
 
         /// <summary>The client that owns this replica.</summary>
@@ -34,6 +36,9 @@ namespace Caelix.Client
 
         /// <summary>Raised before a view's data is disposed. Renderers release their resources here.</summary>
         public event Action<EntityView> ViewDespawning;
+
+        /// <summary>Raised while the sector is still alive. Consumers must release jobs and handles here.</summary>
+        public event Action<EntityView, int3> SectorRemoving;
 
         internal ClientWorld(CaelixClient owner, ushort id, ushort replicatedSlotMask)
         {
@@ -111,7 +116,7 @@ namespace Caelix.Client
                 isProtected = message.IsProtected != 0,
             };
 
-            var view = new EntityView(message.Guid, data)
+            var view = new EntityView(message.Guid, data, Id)
             {
                 HasBody = message.HasBody != 0,
                 // A born-static body settles its motion vectors on its first frame.
@@ -139,12 +144,6 @@ namespace Caelix.Client
             go.SetActive(false);
             var component = go.AddComponent<VoxelEntity>();
             component.InitializeAsClientView(view.Guid, Owner?.Host);
-            if (view.HasBody)
-            {
-                // View-only body: gives tools the same component surface as an authored body.
-                go.AddComponent<VoxelBody>();
-            }
-
             go.SetActive(true);
             Bind(view, component, clientSpawned: true);
         }
@@ -169,6 +168,11 @@ namespace Caelix.Client
                 if (view.IsClientSpawned)
                 {
                     DestroyViewObject(component.gameObject);
+                }
+                else if (component.isActiveAndEnabled)
+                {
+                    // A replacement with the same GUID must bind back to its authored component.
+                    pendingAuthored[message.Guid] = component;
                 }
             }
 
@@ -237,57 +241,27 @@ namespace Caelix.Client
                 return;
             }
 
-            if (view.Data.RemoveSectorAt(message.SectorPos))
-            {
-                view.SectorsToRemove.Enqueue(message.SectorPos);
-            }
+            if (!view.Data.sectors.ContainsKey(message.SectorPos)) return;
+            SectorRemoving?.Invoke(view, message.SectorPos);
+            view.Data.RemoveSectorAt(message.SectorPos);
         }
 
-        internal void OnBrickBatch(in BrickBatchHeader header, ref NetMessageReader reader)
+        internal bool TryResolveBrickBatch(in BrickBatchHeader header, out SectorHandle handle)
         {
+            handle = default;
             if (!views.TryGetValue(header.Guid, out EntityView view))
             {
-                // Unknown entity: skip the payload so the reader stays consistent.
-                SkipBrickBatch(header.BrickCount, ref reader);
-                return;
+                // Unknown entity: the whole message is dropped; nothing reads the payload after this.
+                return false;
             }
 
-            if (!view.Data.sectors.TryGetValue(header.SectorPos, out SectorHandle handle))
+            if (!view.Data.sectors.TryGetValue(header.SectorPos, out handle))
             {
                 view.Data.AddEmptySectorAt(header.SectorPos);
                 handle = view.Data.sectors[header.SectorPos];
             }
 
-            ref Sector sector = ref handle.Get();
-            for (int i = 0; i < header.BrickCount; i++)
-            {
-                int brickIdx = reader.Read<ushort>();
-                reader.Read<ushort>(); // server-side dirty flags; informational
-                if (brickIdx < 0 || brickIdx >= Sector.BRICKS_IN_SECTOR)
-                {
-                    throw new System.IO.InvalidDataException($"Brick index {brickIdx} out of range.");
-                }
-
-                sector.ApplyReplicatedBrick(brickIdx, ref reader);
-            }
-
-            sector.UpdateNonEmptyBricks();
-        }
-
-        private static void SkipBrickBatch(int brickCount, ref NetMessageReader reader)
-        {
-            for (int i = 0; i < brickCount; i++)
-            {
-                reader.Read<ushort>();
-                reader.Read<ushort>();
-                int slots = reader.Read<byte>();
-                for (int s = 0; s < slots; s++)
-                {
-                    reader.Read<byte>();
-                    int stride = reader.Read<ushort>();
-                    reader.Skip(stride * Sector.BLOCKS_IN_BRICK);
-                }
-            }
+            return true;
         }
 
         #endregion
@@ -302,7 +276,7 @@ namespace Caelix.Client
         #region Frame
 
         /// <summary>Clears last frame's require-update flags. Call before applying messages.</summary>
-        public void BeginFrame()
+        public void ClearRequireUpdate()
         {
             for (int i = 0; i < viewList.Count; i++)
             {
@@ -321,6 +295,8 @@ namespace Caelix.Client
                 DirtyFlags.Geometry | DirtyFlags.GeometryWithLocalNeighbor |
                 DirtyFlags.BlockBrickAdded | DirtyFlags.BlockBrickRemoved;
 
+            JobHandle dirtyPropagationHandle = default;
+
             for (int i = 0; i < viewList.Count; i++)
             {
                 EntityView view = viewList[i];
@@ -329,8 +305,13 @@ namespace Caelix.Client
                     continue;
                 }
 
-                view.Data.PropagateDirtyFlags(renderFlags, async: false);
+                dirtyPropagationHandle = JobHandle.CombineDependencies(
+                    dirtyPropagationHandle,
+                    view.Data.PropagateDirtyFlags(renderFlags, async: true)
+                );
             }
+            
+            dirtyPropagationHandle.Complete();
         }
 
         /// <summary>Ends the dirty lifetime of this frame's applied bricks. Call after the renderers ran.</summary>

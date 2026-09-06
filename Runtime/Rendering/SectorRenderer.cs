@@ -155,18 +155,6 @@ namespace Caelix.Rendering
             (ulong)((hostBrickBuffer.IsCreated ? hostBrickBuffer.Capacity * sizeof(int) : 0)
                   + (hostAABBBuffer.IsCreated ? hostAABBBuffer.Capacity * sizeof(float) * 6 : 0));
 
-        /// <summary>
-        /// Gets the estimated VRAM usage in bytes for this renderer's GPU buffers.
-        /// </summary>
-        /// <remarks>
-        /// In pool mode the brick records are not this renderer's buffer, but the range it reserved
-        /// is what the pool grew to hold, so it is counted here rather than on the pool.
-        /// </remarks>
-        public ulong VRAMUsage =>
-            (ulong)(Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * 24 +
-                    (poolHandle != null ? poolHandle.CapacityBricks : currentGPUBrickBufferCapacity)
-                    * BRICK_DATA_LENGTH * 4);
-
         private GraphicsBuffer aabbBuffer;
         private GraphicsBuffer brickBuffer;
         private int currentGPUBrickBufferCapacity;
@@ -613,7 +601,8 @@ namespace Caelix.Rendering
         {
             if (shouldRemove)
             {
-                AS.RemoveInstance(sectorASHandle);
+                if (hasRenderable) AS.RemoveInstance(sectorASHandle);
+                hasRenderable = false;
                 // Debug.Log("Removed sector");
                 isDirty = false;
 
@@ -851,7 +840,8 @@ namespace Caelix.Rendering
         /// </remarks>
         public void RenderEmitJob(SectorHandle sector, SectorNeighborHandles neighborHandle)
         {
-            if (shouldRemove || sector.IsRendererEmpty || (!sector.IsRendererRequireUpdate))
+            bool initialUpload = !HostBufferInitialized;
+            if (shouldRemove || sector.IsRendererEmpty || (!initialUpload && !sector.IsRendererRequireUpdate))
             {
                 return;
             }
@@ -861,6 +851,7 @@ namespace Caelix.Rendering
             // Job generating renderer buffers
             rendererJob = new GenerateSectorRenderDataJob()
             {
+                forceFullUpload = initialUpload,
                 sectorHandle = sector,
                 neighbors = neighborHandle,
 #if !CAELIX_RENDER_DISABLE_CULLING
@@ -888,6 +879,12 @@ namespace Caelix.Rendering
         /// </summary>
         public void Dispose()
         {
+            if (jobScheduled)
+            {
+                jobHandle.Complete();
+                rendererJob.syncRecord.Dispose();
+                jobScheduled = false;
+            }
             if (hostAABBBuffer.IsCreated) hostAABBBuffer.Dispose();
             if (hostBrickBuffer.IsCreated) hostBrickBuffer.Dispose();
 #if !CAELIX_RENDER_DISABLE_CULLING

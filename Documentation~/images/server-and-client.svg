@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="610" viewBox="0 0 1000 610" role="img" aria-labelledby="title desc">
+<title id="title">Local host: simulation owns state, clients consume results</title><desc id="desc">A client sends commands to a server handler and queries committed state. The authoritative world runs automata and physics. Replication supplies the client render replica; events drive presentation. In Host mode the same process uses serialized LocalChannel messages. Queries can be answered while edits remain queued during pause.</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#60768a"/></marker></defs>
+<rect width="1000" height="610" rx="16" fill="#f5f8fc"/>
+<g font-family="Segoe UI, Arial, sans-serif" fill="#172d43">
+<text x="36" y="43" font-size="25" font-weight="bold" fill="#172d43">Local host: simulation owns state, clients consume results</text>
+<text x="36" y="77" font-size="16" font-weight="normal" fill="#172d43">CaelixHost runs both sides in one process, connected by serialized LocalChannel messages.</text>
+<rect x="36" y="102" width="386" height="357" rx="10" fill="#eaf3fb" stroke="#b0cce0"/>
+<rect x="578" y="102" width="386" height="357" rx="10" fill="#e6f3ee" stroke="#b1d2c4"/>
+<text x="57" y="134" font-size="20" font-weight="bold" fill="#176baf">CLIENT</text>
+<text x="599" y="134" font-size="20" font-weight="bold" fill="#087f75">SERVER</text>
+<rect x="57" y="160" width="343" height="89" rx="10" fill="#ffffff" stroke="#c3d2df"/>
+<rect x="57" y="160" width="5" height="89" rx="2" fill="#176baf" stroke="#176baf"/>
+<text x="75" y="190" font-size="19" font-weight="bold" fill="#176baf">Input and inspection</text>
+<text x="75" y="218" font-size="16" font-weight="normal" fill="#172d43">Send commands; request committed data</text>
+<rect x="599" y="160" width="343" height="89" rx="10" fill="#ffffff" stroke="#c3d2df"/>
+<rect x="599" y="160" width="5" height="89" rx="2" fill="#087f75" stroke="#087f75"/>
+<text x="617" y="190" font-size="19" font-weight="bold" fill="#087f75">Command / query handlers</text>
+<text x="617" y="218" font-size="16" font-weight="normal" fill="#172d43">Resolve world ID, type ID, entity GUID</text>
+<path d="M 400 197 H 589" fill="none" stroke="#60768a" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="439" y="182" font-size="14" font-weight="normal" fill="#172d43">requests</text>
+<path d="M 770 249 V 293" fill="none" stroke="#60768a" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="599" y="304" width="343" height="121" rx="10" fill="#ffffff" stroke="#c3d2df"/>
+<rect x="599" y="304" width="5" height="121" rx="2" fill="#087f75" stroke="#087f75"/>
+<text x="617" y="334" font-size="19" font-weight="bold" fill="#087f75">Authoritative world</text>
+<text x="617" y="362" font-size="16" font-weight="normal" fill="#172d43">Entities, slots, automata, physics</text>
+<text x="617" y="385" font-size="16" font-weight="normal" fill="#172d43">Save/load and queued events</text>
+<rect x="57" y="304" width="343" height="121" rx="10" fill="#ffffff" stroke="#c3d2df"/>
+<rect x="57" y="304" width="5" height="121" rx="2" fill="#176baf" stroke="#176baf"/>
+<text x="75" y="334" font-size="19" font-weight="bold" fill="#176baf">Replica and presentation</text>
+<text x="75" y="362" font-size="16" font-weight="normal" fill="#172d43">Block data → rendering and picking</text>
+<text x="75" y="385" font-size="16" font-weight="normal" fill="#172d43">Events / replies → UI and audio</text>
+<path d="M 599 349 H 410" fill="none" stroke="#60768a" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="436" y="332" font-size="14" font-weight="normal" fill="#172d43">replication</text>
+<path d="M 599 401 H 410" fill="none" stroke="#60768a" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="433" y="391" font-size="14" font-weight="normal" fill="#172d43">events / replies</text>
+<rect x="36" y="490" width="928" height="80" rx="10" fill="#ffffff" stroke="#c3d2df"/>
+<text x="54" y="519" font-size="19" font-weight="bold" fill="#ac580a">When paused</text>
+<text x="232" y="519" font-size="16" font-weight="normal" fill="#172d43">Queries read committed state. Edit commands stay queued until step or unfreeze.</text>
+<text x="232" y="545" font-size="16" font-weight="normal" fill="#172d43">Trusted authoring APIs write directly to server data and are immediate.</text>
+</g></svg>

@@ -116,7 +116,7 @@ namespace Caelix.Rendering.Meshing
 
             if (meshRenderer.Source == null)
             {
-                if (host == null) host = CaelixHost.Any;
+                if (host == null) host = CaelixHost.Current;
                 if (host == null) return;
                 host.EnsureInitialized();
                 meshRenderer.Source = host.ClientWorld;
