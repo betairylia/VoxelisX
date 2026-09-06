@@ -87,7 +87,6 @@ namespace Caelix.Simulation
         private static readonly ProfilerMarker s_WorkDispatchMarker = new("Work Dispatch");
         private static readonly ProfilerMarker s_ApplySectorSnapshotsMarker = new("Apply Sector Snapshots");
         private static readonly ProfilerMarker s_DirtyPropagationMarker = new("Dirty Propagation");
-        private static readonly ProfilerMarker s_UpdateVelocityMarker = new("Update Velocity");
         private static readonly ProfilerMarker s_ClearRequireUpdatesMarker = new("Clear Require Updates");
         private static readonly ProfilerMarker s_PropagateDirtyFlagsMarker = new("Propagate Dirty Flags");
         private static readonly ProfilerMarker s_BurstMarker = new("Burst");
@@ -594,6 +593,10 @@ namespace Caelix.Simulation
                 for (int i = 0; i < entityKeys.Length; i++)
                 {
                     VoxelEntityData e = entities[entityKeys[i]];
+                    // Velocity of the interval that just ended (last tick's motion plus any pose set
+                    // between ticks), computed BEFORE previousTransform is reset to mark the start of
+                    // this tick.
+                    e.ComputeVelocityForDirtyPropagation(dt);
                     e.previousTransform = e.transform;
                     entities[entityKeys[i]] = e;
                 }
@@ -681,16 +684,6 @@ namespace Caelix.Simulation
 
             using (s_DirtyPropagationMarker.Auto())
             {
-                using (s_UpdateVelocityMarker.Auto())
-                {
-                    for (int i = 0; i < entityKeys.Length; i++)
-                    {
-                        VoxelEntityData e = entities[entityKeys[i]];
-                        e.ComputeVelocityForDirtyPropagation(dt);
-                        entities[entityKeys[i]] = e;
-                    }
-                }
-
                 using (s_ClearRequireUpdatesMarker.Auto())
                 {
                     for (int i = 0; i < entityKeys.Length; i++)

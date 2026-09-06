@@ -294,9 +294,10 @@ namespace Caelix.Simulation
         public void ProcessQueries() => ProcessIncoming(includeCommands: false);
 
         private static readonly Predicate<byte[]> IsQuery = message =>
-            message.Length >= NetHeader.Size &&
-            ((NetMessageType)message[0] == NetMessageType.Query ||
-             (NetMessageType)message[0] == NetMessageType.TypedQuery);
+        {
+            NetMessageType type = NetHeader.PeekType(message);
+            return type == NetMessageType.Query || type == NetMessageType.TypedQuery;
+        };
 
         private void ProcessIncoming(bool includeCommands)
         {
@@ -308,7 +309,7 @@ namespace Caelix.Simulation
                 byte[] message;
                 while (includeCommands
                     ? connection.Channel.TryReceive(out message)
-                    : connection.Channel.TryReceive_RotateQueue(IsQuery, out message))
+                    : connection.Channel.TryReceive(IsQuery, out message))
                 {
                     try
                     {

@@ -244,36 +244,14 @@ namespace Caelix.Client
             if (!view.Data.sectors.ContainsKey(message.SectorPos)) return;
             SectorRemoving?.Invoke(view, message.SectorPos);
             view.Data.RemoveSectorAt(message.SectorPos);
-            InvalidateRemovedSectorBoundary(view, message.SectorPos);
         }
 
-        private static unsafe void InvalidateRemovedSectorBoundary(EntityView view, int3 removedPos)
-        {
-            // Surviving face, edge and corner neighbors may have culled geometry against the
-            // removed storage. Schedule their boundary bricks directly; this creates no topology.
-            foreach (var entry in view.Data.sectors)
-            {
-                int3 delta = removedPos - entry.Key;
-                if (math.any(math.abs(delta) > 1)) continue;
-                ref Sector sector = ref entry.Value.Get();
-                for (int i = 0; i < Sector.BRICKS_IN_SECTOR; i++)
-                {
-                    if (sector.brickMap.indices[i] == Sector.BRICKID_EMPTY) continue;
-                    int3 p = Sector.ToBrickPos((short)i);
-                    if (math.any((delta < 0) & (p != 0)) ||
-                        math.any((delta > 0) & (p != Sector.SIZE_IN_BRICKS - 1))) continue;
-                    sector.MarkBrickRequireUpdate(i, DirtyFlags.GeometryWithLocalNeighbor);
-                }
-            }
-        }
-
-        internal bool TryResolveBrickBatch(in BrickBatchHeader header, ref NetMessageReader reader, out SectorHandle handle)
+        internal bool TryResolveBrickBatch(in BrickBatchHeader header, out SectorHandle handle)
         {
             handle = default;
             if (!views.TryGetValue(header.Guid, out EntityView view))
             {
-                // Unknown entity: skip the payload so the reader stays consistent.
-                SkipBrickBatch(header.BrickCount, ref reader);
+                // Unknown entity: the whole message is dropped; nothing reads the payload after this.
                 return false;
             }
 
@@ -284,22 +262,6 @@ namespace Caelix.Client
             }
 
             return true;
-        }
-
-        private static void SkipBrickBatch(int brickCount, ref NetMessageReader reader)
-        {
-            for (int i = 0; i < brickCount; i++)
-            {
-                reader.Read<ushort>();
-                reader.Read<ushort>();
-                int slots = reader.Read<byte>();
-                for (int s = 0; s < slots; s++)
-                {
-                    reader.Read<byte>();
-                    int stride = reader.Read<ushort>();
-                    reader.Skip(stride * Sector.BLOCKS_IN_BRICK);
-                }
-            }
         }
 
         #endregion

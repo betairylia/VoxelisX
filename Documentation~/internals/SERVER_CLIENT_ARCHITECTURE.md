@@ -2,7 +2,9 @@
 
 **Status:** v1 landed (branch `dev/fable/server-client-v1`, started 2026-09-03,
 commits `532b157` to `aa97d84`; later branches carry it forward). Then world lifecycle
-messages, two-phase replication and one host per process, 2026-09-05. Section 10 lists
+messages, two-phase replication and one host per process, 2026-09-05. Pre-merge review
+fixes landed 2026-09-07 (single decoder, `NetHeader.PeekType`, `TryReceive(predicate)`,
+Core-side removal invalidation, tick velocity order). Section 10 lists
 what is still open. Lifecycle and pause hardening checked on 2026-09-06;
 see `RND_VALIDATION.md` for the supported use and measured checks.
 Section 4's component API cleanup was reviewed against the working tree after
@@ -206,13 +208,18 @@ the renderer is what makes it possible.
 - **Renderer lifetime.** `WorldRemoving`, `ViewDespawning`, and `SectorRemoving`
   run while the corresponding storage is still alive. Mesh and ray renderers
   unsubscribe, complete their jobs, and release cached resources before disposal.
-  Removing a sector invalidates surviving neighbor boundary geometry. A fresh
+  `VoxelEntityData.RemoveSectorAt` marks the facing bricks of every surviving
+  neighbour sector dirty with `GeometryWithLocalNeighbor` and no direction mask,
+  so the flag reaches only those bricks and creates no sector; the server's next
+  propagation turns it into the require-update the physics slot refresh reads,
+  and the client's `PrepareRender` does the same for the renderers. A fresh
   renderer uploads a quiet replica in full, including after disable/re-enable.
   Authored components rebind to their replacement entity and world.
 - **Transforms and flags.** Sent per entity when changed.
 - **Never replicate** `PhysicsInfo`. It is derived, and the serializer already
   discards it.
-- **Client apply.** `Sector.ApplyReplicatedBrick` copies the raw brick, marks
+- **Client apply.** `Sector.ApplyReplicatedBrickBatch` validates the whole
+  message, then copies each raw brick, marks
   `Geometry | GeometryWithLocalNeighbor | BlockBrickAdded` as needed, and
   widens the block AABB to the brick bounds. The client frame is three calls
   plus the renderers: `Receive` (clear require-update, then apply every pending
@@ -228,6 +235,7 @@ the renderer is what makes it possible.
   stepping or unfreezing. `INetChannel.TryReceive(predicate, out message)` provides
   selective receipt and preserves unmatched message order. Typed query handlers
   must be read-only; a handler with side effects would break the pause contract.
+  The server's query filter reads the type through `NetHeader.PeekType`.
 
 ## 6. Messages, v1
 
@@ -329,6 +337,10 @@ a connection from a world reads as a removal. The client creates a replica on
 `WorldRemoving`; a message naming an unknown world still creates a replica, so
 nothing is lost if the order is ever violated.
 
+Review note (mirrored from `HelloMessage`): the registry hash could be replaced
+with a command list for validation, since a client only needs to be a subset of
+the server's commands.
+
 A command may also carry a trailing payload: send it with
 `CaelixClient.SendCommand(in T, ReadOnlySpan<byte>)` and receive it with
 `CaelixServer.RegisterCommand<T>(PayloadCommandHandler<T>)`. A typed query pairs a
@@ -351,12 +363,25 @@ grab and the only one a client cannot compute exactly. Games register their own
 command and event types through the type registries. Engine types are registered
 first, in a fixed order, on both sides.
 
+Review note (mirrored from `EngineNetTypes`): `SetBlockCommand` could become a
+general `SetSlotCommand`. Not yet, but it is likely to become useful.
+
 ## 7. Transport
 
 `INetChannel` with two implementations: `LocalChannel` (in-process queue,
 real serialization) and, later, `UtpChannel` (Unity Transport 2.x) in its own
 optional assembly. Netcode for GameObjects, Netcode for Entities, and Mirror
 were rejected; see the family notes and `ECS_vs_NonECS_Decision.md`.
+
+Review note (2026-09-05, mirrored from `CaelixHost.EnsureInitialized`): should
+connecting be abstracted the way `INetChannel` abstracts the channel? Yes, when
+the Unity Transport channel lands. The shape is an `INetListener` (`Poll` +
+`TryAccept(out INetChannel)`) on the server and an `INetConnector`
+(`Connect(endpoint)`) on the client, with a `LocalTransport` implementing both
+over the queue pair; `CaelixServer.Listen(listener)` polls accepts inside
+`ProcessIncoming`. Deliberately not built ahead of UTP: the driver update,
+per-delivery pipelines and connection events should shape the interface, and
+with `LocalChannel` alone it would have one implementation and no test of fit.
 
 ## 8. Assemblies
 
@@ -426,6 +451,10 @@ Deferred:
   the client applies whatever ticks landed since the last frame. No interpolation yet,
   so bodies show the latest tick's pose. The explicit `Host.Step(count)` API pushes
   current settings and runs exactly that many ticks while frozen.
+  Review note (mirrored from `CaelixHost.Update`): could the per-frame
+  `ProcessQueries` pump go, with `FixedUpdate` carrying it? No. Queries must also
+  work on frames with no fixed step, including `Time.timeScale == 0`, and the pump
+  leaves every edit command in the channel until `Server.Step` consumes it.
 - **Profiler markers.** Server: `Server.ProcessIncoming`, `Server.TickSimulate`,
   `Server.Replicate`, `Server.ReplicationBuild` (phase A, the shared delta),
   `Server.ReplicateWorld` (phase B, per connection), `Server.ReplicationFullBuild`
@@ -451,4 +480,8 @@ Deferred:
   branch; that is why the alias exists.
 - **Not done in v1:** the rendering assembly is not yet excluded from Dedicated Server
   builds; `InfiniteLoader` is not ticked; guids on authored entities are runtime-random
-  unless set through `PersistentGuid`.
+  unless set through `PersistentGuid`; a large-world join still materialises the whole
+  world payload on the managed heap, because chunking bounds only the native packing
+  buffer while `LocalChannel` copies every message into its inbox and the client drains
+  once per frame. The fix is a resumable per-connection catch-up with backpressure
+  (tracked, not done).

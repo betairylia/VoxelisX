@@ -136,6 +136,9 @@ namespace Caelix
         /// </remarks>
         public virtual void Tick()
         {
+            // The loader writes server data through the entity; without it there is nothing to stream.
+            if (entity == null || !entity.HasServerData) return;
+
             int3 lsp = loadCenterSectorPos;
 
             // Unload sectors

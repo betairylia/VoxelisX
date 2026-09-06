@@ -340,7 +340,7 @@ namespace Caelix.Client
                     var m = reader.Read<BrickBatchHeader>();
                     // Creating a world raises a user callback, so it is also an apply barrier.
                     if (!worlds.ContainsKey(header.WorldId)) brickReceiveBatch.Flush();
-                    if (GetOrCreateWorld(header.WorldId).TryResolveBrickBatch(in m, ref reader, out SectorHandle sector))
+                    if (GetOrCreateWorld(header.WorldId).TryResolveBrickBatch(in m, out SectorHandle sector))
                         brickReceiveBatch.Add(sector, message, reader.Position, m.BrickCount);
                     break;
                 }
