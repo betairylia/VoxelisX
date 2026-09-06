@@ -52,7 +52,6 @@ namespace Caelix.Client
     {
         private static readonly ProfilerMarker s_ClearRequireUpdateMarker = new("Client.ClearRequireUpdate");
         private static readonly ProfilerMarker s_ReceiveMarker = new("Client.Receive");
-        private static readonly ProfilerMarker s_ApplyBrickBatchMarker = new("Client.ApplyBrickBatch");
         private static readonly ProfilerMarker s_PropagateForRenderMarker = new("Client.PropagateForRender");
         private static readonly ProfilerMarker s_EndFrameMarker = new("Client.EndFrame");
 
@@ -68,6 +67,7 @@ namespace Caelix.Client
         private readonly Dictionary<uint, Action<VoxelQueryReply>> pendingQueries = new();
         private readonly Dictionary<uint, TypedReplyDispatch> pendingTypedQueries = new();
         private readonly NetMessageWriter writer = new(4096);
+        private readonly BrickReceiveBatch brickReceiveBatch;
         private uint nextRequestId = 1;
         private bool disposed;
 
@@ -106,12 +106,15 @@ namespace Caelix.Client
             this.channel = channel ?? throw new ArgumentNullException(nameof(channel));
             Types = types ?? new NetTypeRegistry();
             EngineNetTypes.RegisterAll(Types);
+            brickReceiveBatch = new BrickReceiveBatch();
         }
 
         public void Dispose()
         {
             if (disposed) return;
             disposed = true;
+
+            brickReceiveBatch.Dispose();
 
             for (int i = 0; i < worldList.Count; i++)
             {
@@ -204,16 +207,23 @@ namespace Caelix.Client
 
             using (s_ReceiveMarker.Auto())
             {
-                while (channel.TryReceive(out byte[] message))
+                try
                 {
-                    try
+                    while (channel.TryReceive(out byte[] message))
                     {
-                        Apply(message);
+                        try
+                        {
+                            Apply(message);
+                        }
+                        catch (Exception exception)
+                        {
+                            Debug.LogException(exception);
+                        }
                     }
-                    catch (Exception exception)
-                    {
-                        Debug.LogException(exception);
-                    }
+                }
+                finally
+                {
+                    brickReceiveBatch.Flush();
                 }
             }
         }
@@ -246,6 +256,9 @@ namespace Caelix.Client
         {
             var reader = new NetMessageReader(message);
             NetHeader header = NetHeader.Read(ref reader);
+            // All observable messages are ordering barriers: callbacks and lifecycle handlers
+            // must see preceding voxel writes, and may replace or free their storage.
+            if (header.Type != NetMessageType.BrickData) brickReceiveBatch.Flush();
             if (header.Tick > LastServerTick)
             {
                 LastServerTick = header.Tick;
@@ -324,9 +337,11 @@ namespace Caelix.Client
                 }
                 case NetMessageType.BrickData:
                 {
-                    using var _ = s_ApplyBrickBatchMarker.Auto();
                     var m = reader.Read<BrickBatchHeader>();
-                    GetOrCreateWorld(header.WorldId).OnBrickBatch(in m, ref reader);
+                    // Creating a world raises a user callback, so it is also an apply barrier.
+                    if (!worlds.ContainsKey(header.WorldId)) brickReceiveBatch.Flush();
+                    if (GetOrCreateWorld(header.WorldId).TryResolveBrickBatch(in m, ref reader, out SectorHandle sector))
+                        brickReceiveBatch.Add(sector, message, reader.Position, m.BrickCount);
                     break;
                 }
                 case NetMessageType.Event:

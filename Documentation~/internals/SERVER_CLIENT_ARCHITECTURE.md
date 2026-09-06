@@ -258,6 +258,59 @@ allocated brick, a known sector sends only the bricks whose dirty flags meet
 the replication mask. The client ignores the per-brick dirty flags; they are
 informational.
 
+`CaelixClient.Receive` groups consecutive brick messages by sector. A Burst job
+applies different sectors in parallel, while each sector's messages retain their
+receive order. A single sector uses the same job with `Run()`. The main thread
+resolves worlds, views and sector handles; jobs own sector allocation, slot copies,
+dirty flags and brick bounds. Allocated-brick lists refresh once per flush when
+allocation changed, so existing-brick deltas skip that scan.
+
+The channel transfers ownership of received arrays. `BrickReceiveBatch` pins those
+arrays until its jobs complete, without staging another payload copy. It flushes
+at 64 MiB or 1,024 messages; a single oversized message runs alone. These limits
+bound retained apply input, not the channel inbox. Every non-brick message, creation
+of an unknown world (which raises a callback), and the end of `Receive` completes
+pending writes before observation or storage replacement. No apply job survives
+`Receive`. Consumers still complete their own previous-frame jobs before receiving.
+
+The native decoder checks brick indices, slot IDs, strides and payload bounds before
+changing any bricks in a message. Conflicting strides include records earlier in
+the same message. Invalid messages return an error for main-thread logging; later
+messages still apply. Zero-slot records remain no-ops. This is framing validation,
+not a remote transport or queue backpressure policy.
+
+`ClientReceivePerformanceTests` provides opt-in initial-sync and queued-delta
+receive timings. Run with Burst enabled and `--burst-force-sync-compilation`; the
+test excludes its warm-up pass, sending, server simulation and rendering.
+
+Measured on 2026-09-06 in Unity 6000.5.6f1, Burst 1.8.29, Collections 6.5.0,
+Intel i7-14700KF, 27 job workers. Each value is the median of seven receive calls
+after a warm-up pass. The baseline is Caelix `69c54a7` with Core `792ddd4`; the
+optimized path is `dev/astra/server-client-v1`. Both use the identical test and
+dependencies in the same isolated Editor project.
+
+| Sectors × bricks per sector | Initial apply, before → after (ms) | Three queued updates, before → after (ms) |
+|---|---:|---:|
+| 1 × 1 | 0.0073 → 0.0056 | 0.0198 → 0.0026 |
+| 1 × 1,024 | 0.1649 → 0.1403 | 0.3488 → 0.2233 |
+| 128 × 1 | 0.8840 → 0.1243 | 2.5757 → 0.1421 |
+| 128 × 1,024 | 37.9298 → 7.1636 | 62.1639 → 17.4829 |
+
+The largest case sends about 128 MiB initially and 384 MiB in queued updates,
+exercising multiple bounded flushes. These measurements describe CPU receive work
+in the Editor, not total frame time or a rendered-world performance guarantee.
+
+Validation: 278 Editor tests passed, including the Host Play Mode round trip,
+the native decoder tests, callback/removal ordering, same-address writes across
+worlds, and a 1,031-message run containing an invalid packet followed by valid
+writes. The scale test compared every allocated Block brick after synchronizing
+64 full synthetic sectors and applying queued edits. All four explicit benchmark
+cases also passed. The isolated project uses Titania's
+`UNITY_DISABLE_AUTOMATIC_SYSTEM_BOOTSTRAP` setting. Allocation stack tracing found
+one existing leak in the unchanged Physics test
+`VoxelEntityPhysicsTests.PhysicsWorldExportPersistsMotionForMultipleDynamicBodies`
+(`SchedulePhysicsWorldBuild`'s GUID array); no receive-batch allocation was reported.
+
 Order per connection, every `Step()`: `Hello` once, then `WorldAdd` /
 `WorldRemove` for every world that appeared or went, then that tick's
 replication. `Hello` goes out on the first `Step()` after the connection is

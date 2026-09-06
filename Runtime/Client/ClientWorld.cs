@@ -267,35 +267,23 @@ namespace Caelix.Client
             }
         }
 
-        internal void OnBrickBatch(in BrickBatchHeader header, ref NetMessageReader reader)
+        internal bool TryResolveBrickBatch(in BrickBatchHeader header, ref NetMessageReader reader, out SectorHandle handle)
         {
+            handle = default;
             if (!views.TryGetValue(header.Guid, out EntityView view))
             {
                 // Unknown entity: skip the payload so the reader stays consistent.
                 SkipBrickBatch(header.BrickCount, ref reader);
-                return;
+                return false;
             }
 
-            if (!view.Data.sectors.TryGetValue(header.SectorPos, out SectorHandle handle))
+            if (!view.Data.sectors.TryGetValue(header.SectorPos, out handle))
             {
                 view.Data.AddEmptySectorAt(header.SectorPos);
                 handle = view.Data.sectors[header.SectorPos];
             }
 
-            ref Sector sector = ref handle.Get();
-            for (int i = 0; i < header.BrickCount; i++)
-            {
-                int brickIdx = reader.Read<ushort>();
-                reader.Read<ushort>(); // server-side dirty flags; informational
-                if (brickIdx < 0 || brickIdx >= Sector.BRICKS_IN_SECTOR)
-                {
-                    throw new System.IO.InvalidDataException($"Brick index {brickIdx} out of range.");
-                }
-
-                sector.ApplyReplicatedBrick(brickIdx, ref reader);
-            }
-
-            sector.UpdateNonEmptyBricks();
+            return true;
         }
 
         private static void SkipBrickBatch(int brickCount, ref NetMessageReader reader)
