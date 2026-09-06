@@ -25,7 +25,7 @@ namespace Caelix
     /// Client and Server roles are deferred. This component replaces the former
     /// <c>CaelixWorld</c> MonoBehaviour and keeps its script identity so existing scenes stay wired.
     /// </remarks>
-    public class CaelixHost : MonoBehaviour
+    public class CaelixHost : MonoSingleton<CaelixHost>
     {
         /// <summary>Exclusive CPU timing buckets from the last host frame.</summary>
         public struct HostTimingStats
@@ -48,8 +48,6 @@ namespace Caelix
         private static readonly ProfilerMarker s_ServerTickMarker = new("Host.ServerTick");
         private static readonly ProfilerMarker s_ClientFrameMarker = new("Host.ClientFrame");
         private static readonly ProfilerMarker s_RenderersMarker = new("Host.Renderers");
-
-        private static CaelixHost s_current;
 
         // ---------------- COMPONENTS ------------------
         [Header("Components")]
@@ -93,7 +91,6 @@ namespace Caelix
         [SerializeField] private string saveLoadPath = DefaultSaveLoadFileName;
 
         private bool initialized;
-        private bool destroyed;
         private int ticksSinceLastFrame;
         private long serverTicksElapsed;
         private LocalChannel serverEnd;
@@ -116,54 +113,11 @@ namespace Caelix
 
         public BrickOverlapGraph BrickOverlapGraph => World != null ? World.BrickOverlapGraph : default;
 
-        #region Host lookup
-
-        /// <summary>The host of this process. One per process; a second enabled host logs an error
-        /// and is ignored. Falls back to a scene search for components whose OnEnable runs before
-        /// the host's.</summary>
-        public static CaelixHost Current => s_current != null ? s_current : FindFirstObjectByType<CaelixHost>();
-
-        /// <summary>Old name of <see cref="Current"/>.</summary>
-        [Obsolete("Use CaelixHost.Current.")] public static CaelixHost Any => Current;
-
-        /// <summary>
-        /// Claims the process host slot, or reports that another host already holds it. Either way
-        /// this instance still initializes: a scene with two hosts must not throw.
-        /// </summary>
-        private void RegisterAsCurrent()
-        {
-            if (s_current == null)
-            {
-                s_current = this;
-                return;
-            }
-
-            if (s_current != this)
-            {
-                Debug.LogError(
-                    $"{name}: a second CaelixHost is enabled; only {s_current.name} runs. Disable one of them.",
-                    this);
-            }
-        }
-
-        #endregion
-
         #region Lifecycle
 
-        private void Awake()
+        protected override void OnSingletonEnabled()
         {
             EnsureInitialized();
-        }
-
-        private void OnEnable()
-        {
-            EnsureInitialized();
-            RegisterAsCurrent();
-        }
-
-        private void OnDisable()
-        {
-            if (s_current == this) s_current = null;
         }
 
         /// <summary>
@@ -172,25 +126,32 @@ namespace Caelix
         /// </summary>
         public void EnsureInitialized()
         {
-            if (initialized || destroyed)
+            if (!TryClaimSingleton() || initialized)
             {
                 return;
             }
 
-            initialized = true;
-            RegisterAsCurrent();
-
-            LocalChannel.CreatePair(out serverEnd, out clientEnd);
-
-            Server = new CaelixServer
+            try
             {
-                TickRate = targetTPS,
-                Frozen = freeze,
-            };
-            Server.CreateWorld(BuildWorldConfig());
+                LocalChannel.CreatePair(out serverEnd, out clientEnd);
 
-            Client = new CaelixClient(clientEnd, Server.Types) { Host = this };
-            Server.AddConnection(serverEnd);
+                Server = new CaelixServer
+                {
+                    TickRate = targetTPS,
+                    Frozen = freeze,
+                };
+                Server.CreateWorld(BuildWorldConfig());
+
+                Client = new CaelixClient(clientEnd, Server.Types) { Host = this };
+                Server.AddConnection(serverEnd);
+                initialized = true;
+            }
+            catch
+            {
+                DisposeResources();
+                enabled = false;
+                throw;
+            }
             // TODO: VibeReview: Should we abstract the connecting processes etc. similar to Core/Net/INetChannel?
             // Answer (2026-09-05): yes, when the Unity Transport channel lands. The shape is an
             // INetListener (Poll + TryAccept(out INetChannel)) on the server and an INetConnector
@@ -209,14 +170,19 @@ namespace Caelix
             }
         }
 
-        private void OnDestroy()
+        protected override void OnSingletonDestroyed() => DisposeResources();
+
+        private void DisposeResources()
         {
-            destroyed = true;
-            if (s_current == this) s_current = null;
+            initialized = false;
             Client?.Dispose();
             Client = null;
             Server?.Dispose();
             Server = null;
+            clientEnd?.Dispose();
+            clientEnd = null;
+            serverEnd?.Dispose();
+            serverEnd = null;
         }
 
         private CaelixWorldConfig BuildWorldConfig()
@@ -271,7 +237,7 @@ namespace Caelix
         /// </summary>
         private void FixedUpdate()
         {
-            if (Server == null || Client == null)
+            if (!IsCurrent || Server == null || Client == null)
             {
                 return;
             }
@@ -300,7 +266,7 @@ namespace Caelix
 
         private void Update()
         {
-            if (Server == null || Client == null)
+            if (!IsCurrent || Server == null || Client == null)
             {
                 return;
             }
@@ -376,6 +342,7 @@ namespace Caelix
         public void Step(int count = 1)
         {
             EnsureInitialized();
+            if (!IsCurrent || !initialized) return;
             PushSettings();
             Server.Step(Mathf.Max(1, count));
         }
@@ -413,6 +380,8 @@ namespace Caelix
         public void Save(string path)
         {
             EnsureInitialized();
+            if (!IsCurrent || !initialized)
+                throw new InvalidOperationException("Save/load requires an enabled, initialized host that owns the singleton slot.");
             path = EnsureWorldSaveExtension(path);
             World.Save(path);
         }
@@ -438,6 +407,8 @@ namespace Caelix
         public void Load(string path)
         {
             EnsureInitialized();
+            if (!IsCurrent || !initialized)
+                throw new InvalidOperationException("Save/load requires an enabled, initialized host that owns the singleton slot.");
             path = EnsureWorldSaveExtension(path);
             World.Load(path);
             Debug.Log($"Loaded Caelix world from {path}", this);

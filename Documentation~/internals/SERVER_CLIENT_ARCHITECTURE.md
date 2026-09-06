@@ -112,11 +112,16 @@ host by convention and registers:
 2. otherwise a `CaelixHost` found through the parents;
 3. otherwise `CaelixHost.Current`, the host of this process.
 
-**There is one host per process.** A host claims `CaelixHost.Current` in
-`EnsureInitialized` and `OnEnable` and releases it in `OnDisable` and
-`OnDestroy`; a second enabled host logs an error, still initializes so that
-nothing throws, and is not the one components find. `Current` falls back to a
-scene search, because a component's `OnEnable` may run before the host's.
+**There is one enabled host per process.** `CaelixHost` inherits
+`MonoSingleton<CaelixHost>`. Ownership is claimed before resource initialization
+and released on disable or destruction. A duplicate logs an error and disables
+itself before creating a server/client. It can be explicitly re-enabled after the
+owner releases the slot. `Current` finds an existing enabled scene component
+before its `Awake`, without creating or initializing anything. The base does not
+persist objects across scenes. A disabled host retains its resources until
+destruction and resumes them when re-enabled; only the enabled owner may tick,
+save, or load. Initialization failures clean up partial resources and disable
+the host.
 
 The per-scene lookup (`FindForScene`, `All`) went. A host owns a server, a
 client and a channel between them, so one host per scene meant several
