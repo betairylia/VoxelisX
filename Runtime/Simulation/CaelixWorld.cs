@@ -659,7 +659,11 @@ namespace Caelix.Simulation
             JobHandle tickHandle;
             using (s_AutomataStageScheduleMarker.Auto())
             {
-                tickHandle = AutomataStage.Schedule(automataTickBuf, default);
+                // Packed colors are material payloads, not gameplay block IDs.
+                // Keep snapshot, dirty and replication work running normally.
+                tickHandle = BlockEncoding.PackedSceneColor
+                    ? default
+                    : AutomataStage.Schedule(automataTickBuf, default);
             }
 
             using (s_WorkDispatchMarker.Auto())

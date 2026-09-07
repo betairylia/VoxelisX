@@ -35,8 +35,13 @@
 #define CAELIX_MATERIAL_TABLE_SIZE 65536u
 StructuredBuffer<VoxelMaterial> g_Materials;
 RWStructuredBuffer<VoxelMaterial> g_MaterialsOut;
+#if !defined(CAELIX_PACKED_SCENE_COLOR)
+#define CAELIX_SOURCE_MATERIAL GetMaterial
 #undef GET_MATERIAL
 #define GET_MATERIAL(id) g_Materials[uint(id) & 0xFFFFu]
+#else
+#define CAELIX_SOURCE_MATERIAL GetMaterial_Color
+#endif
 
 #include "../RayPayload.hlsl"
 #include "../Utils/Utils.hlsl"
@@ -84,7 +89,7 @@ void CaelixBakeMaterialsAlbedo(uint3 id : SV_DispatchThreadID)
         return;
     }
 
-    g_MaterialsOut[id.x].albedo = GetMaterial(int(id.x)).albedo;
+    g_MaterialsOut[id.x].albedo = CAELIX_SOURCE_MATERIAL(int(id.x)).albedo;
 }
 
 [numthreads(64, 1, 1)]
@@ -95,7 +100,7 @@ void CaelixBakeMaterialsEmission(uint3 id : SV_DispatchThreadID)
         return;
     }
 
-    g_MaterialsOut[id.x].emission = GetMaterial(int(id.x)).emission;
+    g_MaterialsOut[id.x].emission = CAELIX_SOURCE_MATERIAL(int(id.x)).emission;
 }
 
 [numthreads(64, 1, 1)]
@@ -106,7 +111,7 @@ void CaelixBakeMaterialsScalars(uint3 id : SV_DispatchThreadID)
         return;
     }
 
-    VoxelMaterial material = GetMaterial(int(id.x));
+    VoxelMaterial material = CAELIX_SOURCE_MATERIAL(int(id.x));
     g_MaterialsOut[id.x].smoothness = material.smoothness;
     g_MaterialsOut[id.x].metallic = material.metallic;
     g_MaterialsOut[id.x].IOR = material.IOR;

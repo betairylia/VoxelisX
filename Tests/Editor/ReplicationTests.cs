@@ -17,6 +17,42 @@ namespace Caelix.Tests
     /// </summary>
     public unsafe class ReplicationTests
     {
+        private sealed class CountingAutomaton : Caelix.Tick.ITickHook<CaelixWorld.AutomataStageInputs>
+        {
+            public int Calls;
+
+            public bool Execute(CaelixWorld.AutomataStageInputs inputs,
+                Unity.Jobs.JobHandle stageStart, Unity.Jobs.JobHandle chained,
+                out Unity.Jobs.JobHandle handle)
+            {
+                Calls++;
+                handle = chained;
+                return true;
+            }
+        }
+
+        [Test]
+        public void PackedSceneMode_DisablesAutomataButStillReplicatesEdits()
+        {
+            using var rig = new Rig();
+            var automaton = new CountingAutomaton();
+            rig.World.AutomataStage.RegisterHook(automaton);
+            rig.World.CreateEntity(EntityA, RigidTransform.identity, isStatic: true);
+            var position = new int3(7, 2, 3);
+            rig.World.SetBlock(EntityA, position, new Block(PackedSceneColor.Opaque(4, 12, 20)));
+            rig.Server.Step();
+            rig.Client.Receive();
+            AssertReplicaMatchesServer(rig, rig.Client);
+
+            var changed = new Block(PackedSceneColor.Emissive(15, 8, 1, 2));
+            rig.World.SetBlock(EntityA, position, changed);
+            rig.Server.Step();
+            rig.Client.Receive();
+            Assert.That(automaton.Calls, Is.EqualTo(BlockEncoding.PackedSceneColor ? 0 : 2));
+            Assert.That(rig.World.GetEntity(EntityA).GetBlock(position), Is.EqualTo(changed));
+            AssertReplicaMatchesServer(rig, rig.Client);
+        }
+
         private struct TestEvent
         {
             public int Value;

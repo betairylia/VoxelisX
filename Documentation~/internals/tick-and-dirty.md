@@ -78,6 +78,12 @@ is handled by physics and alien propagation rather than that local propagation l
 
 ## Clock and pause behavior
 
+When `BlockEncoding.PackedSceneColor` is compiled on, `CaelixWorld` skips all
+registered automata hooks. Packed scene materials do not represent gameplay block
+IDs. Snapshot handling, dirty propagation, physics and replication still run, so
+loading scenes and applying edits continue to update the client. This is owned by
+the engine world and applies to Titania hooks too; it is not a runtime setting.
+
 `CaelixHost.FixedUpdate` pushes settings and calls `Server.Tick()`. `Tick()` honors
 `Frozen` after the first tick. Its initial frozen tick publishes initial state but
 leaves edit commands queued. An explicit `Step()` consumes queued edits and runs

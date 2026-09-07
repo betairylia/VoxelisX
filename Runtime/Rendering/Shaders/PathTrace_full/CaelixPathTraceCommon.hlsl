@@ -159,7 +159,7 @@ bool AdvanceDeltaRay(RayPayload payload, inout RayDesc ray, inout CaelixPathStat
     {
         // Transparency
         int sourceMaterialID = path.previousTransparentMaterial;
-        int destinationMaterialID = materialID;
+        int destinationMaterialID = GetTransparentMaterialId(materialID);
         bool hasDestinationTransparentMaterial = destinationMaterialID != 0;
 
         float3 interfaceNormal = SafeNormalize(worldNormal);
@@ -284,7 +284,7 @@ void CaelixShadeVoxelHit(
     else
     {
         int sourceMaterialID = path.previousTransparentMaterial;
-        int destinationMaterialID = materialID;
+        int destinationMaterialID = GetTransparentMaterialId(materialID);
         bool hasPreviousTransparentMaterial = sourceMaterialID != 0;
         bool hasDestinationTransparentMaterial = destinationMaterialID != 0;
         VoxelMaterial previousTransparentMaterial = GET_MATERIAL(sourceMaterialID);
