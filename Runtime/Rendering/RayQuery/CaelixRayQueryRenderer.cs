@@ -218,10 +218,10 @@ namespace Caelix.Rendering.RayQuery
         /// </summary>
         /// <remarks>
         /// Pass 1 emits the render jobs and drops sectors that went away. Pass 2a consumes the
-        /// finished jobs and settles every sector's pool range. Pass 2b uploads bricks and updates
-        /// the acceleration structure. 2a and 2b are separate loops on purpose: 2a can grow the
-        /// pool, which replaces its buffer, and 2b is what re-uploads every sector whose generation
-        /// then became stale.
+        /// finished jobs and settles every sector's pool range. Pass 2b writes bricks and updates
+        /// the acceleration structure. 2a and 2b are separate loops on purpose: 2a can grow a page,
+        /// which replaces its buffer and moves every range on it, so no sector may write its records
+        /// before every sector has settled its range.
         /// </remarks>
         public void Tick()
         {
@@ -336,6 +336,10 @@ namespace Caelix.Rendering.RayQuery
                 view.ShouldResetMotionVectors = false;
             }
 
+            // One batched write of every record staged above. Per-sector dispatches would ask the
+            // driver for one staging copy of the buffer each — see CaelixBrickGpuOps.
+            Pool.Ops.FlushScatter();
+
             Instances.Flush();
 
             poolPages = Pool.PageCount;
@@ -396,6 +400,9 @@ namespace Caelix.Rendering.RayQuery
             MaterialTable?.Dispose();
             MaterialTable = null;
             MaterialsBaked = false;
+
+            // Nothing may be left staged when the batch's buffers go away.
+            Pool?.Ops?.FlushScatter();
 
             Pool?.Dispose();
             Pool = null;

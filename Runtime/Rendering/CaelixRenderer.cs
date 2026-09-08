@@ -99,6 +99,12 @@ public class CaelixRenderer : MonoBehaviour
     public CaelixRayQueryInstanceTable Instances { get; private set; }
 
     /// <summary>
+    /// The kernels that move brick records, for <see cref="CaelixBrickStorage.PerSector"/> storage.
+    /// In pool storage <see cref="CaelixBrickPool.Ops"/> is used instead and this stays null.
+    /// </summary>
+    private CaelixBrickGpuOps perSectorOps;
+
+    /// <summary>
     /// Private instance of <see cref="brickMat"/> with the storage mode's keyword enabled.
     /// </summary>
     /// <remarks>
@@ -163,6 +169,9 @@ public class CaelixRenderer : MonoBehaviour
     {
         if (!UsesBrickPool)
         {
+            // Per-sector buffers still need the record-moving kernels: a resized buffer carries its
+            // records over on the GPU, and every render job scatters its staged records with them.
+            perSectorOps ??= new CaelixBrickGpuOps();
             SectorRenderer.sectorMaterial = brickMat;
             return;
         }
@@ -199,6 +208,9 @@ public class CaelixRenderer : MonoBehaviour
 
     /// <summary>The pool sector renderers write into, or null in per-sector storage.</summary>
     private CaelixBrickPool ActivePool => UsesBrickPool ? Pool : null;
+
+    /// <summary>The record-moving kernels for the current storage mode.</summary>
+    private CaelixBrickGpuOps ActiveOps => UsesBrickPool ? Pool?.Ops : perSectorOps;
 
     /// <summary>
     /// The instance table sector renderers publish into, or null in the storage modes that use a
@@ -433,8 +445,16 @@ public class CaelixRenderer : MonoBehaviour
         Instances?.Dispose();
         Instances = null;
 
+        // Nothing may be left staged when the batch's buffers go away. Both are flushed rather than
+        // only the active one, because the storage mode can change while the component runs.
+        Pool?.Ops?.FlushScatter();
+        perSectorOps?.FlushScatter();
+
         Pool?.Dispose();
         Pool = null;
+
+        perSectorOps?.Dispose();
+        perSectorOps = null;
 
         if (pooledBrickMat != null)
         {
@@ -464,8 +484,8 @@ public class CaelixRenderer : MonoBehaviour
     /// <para>
     /// 2a and 2b are separate loops even in per-sector storage, so the CPU-side ordering does not
     /// depend on the storage mode. In pool storage the split is required: 2a can grow the pool,
-    /// which replaces a page's buffer, and 2b is what re-uploads every sector whose generation then
-    /// became stale.
+    /// which replaces a page's buffer and moves every range on it, so no sector may write its
+    /// records before every sector has settled its range.
     /// </para>
     /// </remarks>
     public void Tick()
@@ -483,6 +503,7 @@ public class CaelixRenderer : MonoBehaviour
 
         EnsureBrickStorage();
         CaelixBrickPool pool = ActivePool;
+        CaelixBrickGpuOps ops = ActiveOps;
         CaelixRayQueryInstanceTable instances = ActiveInstances;
 
         frameId += 1;
@@ -533,7 +554,7 @@ public class CaelixRenderer : MonoBehaviour
                 var key = (view, kvp.Key);
                 if (!sectorRenderers.TryGetValue(key, out SectorRenderer renderer)) continue;
 
-                renderer.ApplyCompletedRenderJob(pool);
+                renderer.ApplyCompletedRenderJob(pool, ops);
             }
         }
 
@@ -550,7 +571,7 @@ public class CaelixRenderer : MonoBehaviour
                 var key = (view, sectorPos);
                 if (!sectorRenderers.TryGetValue(key, out SectorRenderer renderer)) continue;
 
-                renderer.UploadBricks(pool);
+                renderer.UploadBricks(pool, ops);
                 renderer.RenderModifyAS(ref _voxelScene, view, sectorPos, pool, instances);
 
                 // Call sector tick
@@ -560,6 +581,10 @@ public class CaelixRenderer : MonoBehaviour
             // Every sector of this view has consumed the reset; its motion vectors are settled.
             view.ShouldResetMotionVectors = false;
         }
+
+        // One batched write of every record staged above. Per-sector dispatches would ask the driver
+        // for one staging copy of the buffer each — see CaelixBrickGpuOps.
+        ops?.FlushScatter();
 
         // One upload for every record written above; a no-op when nothing changed.
         instances?.Flush();

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Unity.Collections;
+using Unity.Mathematics;
 using UnityEngine;
 
 namespace Caelix.Rendering.RayQuery
@@ -26,18 +27,25 @@ namespace Caelix.Rendering.RayQuery
     /// <c>Shaders/CaelixBrickPages.hlsl</c>.
     /// </para>
     /// <para>
-    /// <b>Why compaction is free.</b> Sectors own power-of-two-sized ranges (see
+    /// <b>Why compaction.</b> Sectors own power-of-two-sized ranges (see
     /// <see cref="SectorRenderer.GetCapacity"/>), handed out by a per-page bump pointer with a
     /// per-capacity free list. That fragments while a world streams: freed ranges are only reused by
-    /// a sector of the exact same size. Growing a page allocates a NEW buffer and does not copy the
-    /// old contents, so every sector on it has to re-upload its whole range anyway; re-packing the
-    /// live ranges at the same time costs nothing and is what keeps a page from growing past the
-    /// buffer cap out of fragmentation alone.
+    /// a sector of the exact same size. Re-packing the live ranges when a page grows is what keeps a
+    /// page from growing past the buffer cap out of fragmentation alone. It is not free — the live
+    /// records are copied into the new buffer by <see cref="CaelixBrickGpuOps.CopyRanges"/> — but a
+    /// growth already copies every live brick, and packing them costs nothing on top of that.
+    /// </para>
+    /// <para>
+    /// <b>Records live only on the GPU.</b> Sectors keep no host copy of their brick records, so the
+    /// pool can never ask one to re-upload: every range this class moves, it moves with a compute
+    /// kernel (<see cref="Ops"/>). A sector only writes the bricks its render-data job actually
+    /// rewrote, through <see cref="CaelixBrickGpuOps.Scatter"/>.
     /// </para>
     /// <para>
     /// <b>Why handles are classes.</b> Compaction moves ranges, so the pool has to be able to
-    /// rewrite a sector's offset in place. A sector notices the move because
-    /// <see cref="PageGeneration"/> changed, re-uploads, and republishes its instance record.
+    /// rewrite a sector's offset in place. A sector notices the move by comparing the handle's
+    /// current offset and page against the ones its instance record names, and republishes the
+    /// record.
     /// </para>
     /// </remarks>
     public sealed class CaelixBrickPool : IDisposable
@@ -178,6 +186,12 @@ namespace Caelix.Rendering.RayQuery
         /// <summary>Estimated VRAM usage of every page in bytes.</summary>
         public ulong VRAMUsage => (ulong)TotalCapacityBricks * SectorRenderer.BRICK_DATA_LENGTH * 4;
 
+        /// <summary>
+        /// The kernels that move brick records between and inside page buffers. Also what sectors
+        /// scatter their staged records with, so the pool owns the single shared instance.
+        /// </summary>
+        public CaelixBrickGpuOps Ops { get; private set; }
+
         // Logged once: the message names a scene-authoring problem, and repeating it every frame
         // costs more than the allocation that failed.
         private bool warnedExhausted;
@@ -198,6 +212,7 @@ namespace Caelix.Rendering.RayQuery
             // power of two, so a limit that is not one only wastes the tail of the page.
             PageCapacityLimitBricks = Math.Max(4096, PrevPow2((int)Math.Min(limit, int.MaxValue)));
 
+            Ops = new CaelixBrickGpuOps();
             OpenPage(initialCapacityBricks);
         }
 
@@ -221,8 +236,9 @@ namespace Caelix.Rendering.RayQuery
         }
 
         /// <summary>
-        /// Generation of one page's buffer, starting at 0. A sector whose uploaded generation
-        /// differs must re-upload its whole range. Returns -1 for a page that is not open.
+        /// Generation of one page's buffer, starting at 0: how often the page has been replaced.
+        /// Returns -1 for a page that is not open. Diagnostics only — a growth carries the records
+        /// over itself, so nothing has to react to a generation change.
         /// </summary>
         public int PageGeneration(int page)
         {
@@ -331,22 +347,61 @@ namespace Caelix.Rendering.RayQuery
         }
 
         /// <summary>
-        /// Copies <paramref name="brickCount"/> bricks starting at <paramref name="firstBrick"/>
-        /// from a sector's host buffer into the same position of its range.
+        /// Resizes a range, carrying the records it already holds over to the new one.
         /// </summary>
-        public void Upload(Handle handle, NativeArray<int> hostWords, int firstBrick, int brickCount)
+        /// <param name="old">
+        /// The range to replace, or null / an invalid handle for a sector that has none yet. Freed
+        /// by this call; do not use it afterwards.
+        /// </param>
+        /// <param name="capacityBricks">Size of the new range, laid out as <see cref="Allocate"/> wants it.</param>
+        /// <returns>
+        /// The new range, or an invalid handle when the pool is full — in which case
+        /// <paramref name="old"/> has been freed as well and the sector has to regenerate every
+        /// brick once an allocation succeeds.
+        /// </returns>
+        /// <remarks>
+        /// The new range is allocated while the old one is still live, because allocating can grow
+        /// and therefore compact a page: doing it the other way round would leave the old range's
+        /// records at an offset the pool has since handed to somebody else. The old handle's offset
+        /// is only read after <see cref="Allocate"/> has returned, so it is the offset compaction
+        /// left it at.
+        /// </remarks>
+        public Handle Reallocate(Handle old, int capacityBricks)
         {
-            if (brickCount <= 0 || handle == null || !handle.IsValid)
+            if (old == null || !old.IsValid)
             {
-                return;
+                return Allocate(capacityBricks);
             }
 
-            int length = SectorRenderer.BRICK_DATA_LENGTH;
-            pages[handle.Page].Buffer.SetData(
-                hostWords,
-                firstBrick * length,
-                (handle.OffsetBricks + firstBrick) * length,
-                brickCount * length);
+            Handle fresh = Allocate(capacityBricks);
+            if (!fresh.IsValid)
+            {
+                Free(old);
+                return fresh;
+            }
+
+            int copyBricks = Math.Min(old.CapacityBricks, capacityBricks);
+            if (copyBricks > 0)
+            {
+                NativeArray<uint4> ranges = new NativeArray<uint4>(1, Allocator.Temp);
+                ranges[0] = new uint4((uint)old.OffsetBricks, (uint)fresh.OffsetBricks, (uint)copyBricks, 0u);
+
+                if (old.Page == fresh.Page)
+                {
+                    // A freshly allocated range comes off a free list or the bump pointer, so it can
+                    // never overlap a live range: one dispatch reading and writing the page is safe.
+                    Ops.MoveRanges(pages[fresh.Page].Buffer, ranges, 1, copyBricks);
+                }
+                else
+                {
+                    Ops.CopyRanges(pages[old.Page].Buffer, pages[fresh.Page].Buffer, ranges, 1, copyBricks);
+                }
+
+                ranges.Dispose();
+            }
+
+            Free(old);
+            return fresh;
         }
 
         /// <summary>
@@ -356,10 +411,10 @@ namespace Caelix.Rendering.RayQuery
         /// <param name="extraBricks">Bricks the caller is about to allocate on it.</param>
         /// <returns>False when even a fully compacted page could not hold the request.</returns>
         /// <remarks>
-        /// The new buffer's contents are NOT copied: every sector on the page sees the new
-        /// generation and re-uploads its whole range, which is also what makes moving the ranges
-        /// free. Growth targets 1.5x what the page actually needs, rounded up to a power of two, so
-        /// a streaming world does not double its way past the buffer cap.
+        /// Every live record is copied into the new buffer on the GPU, so a growth is invisible to
+        /// the sectors on the page apart from their handles' new offsets. Growth targets 1.5x what
+        /// the page actually needs, rounded up to a power of two, so a streaming world does not
+        /// double its way past the buffer cap.
         /// </remarks>
         private bool Grow(Page page, int extraBricks)
         {
@@ -378,9 +433,17 @@ namespace Caelix.Rendering.RayQuery
             // size leaves each range aligned to its own size and the page with one contiguous tail
             // instead of holes. OrderByDescending rather than List.Sort because it is stable, and
             // this runs a handful of times per session.
+            //
+            // The copy table is built in the same pass, from each range's offset BEFORE it is
+            // rewritten. Destinations are contiguous from 0, so the cumulative start a thread binary
+            // searches for is the destination offset itself.
+            NativeArray<uint4> ranges = new NativeArray<uint4>(Math.Max(1, page.Live.Count), Allocator.Temp);
+            int rangeCount = 0;
             int offset = 0;
             foreach (Handle handle in page.Live.OrderByDescending(h => h.CapacityBricks))
             {
+                ranges[rangeCount++] = new uint4(
+                    (uint)handle.OffsetBricks, (uint)offset, (uint)handle.CapacityBricks, (uint)offset);
                 handle.OffsetBricks = offset;
                 offset += handle.CapacityBricks;
             }
@@ -388,11 +451,19 @@ namespace Caelix.Rendering.RayQuery
             page.FreeByCapacity.Clear();
             page.UsedBricks = page.LiveBricks;
 
-            page.Buffer?.Dispose();
+            GraphicsBuffer previous = page.Buffer;
             page.Buffer = new GraphicsBuffer(
                 GraphicsBuffer.Target.Raw, newCapacity * SectorRenderer.BRICK_DATA_LENGTH, 4);
             page.CapacityBricks = newCapacity;
             page.Generation++;
+
+            if (previous != null && rangeCount > 0)
+            {
+                Ops.CopyRanges(previous, page.Buffer, ranges, rangeCount, page.LiveBricks);
+            }
+
+            previous?.Dispose();
+            ranges.Dispose();
 
             return true;
         }
@@ -466,6 +537,9 @@ namespace Caelix.Rendering.RayQuery
             }
 
             pages.Clear();
+
+            Ops?.Dispose();
+            Ops = null;
         }
     }
 }

@@ -41,20 +41,82 @@ A ray query has no shader table, so there is no per-instance binding. Two global
 Sectors own power-of-two ranges inside a page, handed out by a bump pointer with a per-capacity free
 list, and hold a `CaelixBrickPool.Handle` — a class, because the pool moves ranges. **Growth
 compacts.** When a page has to grow, its live ranges are re-packed contiguously (largest first, so
-every range stays aligned to its own size), the free lists are dropped, the page gets a new buffer
-and its `Generation` goes up. Contents are not copied, but that costs nothing: a new buffer already
-forces every sector on the page to re-upload, and the generation is exactly how a sector notices.
-Without compaction, streaming fragments the pool badly enough that it asks for a buffer past the
-size cap. Growth targets 1.5x what the page needs rather than doubling; when a page cannot grow any
-further the pool opens the next one, and when every page is full it logs an error once and returns an
-invalid handle — that sector is then skipped, and it retries every tick.
+every range stays aligned to its own size), the free lists are dropped and the page gets a new
+buffer. Without compaction, streaming fragments the pool badly enough that it asks for a buffer past
+the size cap. Growth targets 1.5x what the page needs rather than doubling; when a page cannot grow
+any further the pool opens the next one, and when every page is full it logs an error once and
+returns an invalid handle — that sector is then skipped, and it retries every tick.
 
 A sector that only moved (new range, or a compacted page) republishes its instance record but does
-**not** rebuild its RTAS instance: the AABBs did not change.
+**not** rebuild its RTAS instance: the AABBs did not change. It notices the move by comparing its
+handle's current offset and page against the ones its record names.
+
+## Records live only on the GPU
+
+No sector keeps a host copy of its brick records. That copy used to be 1096 bytes per brick — about
+4 GB on the 8K San Miguel and 7 GB on the 16K citadel — and existed purely so that a record could be uploaded again whenever a buffer
+was replaced. `CaelixBrickGpuOps` (`Runtime/Rendering/CaelixBrickGpuOps.cs`, three kernels in
+`Runtime/Resources/CaelixBrickPoolOps.compute`) removes it:
+
+* **A page that grows** copies every live range into the new buffer with `CopyRanges`, in the same
+  pass that decides the compacted layout. So compaction is no longer free — it costs one GPU copy of
+  the page's live data — but a growth already copies all of it, and packing costs nothing on top.
+* **A range that is resized** goes through `CaelixBrickPool.Reallocate`, which allocates the new
+  range *while the old one is still live* (allocating can compact the page and move it), copies
+  `min(old, new)` bricks with `MoveRanges` on one page or `CopyRanges` across two, and then frees the
+  old range. If the pool is full, both ranges are gone and the sector sets `needsFullRebuild`, which
+  makes its next render job re-emit every brick.
+* **The render job** writes only the bricks it actually rewrote, into two `TempJob` lists
+  (`stagingWords`, one 274-word record each, and `stagingSlots`, the renderer brick id of each), and
+  the sector hands them to `StageScatter`. A record is staged zeroed, so the job no longer has to
+  clear stale words.
+
+### Scatters are batched, and that is load-bearing
+
+`StageScatter` does not dispatch. It copies the sector's records into that sector's own region of one
+**frame staging buffer** and appends one `uint2` per record — staging index, absolute destination
+brick — to a list keyed by the destination buffer. The renderer calls `FlushScatter()` once, after
+every sector has staged; the flush writes the pair buffer and then dispatches once per destination.
+
+The reason is a device hang. The first version wrote a small reused staging buffer and dispatched per
+sector. Writing a buffer the GPU is still reading makes the D3D12 backend rename or stage the **whole
+buffer** per call, so on the first frame after a world load about 6800 sectors each asked for their
+own 4.5 MB copy: `Ran out of Graphics Ring Buffer space` in the Editor log, 25 GB of non-local memory
+reserved by the driver with none available, then `DXGI_ERROR_DEVICE_HUNG` (887a0006). Batched, a frame
+costs one buffer's worth of upload memory however many sectors moved, and the dispatch count drops to
+one per destination — one per page in pool storage.
+
+Three details keep that property:
+
+* **Two frame staging buffers alternate.** A batch that reaches `MaxBatchBricks` (2^18 records, about
+  287 MB) flushes early and switches buffers, so a second flush in one frame never rewrites the
+  buffer the first flush's dispatches are still reading. The pair buffers alternate with them.
+* **Growing a staging buffer carries the batch over with `CopyRanges`,** which does leave a dispatch
+  on the buffer the next write touches — the pattern above, once per growth. It is bounded rather
+  than removed: the buffer starts at 2^14 records (18 MB), never shrinks, and grows by powers of two,
+  so a cold frame does a handful and a settled renderer does none.
+* **`CopyRanges` / `MoveRanges` stay immediate.** There are a handful per frame and their range table
+  is a few bytes. Ordering still works out: every range copy of a frame is recorded during pass 2a
+  and every scatter dispatch in the flush after pass 2b, so a copy always carries the previous
+  frames' records and the scatter then overwrites the ones this frame's job rewrote.
+
+After 300 consecutive flushes with nothing staged, the staging and pair buffers are released; they
+come back on demand.
+
+Two things are load-bearing in the job. Records are addressed by slot, and `SparseBrickIdTable` hands
+a freed id straight back out, so a brick removed early in a sweep and a brick added later in the same
+sweep can name the same slot; two staged records for one slot would race inside the scatter kernel,
+so the later brick takes over the removal's (already zeroed) record instead of appending a second
+one. And `syncRecord` is down to one element, "some AABB changed" — the modified-brick range it used
+to carry only existed to bound a partial upload.
+
+The host AABB list stays. The AABB `GraphicsBuffer` is thrown away and replaced whenever a tight box
+moves (Unity builds static AABB geometry once per buffer and ignores later writes), and a fresh
+buffer needs the complete set, not the boxes that changed.
 
 `CaelixRayQueryRenderer.Tick` therefore runs its GPU sync in two loops: pass 2a settles every
-sector's pool range (which can grow and compact a page), pass 2b uploads bricks and updates the
-acceleration structure. Doing both in one loop would upload into a buffer a later sector then
+sector's pool range (which can grow and compact a page), pass 2b scatters records and updates the
+acceleration structure. Doing both in one loop would write into a buffer a later sector then
 replaces.
 
 ## DXR on the pool
@@ -63,7 +125,11 @@ The two backends differ in two independent ways: the dispatch model (shader tabl
 kernel) and the brick storage (a buffer per sector vs. the shared pool). `CaelixRenderer.brickStorage`
 separates them: set it to `SharedPool` and the DXR path stores its bricks in the same
 `CaelixBrickPool`, so a DXR-vs-ray-query comparison measures only the dispatch model — almost.
-`PerSector` is the default and is unchanged.
+`PerSector` is the default. It keeps no host copy either: `CaelixRenderer` owns its own
+`CaelixBrickGpuOps`, a resized per-sector buffer carries its records over with `CopyRanges`, and the
+staged records are scattered into it exactly as they are into a pool range. It is the mode with the
+most scatter destinations — one buffer per sector, thousands of them — which is why the batch groups
+by destination rather than assuming a handful of pages.
 
 In pool mode `CaelixRenderer` runs a private instance of `brickMat` with the `CAELIX_BRICK_POOL`
 keyword enabled (the asset on disk is never touched). There is no page switch in the hit group: the

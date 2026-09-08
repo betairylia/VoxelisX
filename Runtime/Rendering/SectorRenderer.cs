@@ -131,7 +131,18 @@ namespace Caelix.Rendering
         }
 
         private NativeList<AABB> hostAABBBuffer;
-        private NativeList<int> hostBrickBuffer;
+
+        /// <summary>
+        /// The brick records the last render job rewrote, plus the slot each of them belongs in.
+        /// Created per job, consumed and disposed by <see cref="UploadBricks"/>.
+        /// </summary>
+        /// <remarks>
+        /// There is no host copy of the sector's records: only the bricks a job actually touched
+        /// ever exist on the CPU, and only until they have been scattered into brick storage.
+        /// </remarks>
+        private NativeList<int> stagingWords;
+        private NativeList<int> stagingSlots;
+
 #if !CAELIX_RENDER_DISABLE_CULLING
         private SparseBrickIdTable rendererBrickMap;
 #endif
@@ -149,11 +160,11 @@ namespace Caelix.Rendering
         }
 
         /// <summary>
-        /// Gets the estimated host memory usage in bytes for this renderer's buffers.
+        /// Gets the estimated host memory usage in bytes for this renderer's buffers: the AABB list
+        /// only, because brick records are never mirrored on the host.
         /// </summary>
         public ulong MemoryUsage =>
-            (ulong)((hostBrickBuffer.IsCreated ? hostBrickBuffer.Capacity * sizeof(int) : 0)
-                  + (hostAABBBuffer.IsCreated ? hostAABBBuffer.Capacity * sizeof(float) * 6 : 0));
+            (ulong)(hostAABBBuffer.IsCreated ? hostAABBBuffer.Capacity * sizeof(float) * 6 : 0);
 
         private GraphicsBuffer aabbBuffer;
         private GraphicsBuffer brickBuffer;
@@ -169,28 +180,12 @@ namespace Caelix.Rendering
         /// </remarks>
         private CaelixBrickPool.Handle poolHandle;
 
-        /// <summary>Generation of the handle's page the range's contents were uploaded under; -1 = never.</summary>
-        private int uploadedGeneration = -1;
-
-        /// <summary>Brick index range modified since the last upload. -1 means "nothing pending".</summary>
-        private int pendingUploadMin = -1;
-        private int pendingUploadMax = -1;
-
-        /// <summary>Set when the whole range has to be written again rather than the pending range.</summary>
-        private bool needsFullUpload;
-
         /// <summary>
-        /// Per-sector mode's equivalent of <see cref="needsFullUpload"/>: the brick buffer was just
-        /// replaced, so the deferred upload has to write all of it.
+        /// Set when the sector's records are gone and every brick has to be generated again: the
+        /// pool had no room, so the range — and with it everything the pool would have carried over
+        /// — was dropped. Pool storage only; a per-sector buffer cannot fail to allocate.
         /// </summary>
-        private bool pendingFullUpload;
-
-        /// <summary>
-        /// Set when the instance record is stale but the geometry is not: the sector's range moved
-        /// to a different offset or page. Republishing the property block is enough; rebuilding the
-        /// RTAS instance would throw away a perfectly good BLAS.
-        /// </summary>
-        private bool recordDirty;
+        private bool needsFullRebuild;
 
         /// <summary>Word offset and page the instance record currently names; -1 = never published.</summary>
         private int publishedBrickBase = -1;
@@ -207,7 +202,6 @@ namespace Caelix.Rendering
         /// </remarks>
         private int instanceSlot = -1;
 
-        private bool GPUBufferInitialized => brickBuffer != null && brickBuffer.IsValid();
         private bool HostBufferInitialized => hostAABBBuffer.IsCreated;
 
         internal static int GetCapacity(int requestedLength)
@@ -240,8 +234,6 @@ namespace Caelix.Rendering
             if (!HostBufferInitialized)
             {
                 hostAABBBuffer = new NativeList<AABB>(requestedCapacity, Allocator.Persistent);
-                hostBrickBuffer = new NativeList<int>(requestedCapacity * BRICK_DATA_LENGTH,
-                    Allocator.Persistent);
 #if !CAELIX_RENDER_DISABLE_CULLING
                 rendererBrickMap = SparseBrickIdTable.New(Allocator.Persistent);
 #endif
@@ -251,19 +243,22 @@ namespace Caelix.Rendering
             // Since we already know how many bricks will be there before running the actual data-filling job
 #if CAELIX_RENDER_DISABLE_CULLING
             hostAABBBuffer.Resize(requestedCapacity, NativeArrayOptions.ClearMemory);
-            hostBrickBuffer.Resize(requestedCapacity * BRICK_DATA_LENGTH, NativeArrayOptions.ClearMemory);
 #endif
         }
-        
+
         /// <summary>
-        /// Prepares and resizes GPU buffers if needed to accommodate current brick count.
+        /// Resizes this sector's own brick buffer to the current brick count, carrying the records
+        /// it already holds over to the new one.
         /// </summary>
-        /// <param name="forcedAABBRealloc">
-        /// Force reallocation of the GraphicsBuffer.
-        /// Used to tackle Unity's limitation of non-refittable AABB BLASs.
-        /// </param>
-        /// <returns>True if buffers were reallocated; false if existing buffers are sufficient.</returns>
-        public bool ExtendGPUBuffers()
+        /// <param name="ops">The kernels that do the carry-over.</param>
+        /// <returns>True if the buffer was replaced; false if the existing one is the right size.</returns>
+        /// <remarks>
+        /// The copy is what lets the render-data job stage only the bricks it rewrote: every other
+        /// record exists nowhere else, so a fresh buffer would otherwise lose it. Brick ids are
+        /// stable (<see cref="SparseBrickIdTable"/> never rearranges them), so slot k stays slot k
+        /// and the surviving prefix is a single range.
+        /// </remarks>
+        private bool ExtendGPUBuffers(CaelixBrickGpuOps ops)
         {
             using (s_ExtendGpuBuffersMarker.Auto())
             {
@@ -273,17 +268,19 @@ namespace Caelix.Rendering
                     return false;
                 }
 
-                if (!GPUBufferInitialized)
-                {
-                    EnsureAABBBuffer();
-                }
-
-                // Allocate our buffers on GPU side
-
                 var new_brickBuffer =
                     new GraphicsBuffer(
                         GraphicsBuffer.Target.Raw,
                         requestedCapacity * BRICK_DATA_LENGTH, 4);
+
+                int copyBricks = Math.Min(currentGPUBrickBufferCapacity, requestedCapacity);
+                if (brickBuffer != null && copyBricks > 0)
+                {
+                    NativeArray<uint4> ranges = new NativeArray<uint4>(1, Allocator.Temp);
+                    ranges[0] = new uint4(0u, 0u, (uint)copyBricks, 0u);
+                    ops.CopyRanges(brickBuffer, new_brickBuffer, ranges, 1, copyBricks);
+                    ranges.Dispose();
+                }
 
                 brickBuffer?.Dispose();
 
@@ -314,7 +311,7 @@ namespace Caelix.Rendering
         // Please ensure call RenderEmitJob and Render (after emit job) in the same frame / tick
         private JobHandle jobHandle;
         private GenerateSectorRenderDataJob rendererJob;
-        private bool isRealloc, jobScheduled;
+        private bool jobScheduled;
         private RayTracingAABBsInstanceConfig AABBconfig;
         private bool isDirty;
         private bool shouldRemove = false;
@@ -341,26 +338,6 @@ namespace Caelix.Rendering
             return HashUInt(seed);
         }
 
-        /// <summary>
-        /// Completes the render job and uploads data to GPU buffers.
-        /// Must be called after RenderEmitJob() in the same frame.
-        /// </summary>
-        /// <remarks>
-        /// This method waits for the Burst job to complete, then uploads modified brick data
-        /// and AABBs to the GPU. Only the dirty range of data is uploaded to minimize bandwidth.
-        /// </remarks>
-        public void Render()
-        {
-            if (!jobScheduled)
-            {
-                return;
-            }
-
-            jobHandle.Complete();
-            ApplyCompletedRenderJob(null);
-            UploadBricks(null);
-        }
-
         internal bool TryGetScheduledJobHandle(out JobHandle handle)
         {
             handle = jobHandle;
@@ -368,22 +345,25 @@ namespace Caelix.Rendering
         }
 
         /// <summary>
-        /// Consumes the completed render job: reallocates the AABB buffer when a tight box moved,
-        /// sizes this sector's brick storage, uploads the AABBs and records which bricks still have
-        /// to be uploaded.
+        /// Consumes the completed render job: replaces the AABB buffer when a tight box moved and
+        /// sizes this sector's brick storage.
         /// </summary>
         /// <param name="pool">
         /// The shared brick pool in pool mode; null in per-sector mode, where this sector owns its
         /// own <c>g_bricks</c> buffer.
         /// </param>
+        /// <param name="ops">
+        /// The kernels that move brick records. In pool mode this is the pool's own instance; in
+        /// per-sector mode it is the one <see cref="CaelixRenderer"/> owns.
+        /// </param>
         /// <remarks>
-        /// Brick uploads are deferred to <see cref="UploadBricks"/> in both modes, so the CPU-side
-        /// ordering does not depend on the storage mode. In pool mode the deferral is load-bearing:
-        /// resizing a range can grow a pool page, which replaces its <see cref="GraphicsBuffer"/>
-        /// and re-packs every other range on it, so every sector must learn its final range before
-        /// any of them writes.
+        /// The staged brick records are deliberately written later, in <see cref="UploadBricks"/>,
+        /// in both modes, so the CPU-side ordering does not depend on the storage mode. In pool mode
+        /// the deferral is load-bearing: resizing a range can grow a pool page, which replaces its
+        /// <see cref="GraphicsBuffer"/> and re-packs every other range on it, so every sector must
+        /// learn its final range before any of them writes.
         /// </remarks>
-        internal void ApplyCompletedRenderJob(CaelixBrickPool pool)
+        internal void ApplyCompletedRenderJob(CaelixBrickPool pool, CaelixBrickGpuOps ops)
         {
             if (!jobScheduled)
             {
@@ -392,66 +372,39 @@ namespace Caelix.Rendering
 
             jobScheduled = false;
 
-            int minModified = rendererJob.syncRecord[0];
-            int maxModified = rendererJob.syncRecord[1];
-            bool shouldUpdateAABB = rendererJob.syncRecord[2] > 0;
+            bool aabbChanged = rendererJob.syncRecord[0] > 0;
             rendererJob.syncRecord.Dispose();
 
             // TODO: FIXME: Remove this forced realloc
             // if use fixed AABB or find ways to refit a tight AABB
-            // (In per-sector mode ExtendGPUBuffers below is what creates the first AABB buffer; in
-            // pool mode there is no such call, so the first update has to create it here.)
-            bool aabbRealloc = shouldUpdateAABB || (pool != null && aabbBuffer == null);
+            bool aabbRealloc = aabbChanged || aabbBuffer == null;
             if (aabbRealloc)
             {
                 EnsureAABBBuffer();
 
                 // Invalidate the AABBconfig so later it recreates
                 AABBconfig.aabbCount = 0;
-            }
 
-            bool poolRangeChanged = false;
-            if (pool == null)
-            {
-                isRealloc = ExtendGPUBuffers();
-            }
-            else
-            {
-                int requestedCapacity = GetCapacity(BrickBufferSize);
-                if (requestedCapacity != (poolHandle?.CapacityBricks ?? 0))
-                {
-                    if (poolHandle != null)
-                    {
-                        pool.Free(poolHandle);
-                    }
-
-                    poolHandle = pool.Allocate(requestedCapacity);
-                    needsFullUpload = true;
-                    poolRangeChanged = true;
-                }
-            }
-
-            if (minModified <= maxModified)
-            {
                 using (s_UploadDataMarker.Auto())
                 {
-                    // Partially update buffers
-                    // TODO: This will not work since we need to realloc the full AABB buffer everytime.
-                    // Therefore, always upload the full aabbBuffer unless later we can refit the AABB BLAS.
-                    // aabbBuffer.SetData(hostAABBBuffer.AsArray(), minModified, minModified, maxModified - minModified + 1);
-                    aabbBuffer.SetData(hostAABBBuffer.AsArray());
+                    // Always the whole host list, and only here: the buffer was just replaced, so a
+                    // partial write would leave every untouched box uninitialised — and while the
+                    // boxes did not change there is nothing to write at all.
+                    if (hostAABBBuffer.IsCreated && hostAABBBuffer.Length > 0)
+                    {
+                        aabbBuffer.SetData(hostAABBBuffer.AsArray());
+                    }
                 }
-
-                pendingUploadMin = pendingUploadMin < 0 ? minModified : Math.Min(pendingUploadMin, minModified);
-                pendingUploadMax = pendingUploadMax < 0 ? maxModified : Math.Max(pendingUploadMax, maxModified);
             }
 
             if (pool == null)
             {
-                // The brick buffer was just replaced, so the deferred upload has to write all of it.
-                pendingFullUpload |= isRealloc;
+                bool brickRealloc = ExtendGPUBuffers(ops);
 
-                if (shouldUpdateAABB || isRealloc)
+                // A per-sector buffer cannot fail to allocate, so the records are never lost.
+                needsFullRebuild = false;
+
+                if (aabbRealloc || brickRealloc)
                 {
                     using (s_HandleReallocMarker.Auto())
                     {
@@ -465,129 +418,94 @@ namespace Caelix.Rendering
                     }
                 }
 
-                isRealloc = false;
                 return;
+            }
+
+            int requestedCapacity = GetCapacity(BrickBufferSize);
+            if (requestedCapacity != (poolHandle?.CapacityBricks ?? 0))
+            {
+                // Reallocate carries the records the range already holds over to the new one, so a
+                // resize costs a GPU copy rather than a full regeneration.
+                poolHandle = pool.Reallocate(poolHandle, requestedCapacity);
             }
 
             if (poolHandle == null || !poolHandle.IsValid)
             {
-                // Every page is full. needsFullUpload stays set, and the capacity test above retries
-                // the allocation on every tick because an invalid handle reports capacity 0. Until
-                // one succeeds RenderModifyAS skips this sector, so it is simply not drawn.
+                // Every page is full, and the old range went with the failed reallocation, so every
+                // brick has to be generated again once there is room. The capacity test above
+                // retries on every tick because an invalid handle reports capacity 0. Until one
+                // succeeds RenderModifyAS skips this sector, so it is simply not drawn.
+                needsFullRebuild = true;
                 return;
             }
+
+            needsFullRebuild = false;
 
             if (aabbRealloc)
             {
                 AABBconfig = default;
                 isDirty = true;
             }
-
-            if (poolRangeChanged)
-            {
-                // A new range only moves what the property block publishes; the AABBs are the same.
-                recordDirty = true;
-            }
         }
 
         /// <summary>
-        /// Writes this sector's brick records to the GPU. Deferred out of
+        /// Adds this sector's staged brick records to the frame's scatter batch. Deferred out of
         /// <see cref="ApplyCompletedRenderJob"/> so that in pool mode every sector has settled its
         /// range — and therefore any page growth has happened — before the first write lands.
         /// </summary>
         /// <param name="pool">The shared brick pool in pool mode; null in per-sector mode.</param>
-        internal void UploadBricks(CaelixBrickPool pool)
+        /// <param name="ops">The kernels that do the scatter.</param>
+        /// <remarks>
+        /// Staged, not dispatched: the renderer flushes the whole frame's batch once, after every
+        /// sector has staged. See <see cref="CaelixBrickGpuOps"/> for why writing and dispatching
+        /// per sector hung the device.
+        /// </remarks>
+        internal void UploadBricks(CaelixBrickPool pool, CaelixBrickGpuOps ops)
         {
-            if (!hostBrickBuffer.IsCreated)
-            {
-                pendingFullUpload = false;
-                pendingUploadMin = -1;
-                pendingUploadMax = -1;
-                return;
-            }
-
-            if (pool == null)
-            {
-                UploadBricksPerSector();
-                return;
-            }
-
-            if (poolHandle == null || !poolHandle.IsValid)
+            if (!stagingSlots.IsCreated)
             {
                 return;
             }
 
-            int brickCount = hostBrickBuffer.Length / BRICK_DATA_LENGTH;
-            if (brickCount <= 0)
+            if (stagingSlots.Length > 0)
             {
-                pendingUploadMin = -1;
-                pendingUploadMax = -1;
-                return;
-            }
+                GraphicsBuffer target = null;
+                int slotBase = 0;
 
-            Debug.Assert(
-                brickCount <= poolHandle.CapacityBricks,
-                "SectorRenderer: host brick buffer is larger than the pool range reserved for it.");
-
-            using (s_UploadDataMarker.Auto())
-            {
-                int pageGeneration = pool.PageGeneration(poolHandle.Page);
-                if (uploadedGeneration != pageGeneration || needsFullUpload)
+                if (pool == null)
                 {
-                    // Either the page replaced its buffer (contents are gone, and compaction moved
-                    // every range on it) or this sector moved to a different range. Both mean the
-                    // whole range has to be written again, and both move the brick base the property
-                    // block publishes — but neither touches the geometry, so the RTAS instance stands.
-                    pool.Upload(poolHandle, hostBrickBuffer.AsArray(), 0, brickCount);
-                    uploadedGeneration = pageGeneration;
-                    needsFullUpload = false;
-                    recordDirty = true;
+                    target = brickBuffer;
                 }
-                else if (pendingUploadMin >= 0)
+                else if (poolHandle != null && poolHandle.IsValid)
                 {
-                    int last = Math.Min(pendingUploadMax, brickCount - 1);
-                    if (last >= pendingUploadMin)
+                    Debug.Assert(
+                        BrickBufferSize <= poolHandle.CapacityBricks,
+                        "SectorRenderer: the sector has more bricks than the pool range reserved for it.");
+
+                    target = pool.GetPageBuffer(poolHandle.Page);
+                    slotBase = poolHandle.OffsetBricks;
+                }
+
+                if (target != null)
+                {
+                    using (s_UploadDataMarker.Auto())
                     {
-                        pool.Upload(poolHandle, hostBrickBuffer.AsArray(), pendingUploadMin, last - pendingUploadMin + 1);
+                        ops.StageScatter(
+                            target, slotBase, stagingWords.AsArray(), stagingSlots.AsArray(), stagingSlots.Length);
                     }
                 }
             }
 
-            pendingUploadMin = -1;
-            pendingUploadMax = -1;
+            // StageScatter has copied the records into the frame staging buffer, so the lists go
+            // back immediately rather than waiting for the flush.
+            DisposeStaging();
         }
 
-        /// <summary>
-        /// The per-sector upload, unchanged from when it lived in <see cref="ApplyCompletedRenderJob"/>:
-        /// the whole buffer after a realloc, otherwise only the modified brick range.
-        /// </summary>
-        private void UploadBricksPerSector()
+        /// <summary>Releases the per-job staging lists.</summary>
+        private void DisposeStaging()
         {
-            if (brickBuffer == null || pendingUploadMin < 0)
-            {
-                pendingFullUpload = false;
-                pendingUploadMin = -1;
-                pendingUploadMax = -1;
-                return;
-            }
-
-            using (s_UploadDataMarker.Auto())
-            {
-                if (pendingFullUpload)
-                {
-                    brickBuffer.SetData(hostBrickBuffer.AsArray());
-                }
-                else
-                {
-                    brickBuffer.SetData(hostBrickBuffer.AsArray(), pendingUploadMin * BRICK_DATA_LENGTH,
-                        pendingUploadMin * BRICK_DATA_LENGTH,
-                        (pendingUploadMax - pendingUploadMin + 1) * BRICK_DATA_LENGTH);
-                }
-            }
-
-            pendingFullUpload = false;
-            pendingUploadMin = -1;
-            pendingUploadMax = -1;
+            if (stagingWords.IsCreated) stagingWords.Dispose();
+            if (stagingSlots.IsCreated) stagingSlots.Dispose();
         }
 
         /// <summary>
@@ -618,7 +536,6 @@ namespace Caelix.Rendering
                     instanceSlot = -1;
                 }
 
-                recordDirty = false;
                 Dispose();
             }
         }
@@ -692,21 +609,27 @@ namespace Caelix.Rendering
             // the GPU to point the hit group at. Always true in per-sector mode, which owns its buffer.
             bool hasPool = poolHandle != null && poolHandle.IsValid;
             bool storageReady = pool == null || hasPool;
+
+            // Fall back to the last published range while the pool has no room for this sector, so a
+            // retrack cannot overwrite a live instance's record with a null range. Both are -1 in
+            // per-sector storage, where nothing is ever published.
+            int brickBaseWords = hasPool ? poolHandle.OffsetBricks * BRICK_DATA_LENGTH : publishedBrickBase;
+            int brickPage = hasPool ? poolHandle.Page : publishedPage;
+
             bool rebuildsInstance = (isDirty || settles) && BrickBufferSize > 0 && storageReady;
             bool retracksInstance = hasRenderable && (!entity.IsStatic || resetsMotionVectors);
-            // Pool mode only: a moved range changes only what the property block names, so it is
-            // published without touching the acceleration structure.
-            bool republishesRecord = recordDirty && hasRenderable && hasPool;
+            // Pool mode only: a range that moved — this sector resized, or another one grew and
+            // compacted the page — changes only what the property block names, so it is published
+            // without touching the acceleration structure.
+            bool rangeMoved = hasPool && (brickBaseWords != publishedBrickBase || brickPage != publishedPage);
+            bool republishesRecord = rangeMoved && hasRenderable;
 
             if (rebuildsInstance || retracksInstance || republishesRecord)
             {
                 if (usesTable)
                 {
                     // Table mode: nothing rides on the shader record, so no property block is ever
-                    // created. Same fallback-to-published logic as the property-block path below.
-                    int brickBaseWords = hasPool ? poolHandle.OffsetBricks * BRICK_DATA_LENGTH : publishedBrickBase;
-                    int brickPage = hasPool ? poolHandle.Page : publishedPage;
-
+                    // created.
                     if (brickBaseWords >= 0 && brickPage >= 0)
                     {
                         // The slot is claimed once and kept for this renderer's whole life: it IS the
@@ -719,7 +642,6 @@ namespace Caelix.Rendering
                         table.Set(instanceSlot, prevObjectToWorld, brickBaseWords, brickPage, (uint)sectorHashSeed);
                         publishedBrickBase = brickBaseWords;
                         publishedPage = brickPage;
-                        recordDirty = false;
                     }
                 }
                 else
@@ -728,26 +650,18 @@ namespace Caelix.Rendering
                     // This matches the sector-instance RTAS layout, but it means moving sectors need a
                     // property-block update even when voxel geometry is unchanged. If that gets expensive,
                     // move these matrices to a structured buffer keyed by a stable instance/sector id.
-                    // g_bricks needs no refresh here: Render() re-binds it whenever the buffer is replaced.
+                    // g_bricks needs no refresh here in per-sector storage: ApplyCompletedRenderJob
+                    // re-binds it whenever the buffer is replaced.
                     EnsureMaterialProperties().SetMatrix("_PrevObjectToWorld", prevObjectToWorld);
 
-                    if (pool != null)
+                    if (pool != null && brickBaseWords >= 0 && brickPage >= 0)
                     {
-                        // Fall back to the last published range while the pool has no room for this
-                        // sector, so a retrack cannot overwrite a live instance's record with a null range.
-                        int brickBaseWords = hasPool ? poolHandle.OffsetBricks * BRICK_DATA_LENGTH : publishedBrickBase;
-                        int brickPage = hasPool ? poolHandle.Page : publishedPage;
-
-                        if (brickBaseWords >= 0 && brickPage >= 0)
-                        {
-                            // The page buffer goes through the per-instance binding the DXR path has anyway;
-                            // a page switch inside the intersection shader is far slower (see CaelixBrickTrace.hlsl).
-                            matProps.SetBuffer("g_bricks", pool.GetPageBuffer(brickPage));
-                            matProps.SetInt("_BrickBase", brickBaseWords);
-                            publishedBrickBase = brickBaseWords;
-                            publishedPage = brickPage;
-                            recordDirty = false;
-                        }
+                        // The page buffer goes through the per-instance binding the DXR path has anyway;
+                        // a page switch inside the intersection shader is far slower (see CaelixBrickTrace.hlsl).
+                        matProps.SetBuffer("g_bricks", pool.GetPageBuffer(brickPage));
+                        matProps.SetInt("_BrickBase", brickBaseWords);
+                        publishedBrickBase = brickBaseWords;
+                        publishedPage = brickPage;
                     }
                 }
             }
@@ -828,7 +742,7 @@ namespace Caelix.Rendering
 
         /// <summary>
         /// Schedules a Burst job to generate render data from dirty voxel data.
-        /// Must be followed by Render() to complete the job and upload to GPU.
+        /// Must be followed by ApplyCompletedRenderJob() and UploadBricks() in the same frame.
         /// </summary>
         /// <param name="sector">The sector to render.</param>
         /// <remarks>
@@ -840,8 +754,10 @@ namespace Caelix.Rendering
         /// </remarks>
         public void RenderEmitJob(SectorHandle sector, SectorNeighborHandles neighborHandle)
         {
-            bool initialUpload = !HostBufferInitialized;
-            if (shouldRemove || sector.IsRendererEmpty || (!initialUpload && !sector.IsRendererRequireUpdate))
+            // A sector that has never been touched, or one whose records the pool dropped, has to
+            // emit every brick rather than only the ones the dirty flags name.
+            bool fullRebuild = needsFullRebuild || !HostBufferInitialized;
+            if (shouldRemove || sector.IsRendererEmpty || (!fullRebuild && !sector.IsRendererRequireUpdate))
             {
                 return;
             }
@@ -851,16 +767,20 @@ namespace Caelix.Rendering
             // Job generating renderer buffers
             rendererJob = new GenerateSectorRenderDataJob()
             {
-                forceFullUpload = initialUpload,
+                forceFullUpload = fullRebuild,
                 sectorHandle = sector,
                 neighbors = neighborHandle,
 #if !CAELIX_RENDER_DISABLE_CULLING
                 rendererBrickMap = rendererBrickMap,
 #endif
                 aabbBuffer = hostAABBBuffer,
-                brickData = hostBrickBuffer,
-                syncRecord = new NativeArray<int>(3, Allocator.TempJob)
+                stagingWords = new NativeList<int>(BRICK_DATA_LENGTH * 16, Allocator.TempJob),
+                stagingSlots = new NativeList<int>(16, Allocator.TempJob),
+                syncRecord = new NativeArray<int>(1, Allocator.TempJob)
             };
+
+            stagingWords = rendererJob.stagingWords;
+            stagingSlots = rendererJob.stagingSlots;
             jobHandle = rendererJob.Schedule();
 
             jobScheduled = true;
@@ -879,18 +799,22 @@ namespace Caelix.Rendering
         /// </summary>
         public void Dispose()
         {
+            // A job may still be in flight when a view despawns mid-frame; its syncRecord and its
+            // staging lists are TempJob allocations this renderer owns.
             if (jobScheduled)
             {
                 jobHandle.Complete();
                 rendererJob.syncRecord.Dispose();
                 jobScheduled = false;
             }
+
+            DisposeStaging();
+
             if (hostAABBBuffer.IsCreated) hostAABBBuffer.Dispose();
-            if (hostBrickBuffer.IsCreated) hostBrickBuffer.Dispose();
 #if !CAELIX_RENDER_DISABLE_CULLING
             if (rendererBrickMap.IsCreated) rendererBrickMap.Dispose();
 #endif
-            
+
             aabbBuffer?.Dispose();
             brickBuffer?.Dispose();
         }

@@ -56,27 +56,42 @@ namespace Caelix.Rendering
             public NativeList<AABB> aabbBuffer;
 
             /// <summary>
-            /// Buffer containing packed brick data for ray tracing shaders.
+            /// The brick records this run rewrote, back to back,
+            /// <see cref="BRICK_DATA_LENGTH"/> words each.
             /// </summary>
-            public NativeList<int> brickData;
+            /// <remarks>
+            /// Records exist on the GPU only. This job stages the ones it touched and the renderer
+            /// scatters them into its brick storage, so nothing keeps a host copy of a whole
+            /// sector's bricks (1096 bytes each, several GB on a large world).
+            /// </remarks>
+            public NativeList<int> stagingWords;
 
             /// <summary>
-            /// Array recording the range of modified bricks: [minModified, maxModified, aabbModified (0/1)].
-            /// Used to optimize GPU buffer uploads by only sending changed data.
+            /// Renderer brick id of each record in <see cref="stagingWords"/>, in the same order:
+            /// where the record has to land inside the sector's brick storage.
+            /// </summary>
+            public NativeList<int> stagingSlots;
+
+            /// <summary>
+            /// One element: 1 when any AABB changed, 0 otherwise. A changed AABB forces the renderer
+            /// to replace its AABB buffer, because Unity builds static AABB geometry once per
+            /// (buffer, count) and ignores later writes.
             /// </summary>
             public NativeArray<int> syncRecord;
 
             public void Execute()
             {
-                syncRecord[0] = 65536;
-                syncRecord[1] = 0;
-                syncRecord[2] = 0;
+                syncRecord[0] = 0;
 
                 ref Sector sector = ref sectorHandle.Get();
 
 #if !CAELIX_RENDER_DISABLE_CULLING
                 helper = new SectorNeighborhoodReaderHelper(sectorHandle, neighbors);
 #endif
+
+                // Staging index of every slot a removal has already written, or -1. Allocated on the
+                // first removal only; see TakeStagingRecord for what it is for.
+                NativeArray<int> removedStagingBase = default;
 
                 // Sweep all bricks to find dirty ones
                 unsafe
@@ -100,20 +115,46 @@ namespace Caelix.Rendering
                         short bid = sector.brickIdx[brickIdxAbs];
                         if (bid == Sector.BRICKID_EMPTY) continue;
 
-                        // Create record for this brick
-                        // var record = new BrickUpdateInfo()
-                        // {
-                        //     brickIdx = bid,
-                        //     brickIdxAbsolute = (short)brickIdxAbs,
-                        //     type = isAdded ? BrickUpdateInfo.Type.Added : BrickUpdateInfo.Type.Modified
-                        // };
-
-                        ProcessBrick(bid, (short)brickIdxAbs, isAdded);
+                        ProcessBrick(bid, (short)brickIdxAbs, isAdded, ref removedStagingBase);
                     }
+                }
+
+                if (removedStagingBase.IsCreated)
+                {
+                    removedStagingBase.Dispose();
                 }
             }
 
-            private unsafe void ProcessBrick(short bid, short bidAbsolute, bool isAdded)
+            /// <summary>
+            /// Reserves the staging record a brick's words are written into: a zeroed block appended
+            /// to <see cref="stagingWords"/>, with <paramref name="rendererBrickId"/> appended to
+            /// <see cref="stagingSlots"/>.
+            /// </summary>
+            /// <remarks>
+            /// A brick removed earlier in this sweep has already staged a zeroed record for its
+            /// slot, and <see cref="SparseBrickIdTable"/> hands a freed id straight back out, so a
+            /// brick added later in the same sweep can claim that very slot. Two staged records for
+            /// one slot would race inside the scatter kernel — its threads run in no order — so the
+            /// removal's record is taken over instead of a second one being appended. It is already
+            /// zeroed, which is exactly what a fresh record needs.
+            /// </remarks>
+            private int TakeStagingRecord(int rendererBrickId, ref NativeArray<int> removedStagingBase)
+            {
+                if (removedStagingBase.IsCreated && removedStagingBase[rendererBrickId] >= 0)
+                {
+                    int reused = removedStagingBase[rendererBrickId];
+                    removedStagingBase[rendererBrickId] = -1;
+                    return reused;
+                }
+
+                int stagingBase = stagingWords.Length;
+                stagingWords.Resize(stagingBase + BRICK_DATA_LENGTH, NativeArrayOptions.ClearMemory);
+                stagingSlots.Add(rendererBrickId);
+                return stagingBase;
+            }
+
+            private unsafe void ProcessBrick(
+                short bid, short bidAbsolute, bool isAdded, ref NativeArray<int> removedStagingBase)
             {
                 // Buffer start position
                 int3 brickPos = Sector.ToBrickPos(bidAbsolute);
@@ -152,13 +193,10 @@ namespace Caelix.Rendering
                             uint block0Data = GetRendererBlockData(block0, brickBlockPos + new int3(bx, by, bz));
                             uint block1Data = GetRendererBlockData(block1, brickBlockPos + new int3(bx + 1, by, bz));
                             
-                            // Do nothing if blocks are empty
+                            // Do nothing if blocks are empty. The staged record starts zeroed, so an
+                            // empty pair simply stays zero.
                             if (Block.IsRendererDataEmpty(block0Data) && Block.IsRendererDataEmpty(block1Data))
                             {
-                                if (rendererBrickBase >= 0)
-                                {
-                                    brickData[rendererBrickBase + BRICK_BLOCK_DATA_OFFSET + rendererBlockIdx] = 0;
-                                }
                                 continue;
                             }
 #else
@@ -170,39 +208,22 @@ namespace Caelix.Rendering
                             if (rendererBrickId == -1)
                             {
 #if !CAELIX_RENDER_DISABLE_CULLING
-                                // Alloc the buffer
+                                // Claim this brick's renderer id
                                 bool requireExtension = false;
                                 isAdded = rendererBrickMap.AddBrick(brickPos, out rendererBrickId, out requireExtension);
                                 if (requireExtension)
                                 {
                                     aabbBuffer.Resize(rendererBrickMap.Capacity, NativeArrayOptions.UninitializedMemory);
-                                    brickData.Resize(rendererBrickMap.Capacity * BRICK_DATA_LENGTH, NativeArrayOptions.UninitializedMemory);
-                                }
-
-                                rendererBrickBase = rendererBrickId * BRICK_DATA_LENGTH;
-                                
-                                // Clear previous blocks
-                                for (int i = 0; i < rendererBlockIdx; i++)
-                                {
-                                    brickData[rendererBrickBase + BRICK_BLOCK_DATA_OFFSET + i] = 0;
                                 }
 #else
-                                // Alloc the buffer
                                 rendererBrickId = bid;
-                                rendererBrickBase = rendererBrickId * BRICK_DATA_LENGTH;
 #endif
-                                // Record modifications for Host-Device buffer sync
-                                syncRecord[0] = math.min(syncRecord[0], rendererBrickId);
-                                syncRecord[1] = math.max(syncRecord[1], rendererBrickId);
-                
-                                // Reset coarse occupancy
-                                for (int i = 0; i < BRICK_OCCUPANCY_WORDS; i++)
-                                {
-                                    brickData[rendererBrickBase + BRICK_INFO_WORDS + i] = 0;
-                                }
+                                // The record is staged zeroed, so the block words before this one,
+                                // the occupancy words and the info words need no explicit reset.
+                                rendererBrickBase = TakeStagingRecord(rendererBrickId, ref removedStagingBase);
                             }
-                            
-                            brickData[rendererBrickBase + BRICK_BLOCK_DATA_OFFSET + rendererBlockIdx] =
+
+                            stagingWords[rendererBrickBase + BRICK_BLOCK_DATA_OFFSET + rendererBlockIdx] =
                                 unchecked((int)((block0Data << 16) | block1Data));
 
                             if (!Block.IsRendererDataEmpty(block0Data))
@@ -233,9 +254,21 @@ namespace Caelix.Rendering
 #endif
                     if (removed != SparseBrickIdTable.EMPTY)
                     {
-                        brickData[removed * BRICK_DATA_LENGTH] = PackBrickInfo(bidAbsolute, coarseOccupancy);
-                        syncRecord[0] = math.min(syncRecord[0], removed);
-                        syncRecord[1] = math.max(syncRecord[1], removed);
+                        if (!removedStagingBase.IsCreated)
+                        {
+                            removedStagingBase = new NativeArray<int>(
+                                SparseBrickIdTable.CAPACITY, Allocator.Temp, NativeArrayOptions.UninitializedMemory);
+                            for (int i = 0; i < SparseBrickIdTable.CAPACITY; i++)
+                            {
+                                removedStagingBase[i] = -1;
+                            }
+                        }
+
+                        // An all-zero record: no occupancy, so the slot traces as empty even if the
+                        // acceleration structure has not been rebuilt yet.
+                        int removedBase = TakeStagingRecord(removed, ref removedStagingBase);
+                        stagingWords[removedBase] = PackBrickInfo(bidAbsolute, coarseOccupancy);
+                        removedStagingBase[removed] = removedBase;
 
                         // A NaN min.x marks the AABB as an inactive primitive (DXR spec),
                         // so the freed slot drops out of the BLAS at the next build instead
@@ -245,19 +278,19 @@ namespace Caelix.Rendering
                             min = new Vector3(float.NaN, float.NaN, float.NaN),
                             max = new Vector3(float.NaN, float.NaN, float.NaN)
                         };
-                        syncRecord[2] = 1;
+                        syncRecord[0] = 1;
                     }
 
                     // We are done
                     return;
                 }
 
-                brickData[rendererBrickBase] = PackBrickInfo(bidAbsolute, coarseOccupancy);
-                brickData[rendererBrickBase + 1] = PackBrickTightBounds(occupiedMin, occupiedMax);
+                stagingWords[rendererBrickBase] = PackBrickInfo(bidAbsolute, coarseOccupancy);
+                stagingWords[rendererBrickBase + 1] = PackBrickTightBounds(occupiedMin, occupiedMax);
 
                 // AABB tight to the occupied blocks, in sector-local block coordinates.
                 // Rewritten on every rebuild since edits can grow or shrink the bounds;
-                // syncRecord[2] (=> BLAS rebuild) is raised only when the box actually
+                // syncRecord[0] (=> BLAS rebuild) is raised only when the box actually
                 // changed, or for new bricks whose slot may hold garbage/NaN.
                 AABB tightAABB = new AABB()
                 {
@@ -286,7 +319,7 @@ namespace Caelix.Rendering
                     //     min = brickBlockPos.ToVector3Int(),
                     //     max = (brickBlockPos + 8).ToVector3Int()
                     // };
-                    syncRecord[2] = 1;
+                    syncRecord[0] = 1;
                 }
             }
 
@@ -359,7 +392,7 @@ namespace Caelix.Rendering
                 uint wordBit = 1u << (microBit & 31);
 
                 coarseOccupancy |= 1u << coarseBit;
-                brickData[bp + wordOffset] = unchecked((int)(uint)brickData[bp + wordOffset] | (int)wordBit);
+                stagingWords[bp + wordOffset] = unchecked((int)(uint)stagingWords[bp + wordOffset] | (int)wordBit);
             }
         }
     }
