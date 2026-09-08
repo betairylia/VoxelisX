@@ -5,6 +5,7 @@
 
 #include "UnityRayQuery.cginc"
 
+#pragma target 5.0
 #pragma kernel CaelixPathTraceKernel
 #pragma kernel CaelixBakeMaterialsAlbedo
 #pragma kernel CaelixBakeMaterialsEmission

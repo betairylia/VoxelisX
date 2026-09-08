@@ -332,6 +332,17 @@ float3 CaelixSampleSkyRadiance(float3 direction)
     return g_Sky.SampleLevel(sampler_g_Sky, direction, 0).xyz * 2.0f;
 }
 
+// Last line of defence before a radiance write. The denoise chain has no NaN/Inf guard of its
+// own and cannot have a cheap one: a NaN tap poisons an a-trous sum whatever its weight, the
+// temporal lerp keeps it for as long as the pixel reprojects, and the colour resolve's bilinear
+// history taps grow it by a few pixels per frame. One bad pixel from here therefore turns into a
+// ~125 px blob that never clears, so a bad sample is dropped to black instead. Any channel bad
+// drops the whole colour: a partially-NaN float3 is not a usable sample either.
+float3 CaelixSanitizeRadiance(float3 radiance)
+{
+    return any(isnan(radiance) | isinf(radiance)) ? float3(0.0f, 0.0f, 0.0f) : radiance;
+}
+
 float3 ComputeRayDirection(float2 ndcCoords)
 {
     float3 viewDirection = normalize(float3(ndcCoords.x * g_AspectRatio, ndcCoords.y, -1));     // view space ray
@@ -509,7 +520,7 @@ void CaelixPathTraceMain()
         if((path.bounceIndex & BOUNCEIDX_DETERM_MASK) > 0)
         {
             float3 outColor = CaelixSampleSkyRadiance(ray.Direction);
-            DeterministicRadianceTarget[outputLaunchIndex] = float4(path.throughput * outColor, 1.0f);
+            DeterministicRadianceTarget[outputLaunchIndex] = float4(CaelixSanitizeRadiance(path.throughput * outColor), 1.0f);
             g_CurrentDepthHistory[outputLaunchIndex] = K_T_MAX;
         }
         // Direct miss
@@ -543,7 +554,7 @@ void CaelixPathTraceMain()
 
         // Primary emission is deterministic (nothing was sampled to obtain it), so it bypasses
         // the denoiser. path.throughput carries the delta chain's transmission.
-        DeterministicRadianceTarget[outputLaunchIndex] = float4(path.throughput * primaryShade.emission, 1.0f);
+        DeterministicRadianceTarget[outputLaunchIndex] = float4(CaelixSanitizeRadiance(path.throughput * primaryShade.emission), 1.0f);
 
         // Keep the primary albedo out of the temporal history. It is applied once during final
         // composition so replaced voxels can reuse lighting history.
@@ -603,8 +614,11 @@ void CaelixPathTraceMain()
     #if ENABLE_RUSSIAN_ROULETTE
             pathStopProbability = max(throughput.r, max(throughput.g, throughput.b));
 
-            // Dark colors have higher chance to terminate the path early.
-            if (pathStopProbability < RandomFloat01(path.rngState))
+            // Dark colors have higher chance to terminate the path early. A zero throughput
+            // (black albedo, or a medium that absorbed everything) MUST stop here: the random
+            // value is an 8-bit blue-noise sample that is exactly 0 in 1 of 256 draws, and
+            // `0 < 0` would let the path survive into `0 * (1 / 0)` = NaN below.
+            if (pathStopProbability <= 0.0f || pathStopProbability < RandomFloat01(path.rngState))
                 break;
     #endif
 
@@ -622,7 +636,7 @@ void CaelixPathTraceMain()
         // 0 hit distance (no data this frame).
         // bool primaryLobeIsSpecular = primaryShade.specularLobe > half(0.5f);
         bool primaryLobeIsSpecular = PathBounceIndexIsSpecular(path);
-        float4 stochasticOut = float4(indirectIncidentRadiance, firstSegmentHitT);
+        float4 stochasticOut = float4(CaelixSanitizeRadiance(indirectIncidentRadiance), firstSegmentHitT);
         DiffuseRadianceTarget[outputLaunchIndex] = primaryLobeIsSpecular ? float4(0, 0, 0, 0) : stochasticOut;
         SpecularRadianceTarget[outputLaunchIndex] = primaryLobeIsSpecular ? stochasticOut : float4(0, 0, 0, 0);
     }
