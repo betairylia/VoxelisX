@@ -301,11 +301,26 @@ namespace Caelix.Rendering
         /// </remarks>
         private void EnsureAABBBuffer()
         {
-            aabbBuffer?.Dispose();
+            // The live instance still references the buffer it was added with. Disposing that
+            // buffer purges the instance at once and frees its handle (Unity 6000.5, D3D12), and the
+            // remove + add in RenderModifyAS then lands on another sector's handle. Keep it until
+            // RenderModifyAS has re-added the instance; see RayQueryGroupRenderer.staleAabbBuffer.
+            if (staleAabbBuffer == null)
+            {
+                staleAabbBuffer = aabbBuffer;
+            }
+            else
+            {
+                aabbBuffer?.Dispose();
+            }
+
             aabbBuffer = new GraphicsBuffer(
                 GraphicsBuffer.Target.Structured,
                 Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS * Sector.SIZE_IN_BRICKS, 24);
         }
+
+        /// <summary>The AABB buffer the live instance still references; released at the end of <see cref="RenderModifyAS"/>.</summary>
+        private GraphicsBuffer staleAabbBuffer;
 
         // Temp variables used in Render process
         // Please ensure call RenderEmitJob and Render (after emit job) in the same frame / tick
@@ -674,7 +689,12 @@ namespace Caelix.Rendering
                 // ran, so the config was never invalidated and still carries the previous tick's flag.
                 // AABBconfig.dynamicGeometry = wantsDynamicGeometry;
 
-                AS.RemoveInstance(sectorASHandle);
+                // Only a live handle: a stale one would remove whichever instance inherited it.
+                if (hasRenderable)
+                {
+                    AS.RemoveInstance(sectorASHandle);
+                }
+
                 sectorASHandle = usesTable
                     ? AS.AddInstance(AABBconfig, objectToWorld, (uint)instanceSlot)
                     : AS.AddInstance(AABBconfig, objectToWorld);
@@ -706,6 +726,21 @@ namespace Caelix.Rendering
             previousObjectToWorld = objectToWorld;
             hasPreviousObjectToWorld = true;
             isDirty = false;
+
+            if (staleAabbBuffer != null)
+            {
+                if (hasRenderable && !rebuildsInstance)
+                {
+                    // Not re-added this tick, so the instance still references the stale buffer;
+                    // remove it explicitly rather than let the dispose purge it behind our back.
+                    AS.RemoveInstance(sectorASHandle);
+                    hasRenderable = false;
+                    isDirty = true;
+                }
+
+                staleAabbBuffer.Dispose();
+                staleAabbBuffer = null;
+            }
         }
 
         /// <summary>
@@ -816,6 +851,8 @@ namespace Caelix.Rendering
 #endif
 
             aabbBuffer?.Dispose();
+            staleAabbBuffer?.Dispose();
+            staleAabbBuffer = null;
             brickBuffer?.Dispose();
         }
     }

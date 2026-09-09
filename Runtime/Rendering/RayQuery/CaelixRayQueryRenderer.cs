@@ -68,6 +68,12 @@ namespace Caelix.Rendering.RayQuery
         /// <summary>Groups the current pass has emitted a bucketed job for. Cleared per view.</summary>
         private readonly HashSet<int3> bucketedGroups = new();
 
+        /// <summary>Handle bookkeeping shared by every group renderer of this scene renderer.</summary>
+        private readonly InstanceHandleLedger ledger = new();
+
+        /// <summary>Frame of the last <see cref="Tick"/>, to flag a renderer ticked twice in one frame.</summary>
+        private int lastTickFrame = -1;
+
         /// <summary>Groups this tick decided to drop, collected while their dictionary is being read.</summary>
         private readonly List<(EntityView view, int3 groupKey)> groupRemovalScratch = new();
 
@@ -310,6 +316,15 @@ namespace Caelix.Rendering.RayQuery
             Instances ??= new CaelixRayQueryInstanceTable();
             EnsureMaterialTable();
 
+            if (lastTickFrame == Time.frameCount)
+            {
+                Debug.LogWarning(
+                    $"CaelixRayQueryRenderer: Tick ran twice in frame {Time.frameCount}; the change list is " +
+                    "consumed once per frame, so the second run redoes every group's work.", this);
+            }
+
+            lastTickFrame = Time.frameCount;
+
             frameId += 1;
             instanceCount = (int)voxelScene.GetInstanceCount();
             JobHandle renderJobs = default;
@@ -349,7 +364,7 @@ namespace Caelix.Rendering.RayQuery
                             continue;
                         }
 
-                        renderer = new RayQueryGroupRenderer(view, groupKey, brickMat);
+                        renderer = new RayQueryGroupRenderer(view, groupKey, brickMat, ledger);
                         viewGroups[groupKey] = renderer;
                     }
 

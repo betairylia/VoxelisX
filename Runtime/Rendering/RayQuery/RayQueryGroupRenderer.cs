@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Unity.Collections;
 using Unity.Jobs;
 using Unity.Mathematics;
@@ -75,10 +76,69 @@ namespace Caelix.Rendering.RayQuery
     /// per-instance material property block.</item>
     /// </list>
     /// </remarks>
+    /// <summary>
+    /// Bookkeeping of the acceleration-structure instance handles the scene renderer owns.
+    /// </summary>
+    /// <remarks>
+    /// Unity recycles a freed handle on the very next <c>AddInstance</c> (LIFO), and
+    /// <c>RemoveInstance</c> with a handle the caller no longer owns silently deletes whoever holds
+    /// it now. A group that removes with a stale handle therefore makes two groups share one
+    /// instance, and each rebuild of either hides the other. This ledger names the colliding call
+    /// the moment it happens, with both owners, instead of leaving a silently missing group.
+    /// </remarks>
+    public sealed class InstanceHandleLedger
+    {
+        private readonly Dictionary<int, RayQueryGroupRenderer> owners = new();
+
+        /// <summary>Records that <paramref name="owner"/> now holds <paramref name="handle"/>.</summary>
+        public void Claim(int handle, RayQueryGroupRenderer owner)
+        {
+            if (handle == 0)
+            {
+                Debug.LogError($"RayQueryGroupRenderer: AddInstance failed for group {owner.GroupKey}.");
+                return;
+            }
+
+            if (owners.TryGetValue(handle, out RayQueryGroupRenderer existing) && !ReferenceEquals(existing, owner))
+            {
+                Debug.LogError(
+                    $"RayQueryGroupRenderer: handle {handle} returned for group {owner.GroupKey} is still " +
+                    $"held by group {existing.GroupKey}; a stale RemoveInstance freed it.");
+            }
+
+            owners[handle] = owner;
+        }
+
+        /// <summary>Records that <paramref name="owner"/> is about to remove <paramref name="handle"/>.</summary>
+        public void Release(int handle, RayQueryGroupRenderer owner)
+        {
+            if (!owners.TryGetValue(handle, out RayQueryGroupRenderer existing))
+            {
+                Debug.LogError(
+                    $"RayQueryGroupRenderer: group {owner.GroupKey} removes handle {handle}, which no group holds.");
+                return;
+            }
+
+            if (!ReferenceEquals(existing, owner))
+            {
+                Debug.LogError(
+                    $"RayQueryGroupRenderer: group {owner.GroupKey} removes handle {handle}, which belongs to " +
+                    $"group {existing.GroupKey}.");
+                return;
+            }
+
+            owners.Remove(handle);
+        }
+
+        /// <summary>Number of handles currently claimed.</summary>
+        public int Count => owners.Count;
+    }
+
     public class RayQueryGroupRenderer : IDisposable
     {
         private readonly Material groupMaterial;
         private readonly int groupHashSeed;
+        private readonly InstanceHandleLedger ledger;
 
         private NativeList<SectorRenderer.AABB> hostAABBBuffer;
         private SparseBrickIdTable rendererBrickMap;
@@ -95,6 +155,21 @@ namespace Caelix.Rendering.RayQuery
         private NativeList<int> stagingSlots;
 
         private GraphicsBuffer aabbBuffer;
+
+        /// <summary>
+        /// The AABB buffer the live instance still references after <see cref="aabbBuffer"/> was
+        /// replaced. Released only at the end of <see cref="RenderModifyAS"/>, never before.
+        /// </summary>
+        /// <remarks>
+        /// Disposing a GraphicsBuffer that a live acceleration-structure instance references purges
+        /// that instance at once and pushes its handle onto the LIFO free list, with no call on our
+        /// side. Both scene renderers replace buffers in one pass and remove-and-add instances in a
+        /// later pass, so an eager dispose let the first group to re-add pop the LAST purged group's
+        /// handle, and that group's own RemoveInstance then deleted it: two groups sharing one
+        /// instance, each rebuild hiding the other. Verified 2026-09-10 on 6000.5.6f1 / D3D12; see
+        /// <c>RtasAabbBufferLifetimeTests</c>.
+        /// </remarks>
+        private GraphicsBuffer staleAabbBuffer;
 
         /// <summary>This group's slice of the brick pool. Null until the first allocation.</summary>
         /// <remarks>
@@ -177,10 +252,12 @@ namespace Caelix.Rendering.RayQuery
         /// Material handed to <see cref="RayTracingAABBsInstanceConfig"/>. The ray query path never
         /// runs its hit group, but the config requires one.
         /// </param>
-        public RayQueryGroupRenderer(EntityView entity, int3 groupKey, Material material)
+        public RayQueryGroupRenderer(
+            EntityView entity, int3 groupKey, Material material, InstanceHandleLedger ledger)
         {
             GroupKey = groupKey;
             groupMaterial = material;
+            this.ledger = ledger;
             groupHashSeed = unchecked((int)ComputeGroupHashSeed(entity, groupKey));
         }
 
@@ -300,7 +377,18 @@ namespace Caelix.Rendering.RayQuery
             bool aabbRealloc = aabbChanged || aabbBuffer == null;
             if (aabbRealloc)
             {
-                aabbBuffer?.Dispose();
+                // The instance still references the buffer it was added with. Keep that one until
+                // RenderModifyAS has re-added the instance; an intermediate buffer no instance ever
+                // saw can go at once.
+                if (staleAabbBuffer == null)
+                {
+                    staleAabbBuffer = aabbBuffer;
+                }
+                else
+                {
+                    aabbBuffer?.Dispose();
+                }
+
                 aabbBuffer = new GraphicsBuffer(
                     GraphicsBuffer.Target.Structured, RenderGroup.BricksInGroup, 24);
 
@@ -459,10 +547,12 @@ namespace Caelix.Rendering.RayQuery
 
                 if (hasRenderable)
                 {
+                    ledger?.Release(groupASHandle, this);
                     AS.RemoveInstance(groupASHandle);
                 }
 
                 groupASHandle = AS.AddInstance(AABBconfig, objectToWorld, (uint)instanceSlot);
+                ledger?.Claim(groupASHandle, this);
                 hasRenderable = true;
             }
             else if (retracksInstance)
@@ -475,6 +565,36 @@ namespace Caelix.Rendering.RayQuery
             previousObjectToWorld = objectToWorld;
             hasPreviousObjectToWorld = true;
             isDirty = false;
+
+            ReleaseStaleAabbBuffer(ref AS, rebuildsInstance);
+        }
+
+        /// <summary>
+        /// Disposes the buffer the previous instance referenced, once the instance no longer does.
+        /// </summary>
+        /// <param name="AS">The acceleration structure holding the instance.</param>
+        /// <param name="rebuiltThisTick">True when the instance was removed and re-added on the new buffer.</param>
+        private void ReleaseStaleAabbBuffer(ref RayTracingAccelerationStructure AS, bool rebuiltThisTick)
+        {
+            if (staleAabbBuffer == null)
+            {
+                return;
+            }
+
+            if (hasRenderable && !rebuiltThisTick)
+            {
+                // No pool room this tick, so the instance was not re-added and still references the
+                // stale buffer. Disposing it would purge the instance silently and leave a handle
+                // that a later RemoveInstance would use against whoever inherits it. Remove it
+                // explicitly instead; isDirty keeps the re-add pending for when there is room.
+                ledger?.Release(groupASHandle, this);
+                AS.RemoveInstance(groupASHandle);
+                hasRenderable = false;
+                isDirty = true;
+            }
+
+            staleAabbBuffer.Dispose();
+            staleAabbBuffer = null;
         }
 
         /// <summary>Builds the AABB instance config if it was invalidated (or never built).</summary>
@@ -511,6 +631,7 @@ namespace Caelix.Rendering.RayQuery
 
             if (hasRenderable)
             {
+                ledger?.Release(groupASHandle, this);
                 AS.RemoveInstance(groupASHandle);
                 hasRenderable = false;
             }
@@ -554,6 +675,8 @@ namespace Caelix.Rendering.RayQuery
 
             aabbBuffer?.Dispose();
             aabbBuffer = null;
+            staleAabbBuffer?.Dispose();
+            staleAabbBuffer = null;
         }
     }
 }
