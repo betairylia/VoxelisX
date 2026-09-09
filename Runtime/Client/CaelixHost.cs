@@ -73,6 +73,13 @@ namespace Caelix
                  "fixed step. Turn off to keep the project's fixed timestep and tick at that rate instead.")]
         public bool driveFixedTimestep = true;
 
+        /// <summary>External drivers call Step and PumpClientFrame explicitly.</summary>
+        public bool ManualDrive { get; set; }
+
+        public long ClientPendingBytes => clientEnd?.PendingBytes ?? 0;
+        public long ClientPeakPendingBytes => clientEnd?.PeakPendingBytes ?? 0;
+        public long ClientReceivedBytes => clientEnd?.TotalReceivedBytes ?? 0;
+
         [Header("Alien Dirty Propagation")]
         [Tooltip("Propagate dirtiness between entities through the post-physics brick-overlap graph.")]
         public bool doAlienPropagation = false;
@@ -242,6 +249,7 @@ namespace Caelix
         /// </summary>
         private void FixedUpdate()
         {
+            if (ManualDrive) return;
             if (!IsCurrent || Server == null || Client == null)
             {
                 return;
@@ -270,6 +278,12 @@ namespace Caelix
         }
 
         private void Update()
+        {
+            if (!ManualDrive) PumpClientFrame();
+        }
+
+        /// <summary>Applies queued replication and updates presentation once, without advancing simulation.</summary>
+        public void PumpClientFrame()
         {
             if (!IsCurrent || Server == null || Client == null)
             {
@@ -351,7 +365,11 @@ namespace Caelix
             EnsureInitialized();
             if (!IsCurrent || !initialized) return;
             PushSettings();
-            Server.Step(Mathf.Max(1, count));
+            int steps = Mathf.Max(1, count);
+            long start = Stopwatch.GetTimestamp();
+            using (s_ServerTickMarker.Auto()) Server.Step(steps);
+            serverTicksElapsed += Stopwatch.GetTimestamp() - start;
+            ticksSinceLastFrame += steps;
         }
 
         #endregion

@@ -69,6 +69,14 @@ Rejected alternatives, and why:
   backlog cap, kept for a loop that has no fixed step of its own, such as a
   headless server; it calls `Tick()` too and drops the accumulator when the
   freeze stops it. Nothing calls it yet.
+- External drivers can set `CaelixHost.ManualDrive = true` to suppress its automatic
+  fixed-step and client-frame pumps. Call `Step(count)` to advance simulation, then
+  `PumpClientFrame()` to receive replication and prepare/render the client once.
+  Explicit steps contribute to `LastTickTimings.ServerTicks` and server elapsed
+  time; pumping consumes that accumulator once. World sub-buckets still describe
+  only the last tick. `ClientPendingBytes`, `ClientPeakPendingBytes`, and
+  `ClientReceivedBytes` expose the existing LocalChannel counters without exposing
+  a mutable channel. Titania's benchmark runner uses this path.
 - A connection receives every world by default. `ServerConnection.SubscribedWorlds`
   restricts it to a subset.
 - An entity lives in exactly one world. The wire address of an entity is
