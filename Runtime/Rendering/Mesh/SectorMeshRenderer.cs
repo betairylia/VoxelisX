@@ -44,6 +44,13 @@ namespace Caelix.Rendering.Meshing
         /// </summary>
         public GameObject SectorObject { get; private set; }
 
+        /// <summary>
+        /// Attachment identity of the storage this renderer reads. A replica can free a storage
+        /// unit and create a new one at the same coordinate inside one client frame, so the owner
+        /// compares this rather than the coordinate before it keeps a renderer alive.
+        /// </summary>
+        public long SectorInstanceId => sectorHandle.InstanceId;
+
         public SectorMeshRenderer(
             SectorHandle sectorHandle,
             int3 sectorPosition,

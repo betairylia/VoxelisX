@@ -50,7 +50,7 @@ namespace Caelix.Simulation
         private readonly ReplicationBatch deltaBatch = new();
 
         /// <summary>
-        /// Phase A again, for the sectors one connection has not seen yet. Rebuilt per connection
+        /// Phase A again, for the entities one connection has not seen yet. Rebuilt per connection
         /// and, like the delta, streamed in chunks rather than packed whole.
         /// </summary>
         private readonly ReplicationBatch fullBatch = new();
@@ -500,7 +500,7 @@ namespace Caelix.Simulation
             }
 
             // World lifecycle before any world replicates: WorldAdd must precede the first
-            // BrickData of a world, and ReplicateWorld relies on the world already being known.
+            // BrickBatch of a world, and ReplicateWorld relies on the world already being known.
             for (int c = 0; c < connections.Count; c++)
             {
                 if (connections[c].IsConnected)
@@ -531,11 +531,11 @@ namespace Caelix.Simulation
 
         /// <summary>
         /// Replicates one world in two phases, phase B first. Phase B is
-        /// <see cref="ServerConnection.ReplicateWorld"/>: per connection it diffs entity and sector
-        /// knowledge, packs whatever that connection still has to catch up on into
-        /// <see cref="fullBatch"/> and streams it. It records, per connection, which sectors went
-        /// out in full. Phase A then packs the tick's dirty sectors once, in parallel, into
-        /// <see cref="deltaBatch"/> — minus the sectors every connection just received in full —
+        /// <see cref="ServerConnection.ReplicateWorld"/>: per connection it diffs entity knowledge,
+        /// packs every allocated brick of whatever that connection still has to catch up on into
+        /// <see cref="fullBatch"/> and streams it. It records, per connection, which entities went
+        /// out in full. Phase A then packs the tick's changed entities once, in parallel, into
+        /// <see cref="deltaBatch"/> — minus the entities every connection just received in full —
         /// and streams them in chunks; every connection forwards a chunk before the next is built.
         /// </summary>
         private void Replicate(CaelixWorld world)
@@ -551,8 +551,8 @@ namespace Caelix.Simulation
             using (s_ReplicationBuildMarker.Auto())
             {
                 deltaBatch.Clear();
-                deltaBatch.CollectDirtySectors(world);
-                DropDeltaSectorsNobodyNeeds(world.Id);
+                deltaBatch.CollectChangedEntities(world);
+                DropDeltaEntitiesNobodyNeeds(world.Id);
                 deltaBatch.Prepare(world.Id, world.TickIndex, world.Config.replicatedSlotMask);
             }
 
@@ -582,16 +582,16 @@ namespace Caelix.Simulation
         }
 
         /// <summary>
-        /// Drops every collected delta sector that each connected, subscribed connection already
+        /// Drops every collected delta entity that each connected, subscribed connection already
         /// received in full this tick. On the tick a world is loaded that is all of them, and
         /// packing gigabytes nobody sends is what froze the Editor. With nobody to send to, the
         /// whole delta goes.
         /// </summary>
-        private void DropDeltaSectorsNobodyNeeds(ushort worldId)
+        private void DropDeltaEntitiesNobodyNeeds(ushort worldId)
         {
-            for (int i = deltaBatch.SectorCount - 1; i >= 0; i--)
+            for (int i = deltaBatch.EntityCount - 1; i >= 0; i--)
             {
-                ReplicationSectorRef sectorRef = deltaBatch.GetSector(i);
+                Guid128 guid = deltaBatch.GetEntity(i).Guid;
                 bool needed = false;
                 for (int c = 0; c < connections.Count; c++)
                 {
@@ -601,7 +601,7 @@ namespace Caelix.Simulation
                         continue;
                     }
 
-                    if (!connection.ReceivedFullThisTick(sectorRef.Guid, sectorRef.SectorPos))
+                    if (!connection.ReceivedFullThisTick(guid))
                     {
                         needed = true;
                         break;
@@ -610,7 +610,7 @@ namespace Caelix.Simulation
 
                 if (!needed)
                 {
-                    deltaBatch.RemoveSectorAtSwapBack(i);
+                    deltaBatch.RemoveEntityAtSwapBack(i);
                 }
             }
         }

@@ -42,8 +42,10 @@ namespace Caelix.Tests
                 world.GetEntity(guid).RemoveSectorAt(int3.zero);
                 server.Step();
                 client.Receive();
-                Assert.That(renderer.SectorRendererCount, Is.Zero, "removal releases resources during Receive");
+                // No removal callback any more: RemoveMissingSectors drops the renderer of a freed
+                // sector at the start of the next Update, before any job is scheduled.
                 renderer.Update(); // Used to dereference the freed SectorHandle here.
+                Assert.That(renderer.SectorRendererCount, Is.Zero, "the next Update releases the freed sector");
 
                 world.SetBlock(guid, new int3(48), new Block(0x8002));
                 server.Step();

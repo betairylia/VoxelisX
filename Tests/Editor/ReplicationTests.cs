@@ -79,10 +79,10 @@ namespace Caelix.Tests
                 for (int i = 0; i < 1030; i++)
                 {
                     // The same guid and coordinates in different worlds must never share work.
-                    NetHeader.Write(writer, NetMessageType.BrickData, (ushort)(i % 2), (uint)i);
-                    writer.Write(new BrickBatchHeader { Guid = EntityA, SectorPos = int3.zero, BrickCount = 1 });
-                    writer.Write((ushort)0);
-                    writer.Write((ushort)0);
+                    NetHeader.Write(writer, NetMessageType.BrickBatch, (ushort)(i % 2), (uint)i);
+                    writer.Write(new BrickBatchHeader { Guid = EntityA, BrickCount = 1 });
+                    writer.Write(int3.zero);
+                    writer.Write((byte)BrickOp.Update);
                     writer.Write((byte)1);
                     writer.Write((byte)SectorSlotId.Block);
                     writer.Write((ushort)2);
@@ -90,16 +90,15 @@ namespace Caelix.Tests
                     sender.Send(NetDelivery.Reliable, writer.AsSpan());
                     writer.Reset();
                     if (i != 1025) continue;
-                    NetHeader.Write(writer, NetMessageType.BrickData, 0, (uint)i);
-                    writer.Write(new BrickBatchHeader { Guid = EntityA, SectorPos = int3.zero, BrickCount = 1 });
-                    writer.Write((ushort)4096);
-                    writer.Write((ushort)0);
-                    writer.Write((byte)0);
+                    NetHeader.Write(writer, NetMessageType.BrickBatch, 0, (uint)i);
+                    writer.Write(new BrickBatchHeader { Guid = EntityA, BrickCount = 1 });
+                    writer.Write(int3.zero);
+                    writer.Write((byte)7); // no such operation
                     sender.Send(NetDelivery.Reliable, writer.AsSpan());
                     writer.Reset();
                 }
                 UnityEngine.TestTools.LogAssert.Expect(LogType.Exception,
-                    new System.Text.RegularExpressions.Regex("Invalid replicated brick batch: InvalidBrickIndex"));
+                    new System.Text.RegularExpressions.Regex("Invalid replicated brick batch: InvalidOp"));
                 client.Receive();
                 for (ushort world = 0; world < 2; world++)
                 {
@@ -132,19 +131,53 @@ namespace Caelix.Tests
                 if (tick >= 3) rig.World.EmitEvent(new TestEvent { Value = tick });
                 rig.Server.Step();
             }
-            int removals = 0;
-            rig.Client.World.SectorRemoving += (view, pos) =>
-            {
-                Assert.That(view.Data.GetBlock(new int3(1)), Is.EqualTo(new Block(0x8004)));
-                removals++;
-            };
+            // The server drops sector 0 and immediately writes into it again, so the client sees
+            // Remove then Update for the same brick key inside one message.
             rig.World.GetEntity(EntityA).RemoveSectorAt(int3.zero);
             rig.World.SetBlock(EntityA, new int3(2), new Block(0x8010));
             rig.Server.Step();
             rig.Client.Receive();
             Assert.That(events, Is.EqualTo(new[] { 3, 4 }));
-            Assert.That(removals, Is.EqualTo(1));
+
+            Assert.That(rig.Client.World.TryGetView(EntityA, out EntityView replicaView), Is.True);
+            Assert.That(replicaView.Data.sectors.ContainsKey(int3.zero), Is.True);
+            Assert.That(replicaView.Data.IsBrickAllocated(int3.zero), Is.True);
+            Assert.That(replicaView.Data.GetBlock(new int3(1)).isEmpty, Is.True);
+            Assert.That(replicaView.Data.GetBlock(new int3(2)), Is.EqualTo(new Block(0x8010)));
+
+            rig.Client.PrepareRender();
+            AssertRemovedBeforeUpdated(replicaView, int3.zero, int3.zero);
+            rig.Client.EndFrame();
             AssertReplicaMatchesServer(rig, rig.Client);
+        }
+
+        /// <summary>
+        /// Finds a <see cref="ChangeKind.Removed"/> entry for <paramref name="removedKey"/> before an
+        /// <see cref="ChangeKind.Updated"/> entry for <paramref name="updatedKey"/> that carries
+        /// <see cref="DirtyFlags.BlockBrickAdded"/>. The order is the contract: a consumer applies
+        /// change entries in list order.
+        /// </summary>
+        private static void AssertRemovedBeforeUpdated(EntityView view, int3 removedKey, int3 updatedKey)
+        {
+            int removed = -1, updated = -1;
+            for (int i = 0; i < view.Data.ChangeCount; i++)
+            {
+                BrickChange change = view.Data.GetChange(i);
+                if (removed < 0 && change.Kind == ChangeKind.Removed && math.all(change.Key == removedKey))
+                {
+                    removed = i;
+                }
+
+                if (updated < 0 && change.Kind == ChangeKind.Updated && math.all(change.Key == updatedKey) &&
+                    (change.SourceFlags & DirtyFlags.BlockBrickAdded) != DirtyFlags.None)
+                {
+                    updated = i;
+                }
+            }
+
+            Assert.That(removed, Is.GreaterThanOrEqualTo(0), $"no Removed entry for {removedKey}");
+            Assert.That(updated, Is.GreaterThanOrEqualTo(0), $"no added Updated entry for {updatedKey}");
+            Assert.That(removed, Is.LessThan(updated), "removals must precede the cycle's updates");
         }
 
         private struct TestBatchCommand
@@ -249,7 +282,7 @@ namespace Caelix.Tests
             Assert.That(view.Component, Is.Not.Null, "a view object is spawned for an entity the scene did not author");
             Assert.That(view.IsClientSpawned, Is.True);
 
-            Assert.That(view.Data.sectors.Count, Is.EqualTo(rig.World.GetEntity(EntityA).sectors.Count));
+            AssertBlockSlotsEqual(rig.World.GetEntity(EntityA), view.Data);
             Assert.That(view.Data.GetBlock(new int3(1, 2, 3)), Is.EqualTo(new Block(0x8001)));
             Assert.That(view.Data.GetBlock(new int3(130, 2, 3)), Is.EqualTo(new Block(0x8002)));
             Assert.That(view.Data.GetBlock(new int3(-1, 0, 0)), Is.EqualTo(new Block(0x8003)));
@@ -730,9 +763,9 @@ namespace Caelix.Tests
 
             rig.Exchange();
 
-            // All three sectors were new to the only connection, so the shared delta drops them
-            // instead of packing bytes nobody sends.
-            Assert.That(rig.Server.DeltaBatchForTests.SectorCount, Is.EqualTo(0));
+            // The entity was new to the only connection, so the shared delta drops it instead of
+            // packing bytes nobody sends.
+            Assert.That(rig.Server.DeltaBatchForTests.EntityCount, Is.EqualTo(0));
             Assert.That(rig.Client.World.TryGetView(EntityA, out EntityView view), Is.True);
             AssertBlockSlotsEqual(rig.World.GetEntity(EntityA), view.Data);
         }
@@ -799,7 +832,7 @@ namespace Caelix.Tests
 
             ClientWorld replica = FindClientWorld(rig.Client, 0);
             Assert.That(replica, Is.Not.Null, "the world arrives as WorldAdd, not inside Hello");
-            Assert.That(replica.ReplicatedSlotMask, Is.EqualTo(Sector.DefaultReplicatedSlotMask));
+            Assert.That(replica.ReplicatedSlotMask, Is.EqualTo(BrickReplication.DefaultReplicatedSlotMask));
         }
 
         [Test]
@@ -839,22 +872,54 @@ namespace Caelix.Tests
             rig.World.SetBlock(EntityA, new int3(32), new Block(0x8001));
             rig.Exchange();
             rig.Client.World.TryGetView(EntityA, out EntityView view);
-            int removals = 0;
-            rig.Client.World.SectorRemoving += (v, pos) =>
-            {
-                Assert.That(v, Is.SameAs(view));
-                Assert.That(pos, Is.EqualTo(int3.zero));
-                Assert.That(v.Data.GetBlock(new int3(32)), Is.EqualTo(new Block(0x8001)),
-                    "consumers see live storage during the removal callback");
-                removals++;
-            };
             var data = rig.World.GetEntity(EntityA);
             data.RemoveSectorAt(int3.zero);
             data.AddEmptySectorAt(int3.zero);
             rig.World.SetBlock(EntityA, new int3(48), new Block(0x8002));
-            rig.Exchange();
-            Assert.That(removals, Is.EqualTo(1));
+
+            rig.Server.Step();
+            rig.Client.Receive();
+            rig.Client.PrepareRender();
+            AssertRemovedBeforeUpdated(view, new int3(4, 4, 4), new int3(6, 6, 6));
+            rig.Client.EndFrame();
+
             Assert.That(view.Data.GetBlock(new int3(32)).isEmpty, Is.True);
+            Assert.That(view.Data.GetBlock(new int3(48)), Is.EqualTo(new Block(0x8002)));
+            AssertReplicaMatchesServer(rig, rig.Client);
+        }
+
+        [Test]
+        public void EmptyServerSectorIsNotReplicated()
+        {
+            using var rig = new Rig();
+            rig.World.CreateEntity(EntityA, RigidTransform.identity, isStatic: true);
+            rig.World.SetBlock(EntityA, new int3(32), new Block(0x8001));
+            rig.World.GetEntity(EntityA).AddEmptySectorAt(new int3(3, 0, 0));
+
+            rig.Exchange();
+
+            Assert.That(rig.Client.World.TryGetView(EntityA, out EntityView view), Is.True);
+            Assert.That(view.Data.sectors.ContainsKey(new int3(3, 0, 0)), Is.False,
+                "a sector with no brick has nothing to replicate");
+            AssertReplicaMatchesServer(rig, rig.Client);
+        }
+
+        [Test]
+        public void Delta_RemoveThenAddSameKeyInOneTick_ClientEndsWithNewContents()
+        {
+            using var rig = new Rig();
+            rig.World.CreateEntity(EntityA, RigidTransform.identity, isStatic: true);
+            rig.World.SetBlock(EntityA, new int3(32), new Block(0x8001));
+            rig.Exchange();
+
+            rig.World.GetEntity(EntityA).RemoveSectorAt(int3.zero);
+            rig.World.SetBlock(EntityA, new int3(32), new Block(0x8002));
+            rig.World.SetBlock(EntityA, new int3(40, 32, 32), new Block(0x8003));
+            rig.Exchange();
+
+            Assert.That(rig.Client.World.TryGetView(EntityA, out EntityView view), Is.True);
+            Assert.That(view.Data.GetBlock(new int3(32)), Is.EqualTo(new Block(0x8002)));
+            Assert.That(view.Data.GetBlock(new int3(40, 32, 32)), Is.EqualTo(new Block(0x8003)));
             AssertReplicaMatchesServer(rig, rig.Client);
         }
 
@@ -916,7 +981,7 @@ namespace Caelix.Tests
             VoxelQueryReply voxelReply = null;
             int typedValue = -1;
             rig.Client.SetBlock(EntityA, new int3(32), new Block(0x8002));
-            rig.Client.QueryVoxel(EntityA, new int3(32), Sector.DefaultReplicatedSlotMask, r => voxelReply = r);
+            rig.Client.QueryVoxel(EntityA, new int3(32), BrickReplication.DefaultReplicatedSlotMask, r => voxelReply = r);
             rig.Client.SetBlock(EntityA, new int3(32), new Block(0x8003));
             rig.Client.SendQuery<TestQuery, TestReply>(default, ReadOnlySpan<byte>.Empty,
                 (ushort id, in TestReply r, ref NetMessageReader payload) => typedValue = r.Count);
@@ -1001,7 +1066,7 @@ namespace Caelix.Tests
             ref Sector neighbor = ref view.Data.sectors[int3.zero].Get();
             Assert.That(neighbor.sectorRequireUpdateFlags & (ushort)DirtyFlags.GeometryWithLocalNeighbor,
                 Is.Not.Zero);
-            Assert.That(view.Data.sectors.Count, Is.EqualTo(rig.World.GetEntity(EntityA).sectors.Count));
+            AssertBlockSlotsEqual(rig.World.GetEntity(EntityA), view.Data);
             Assert.That(view.Data.sectors.ContainsKey(new int3(1, 0, 0)), Is.False);
         }
 
@@ -1185,36 +1250,13 @@ namespace Caelix.Tests
             foreach (var sector in view.Data.sectors) sample.replicaSectorBytes += sector.Value.Get().MemoryUsage;
         }
 
-        private static unsafe void AssertAllBlockStorageEqual(CaelixWorld server, ClientWorld replica)
+        private static void AssertAllBlockStorageEqual(CaelixWorld server, ClientWorld replica)
         {
             Assert.That(replica.Views.Count, Is.EqualTo(server.EntityCount));
             foreach (var entity in server.Data.VoxelEntities)
             {
                 Assert.That(replica.TryGetView(entity.Key, out EntityView view), Is.True);
-                Assert.That(view.Data.sectors.Count, Is.EqualTo(entity.Value.sectors.Count));
-                foreach (var entry in entity.Value.sectors)
-                {
-                    Assert.That(view.Data.sectors.TryGetValue(entry.Key, out SectorHandle replicaSector), Is.True);
-                    ref Sector a = ref entry.Value.Get();
-                    ref Sector b = ref replicaSector.Get();
-                    for (int brick = 0; brick < Sector.BRICKS_IN_SECTOR; brick++)
-                    {
-                        short aid = a.brickMap.indices[brick], bid = b.brickMap.indices[brick];
-                        if ((aid == Sector.BRICKID_EMPTY) != (bid == Sector.BRICKID_EMPTY))
-                            Assert.Fail($"Allocation mismatch: {entity.Key}, {entry.Key}, brick {brick}");
-                        if (aid == Sector.BRICKID_EMPTY) continue;
-                        Block* ab = a.GetBrick<Block>(SectorSlotId.Block, aid);
-                        Block* bb = b.GetBrick<Block>(SectorSlotId.Block, bid);
-                        if (ab == null || bb == null)
-                        {
-                            if (ab != bb) Assert.Fail("Block slot presence differs");
-                            continue;
-                        }
-                        if (Unity.Collections.LowLevel.Unsafe.UnsafeUtility.MemCmp(ab, bb,
-                            Sector.BLOCKS_IN_BRICK * sizeof(Block)) != 0)
-                            Assert.Fail($"Block mismatch: {entity.Key}, {entry.Key}, brick {brick}");
-                    }
-                }
+                AssertBlockSlotsEqual(entity.Value, view.Data);
             }
         }
 
@@ -1224,32 +1266,35 @@ namespace Caelix.Tests
             AssertBlockSlotsEqual(rig.World.GetEntity(EntityA), view.Data);
         }
 
-        private static unsafe void AssertBlockSlotsEqual(in VoxelEntityData server, in VoxelEntityData replica)
+        /// <summary>
+        /// The replica must hold exactly the server's ALLOCATED bricks, byte for byte. Sector sets
+        /// are deliberately not compared: brick records are the only thing replication sends, so a
+        /// server sector that holds no brick — a neighbour that propagation created, or an explicit
+        /// <c>AddEmptySectorAt</c> — has nothing to replicate and never reaches the client.
+        /// </summary>
+        private static unsafe void AssertBlockSlotsEqual(VoxelEntityData server, VoxelEntityData replica)
         {
-            Assert.That(replica.sectors.Count, Is.EqualTo(server.sectors.Count));
-            foreach (var kvp in server.sectors)
+            int serverBricks = 0;
+            foreach (int3 key in server.EnumerateBricks())
             {
-                Assert.That(replica.sectors.TryGetValue(kvp.Key, out SectorHandle replicaHandle), Is.True);
-                ref Sector s = ref kvp.Value.Get();
-                ref Sector r = ref replicaHandle.Get();
-                for (int brick = 0; brick < Sector.BRICKS_IN_SECTOR; brick++)
-                {
-                    bool serverHas = s.brickMap.indices[brick] != Sector.BRICKID_EMPTY;
-                    Assert.That(r.brickMap.indices[brick] != Sector.BRICKID_EMPTY, Is.EqualTo(serverHas),
-                        $"sector {kvp.Key} brick {brick} allocation differs");
-                    if (!serverHas) continue;
-                    int3 origin = Sector.ToBrickPos((short)brick) * Sector.SIZE_IN_BLOCKS;
-                    for (int z = 0; z < Sector.SIZE_IN_BLOCKS; z++)
-                    for (int y = 0; y < Sector.SIZE_IN_BLOCKS; y++)
-                    for (int x = 0; x < Sector.SIZE_IN_BLOCKS; x++)
-                    {
-                        Assert.That(
-                            r.GetBlock(origin.x + x, origin.y + y, origin.z + z),
-                            Is.EqualTo(s.GetBlock(origin.x + x, origin.y + y, origin.z + z)),
-                            $"sector {kvp.Key} voxel {origin + new int3(x, y, z)}");
-                    }
-                }
+                serverBricks++;
+                Assert.That(server.TryBindBrick(SectorSlotId.Block, key, out Block* a), Is.True);
+                Assert.That(replica.TryBindBrick(SectorSlotId.Block, key, out Block* b), Is.True,
+                    $"the replica is missing brick {key}");
+                Assert.That(
+                    Unity.Collections.LowLevel.Unsafe.UnsafeUtility.MemCmp(
+                        a, b, BrickKey.BlocksInBrick * sizeof(Block)),
+                    Is.Zero, $"brick {key} differs");
             }
+
+            int replicaBricks = 0;
+            foreach (int3 key in replica.EnumerateBricks())
+            {
+                replicaBricks++;
+                Assert.That(server.IsBrickAllocated(key), Is.True, $"the replica has an extra brick {key}");
+            }
+
+            Assert.That(replicaBricks, Is.EqualTo(serverBricks));
         }
     }
 
@@ -1335,7 +1380,7 @@ namespace Caelix.Tests
                     uint tick = host.Server.TickIndex;
                     VoxelQueryReply reply = null;
                     host.Client.SetBlock(guid, p, new Block(0x8002));
-                    host.Client.QueryVoxel(guid, p, Sector.DefaultReplicatedSlotMask, r => reply = r);
+                    host.Client.QueryVoxel(guid, p, BrickReplication.DefaultReplicatedSlotMask, r => reply = r);
                     host.Client.SetBlock(guid, new int3(256), new Block(0x8003));
                     for (int frame = 0; frame < 10 && reply == null; frame++) yield return null;
                     Assert.That(reply, Is.Not.Null, "Host.Update must service queries without FixedUpdate");

@@ -22,9 +22,6 @@ namespace Caelix.Tests
         private static readonly string[] CaelixAllowance =
         {
             "Runtime/Authoring/VoxelEntityAuthoringTool.cs",
-            "Runtime/Client/BrickReceiveBatch.cs",
-            "Runtime/Client/CaelixClient.cs",
-            "Runtime/Client/ClientWorld.cs",
             "Runtime/Client/InfiniteLoader.cs",
             "Runtime/Client/VoxelEntity.cs",
             "Runtime/Debugging/CaelixDebugGUI.cs",
@@ -32,8 +29,6 @@ namespace Caelix.Tests
             "Runtime/Rendering/Mesh/VoxelMeshRenderer.cs",
             "Runtime/Simulation/CaelixServer.cs",
             "Runtime/Simulation/CaelixWorld.cs",
-            "Runtime/Simulation/ReplicationBatch.cs",
-            "Runtime/Simulation/ServerConnection.cs",
             "Runtime/TestWorld.cs",
         };
 

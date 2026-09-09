@@ -24,13 +24,13 @@ namespace Caelix.Tests
             for (int s = 0; s < sectorCount; s++)
             {
                 writer.Reset();
-                NetHeader.Write(writer, NetMessageType.BrickData, 0, 1);
-                writer.Write(new BrickBatchHeader { Guid = guid, SectorPos = new int3(s, 0, 0),
-                    BrickCount = (ushort)bricksPerSector });
+                NetHeader.Write(writer, NetMessageType.BrickBatch, 0, 1);
+                writer.Write(new BrickBatchHeader { Guid = guid, BrickCount = bricksPerSector });
+                int3 sectorOrigin = new int3(s, 0, 0) * Sector.SIZE_IN_BRICKS;
                 for (int b = 0; b < bricksPerSector; b++)
                 {
-                    writer.Write((ushort)b);
-                    writer.Write((ushort)0);
+                    writer.Write(sectorOrigin + Sector.ToBrickPos((short)b));
+                    writer.Write((byte)BrickOp.Update);
                     writer.Write((byte)1);
                     writer.Write((byte)SectorSlotId.Block);
                     writer.Write((ushort)2);
@@ -52,13 +52,6 @@ namespace Caelix.Tests
                     NetHeader.Write(writer, NetMessageType.EntitySpawn, 0, 0);
                     writer.Write(new EntitySpawnMessage { Guid = guid, Transform = RigidTransform.identity, IsStatic = 1 });
                     sender.Send(NetDelivery.Reliable, writer.AsSpan());
-                    for (int s = 0; s < sectorCount; s++)
-                    {
-                        writer.Reset();
-                        NetHeader.Write(writer, NetMessageType.SectorAdd, 0, 0);
-                        writer.Write(new SectorMessage { Guid = guid, SectorPos = new int3(s, 0, 0) });
-                        sender.Send(NetDelivery.Reliable, writer.AsSpan());
-                    }
                     client.Receive();
                     foreach (byte[] packet in packets) sender.Send(NetDelivery.Reliable, packet);
                     var timer = Stopwatch.StartNew();

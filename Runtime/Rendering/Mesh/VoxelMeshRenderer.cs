@@ -39,15 +39,17 @@ namespace Caelix.Rendering.Meshing
                 if (source != null)
                 {
                     source.ViewDespawning -= RemoveView;
-                    source.SectorRemoving -= RemoveSectorRenderer;
                     source.Owner.WorldRemoving -= OnWorldRemoving;
                 }
                 ReleaseRenderers();
                 source = value != null && !value.IsDisposed ? value : null;
                 if (source != null)
                 {
+                    // No sector-removal subscription: RemoveMissingSectors() drops a renderer whose
+                    // sector is gone at the start of Update, before any job is scheduled, and every
+                    // mesh job was completed inside the previous Update. So no job can touch freed
+                    // storage, and the client no longer publishes a removal callback at all.
                     source.ViewDespawning += RemoveView;
-                    source.SectorRemoving += RemoveSectorRenderer;
                     source.Owner.WorldRemoving += OnWorldRemoving;
                 }
             }
@@ -222,6 +224,12 @@ namespace Caelix.Rendering.Meshing
         /// <summary>
         /// Checks for new sectors in tracked views and removes sectors that no longer exist.
         /// </summary>
+        /// <remarks>
+        /// Identity, not coordinate: the replica can free a sector and create a new one at the same
+        /// coordinate inside one client frame (a removal message and a re-fill message land in two
+        /// apply flushes of the same <c>Receive</c>). The coordinate would still be present, while
+        /// the cached handle points at freed memory, so the attachment id is what decides.
+        /// </remarks>
         private void RemoveMissingSectors()
         {
             sectorsToRemove.Clear();
@@ -230,7 +238,9 @@ namespace Caelix.Rendering.Meshing
                 EntityView view = kvp.Key.Item1;
                 int3 sectorPos = kvp.Key.Item2;
 
-                if (!trackedViews.Contains(view) || !view.Data.sectors.IsCreated || !view.Data.sectors.ContainsKey(sectorPos))
+                if (!trackedViews.Contains(view) || !view.Data.sectors.IsCreated ||
+                    !view.Data.sectors.TryGetValue(sectorPos, out SectorHandle current) ||
+                    current.InstanceId != kvp.Value.SectorInstanceId)
                 {
                     sectorsToRemove.Add(kvp.Key);
                 }

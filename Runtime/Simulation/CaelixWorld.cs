@@ -7,6 +7,7 @@ using Unity.Mathematics;
 using Unity.Profiling;
 using UnityEngine;
 using Caelix.IO;
+using Caelix.Net;
 using Caelix.Tick;
 using Caelix.Utils;
 using Stopwatch = System.Diagnostics.Stopwatch;
@@ -48,7 +49,7 @@ namespace Caelix.Simulation
                 worldId = worldId,
                 name = name,
                 physics = PhysicsWorldSettings.Default,
-                replicatedSlotMask = Sector.DefaultReplicatedSlotMask,
+                replicatedSlotMask = BrickReplication.DefaultReplicatedSlotMask,
                 doAlienPropagation = false,
                 alienMotionDirtyMask = DirtyFlags.GeneralAutomata,
                 alienIncludeMovingBricks = true,
@@ -170,7 +171,7 @@ namespace Caelix.Simulation
             Config = config;
             if (Config.replicatedSlotMask == 0)
             {
-                Config.replicatedSlotMask = Sector.DefaultReplicatedSlotMask;
+                Config.replicatedSlotMask = BrickReplication.DefaultReplicatedSlotMask;
             }
 
             Data.VoxelEntities = new NativeHashMap<Guid128, VoxelEntityData>(1, Allocator.Persistent);
