@@ -39,7 +39,7 @@ The double buffers flip at the very end of `CaelixDenoisePass.RecordRenderGraph`
 
 ## Conventions
 
-These are shared by both raygens (`Full_raygen.raytrace`, `CaelixBudget.raytrace`), both denoise chains and the present stage. Changing one without the others silently misaligns history by a fraction of a pixel.
+These are shared by both trace kernels (`RayQuery/CaelixPathTraceRQ.compute`, `Budget/CaelixBudgetRQ.compute`), both denoise chains and the present stage. Changing one without the others silently misaligns history by a fraction of a pixel.
 
 **Pixel-centre mapping.** A pixel's sample sits at launch-space position `index + 0.5 + jitter`, and its UV is that divided by `size` — never `size - 1`. The `size - 1` convention placed samples on the grid corners, put UV > 1 on the last row and column (which then never reprojected), and had to be mirrored in five places.
 

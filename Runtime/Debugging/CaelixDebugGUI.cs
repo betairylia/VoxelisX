@@ -19,7 +19,7 @@ public class CaelixDebugGUI : MonoBehaviour
     [SerializeField] private KeyCode orbitToggleKey = KeyCode.O;
 
     [Header("References")]
-    [SerializeField] private CaelixRenderer rayTracingRenderer;
+    [SerializeField] private Caelix.Rendering.RayQuery.CaelixRayQueryRenderer rayQueryRenderer;
     [SerializeField] private VoxelMeshRendererComponent meshRendererComponent;
     [SerializeField] private CaelixHost voxelWorld;
 
@@ -103,9 +103,9 @@ public class CaelixDebugGUI : MonoBehaviour
         isVisible = showOnStart;
 
         // Auto-find references if not set
-        if (rayTracingRenderer == null)
+        if (rayQueryRenderer == null)
         {
-            rayTracingRenderer = FindAnyObjectByType<CaelixRenderer>();
+            rayQueryRenderer = FindAnyObjectByType<Caelix.Rendering.RayQuery.CaelixRayQueryRenderer>();
         }
 
         if (voxelWorld == null)
@@ -314,7 +314,7 @@ public class CaelixDebugGUI : MonoBehaviour
         GUILayout.Space(SectionSpacing);
 
         // Ray Tracing Info
-        if (rayTracingRenderer != null)
+        if (rayQueryRenderer != null)
         {
             GUILayout.Label("<b>Ray Tracing:</b>", labelStyle);
 
@@ -339,14 +339,17 @@ public class CaelixDebugGUI : MonoBehaviour
                     }
                 }
 
-                GUILayout.Label($"  Frame: {rayTracingRenderer.frameId}", labelStyle);
-                GUILayout.Label($"  Instances: {rayTracingRenderer.instanceCount}", labelStyle);
+                GUILayout.Label($"  Frame: {rayQueryRenderer.frameId}", labelStyle);
+                GUILayout.Label($"  Instances: {rayQueryRenderer.instanceCount}", labelStyle);
                 GUILayout.Label($"  Sectors: {totalSectors}", labelStyle);
                 GUILayout.Label($"  Bricks: {totalBricks}", labelStyle);
 
                 // Memory info
-                GUILayout.Label($"  AS Size: {rayTracingRenderer.voxelScene.GetSize() / 1024 / 1024} MB", labelStyle);
+                GUILayout.Label($"  AS Size: {rayQueryRenderer.voxelScene.GetSize() / 1024 / 1024} MB", labelStyle);
                 GUILayout.Label($"  Host RAM: {hostMemory / 1024} MB", labelStyle);
+                GUILayout.Label(
+                    $"  Pool: {rayQueryRenderer.poolLiveBricks} / {rayQueryRenderer.poolCapacityBricks} bricks " +
+                    $"in {rayQueryRenderer.poolPages} pages", labelStyle);
             }
         }
 
@@ -480,7 +483,7 @@ public class CaelixDebugGUI : MonoBehaviour
     private RenderingMode DetectRenderingMode()
     {
         // Match the logic in CaelixWorld.Tick (lines 123-124)
-        bool hasRayTracing = rayTracingRenderer != null && rayTracingRenderer.enabled;
+        bool hasRayTracing = rayQueryRenderer != null && rayQueryRenderer.enabled;
         bool hasMesh = meshRendererComponent != null && meshRendererComponent.enabled;
 
         if (hasRayTracing && hasMesh)

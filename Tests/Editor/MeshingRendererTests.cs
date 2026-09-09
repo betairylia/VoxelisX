@@ -103,10 +103,15 @@ namespace Caelix.Tests
             return total;
         }
 
+        /// <summary>
+        /// The ray query renderer's world binding: instances follow the geometry through a sector
+        /// removal, a world removal and a replacement world, and a renderer that is bound after the
+        /// world already exists still uploads it.
+        /// </summary>
         [Test]
-        public void RayRenderer_RemovesInstancesAndRebindsAfterWorldReplacement()
+        public void RayQueryRenderer_RemovesInstancesAndRebindsAfterWorldReplacement()
         {
-            if (!SystemInfo.supportsRayTracing) Assert.Ignore("Ray tracing hardware is required.");
+            if (!SystemInfo.supportsInlineRayTracing) Assert.Ignore("Inline ray tracing is required.");
             using var server = new CaelixServer();
             var world = server.CreateWorld(CaelixWorldConfig.Default());
             LocalChannel.CreatePair(out var serverEnd, out var clientEnd);
@@ -115,9 +120,11 @@ namespace Caelix.Tests
             var guid = new Guid128(11u, 22u, 33u, 44u);
             world.CreateEntity(guid, RigidTransform.identity, isStatic: true);
             world.SetBlock(guid, new int3(32), new Block(0x8001));
-            var material = new Material(Shader.Find("Caelix/BrickRTTest"));
-            var go = new GameObject("ray-lifecycle-test");
-            var renderer = go.AddComponent<CaelixRenderer>();
+            var material = new Material(Shader.Find("Caelix/AabbInstance"));
+            var go = new GameObject("ray-query-lifecycle-test");
+            // No Awake in edit mode: the renderer creates its pool, instance table and acceleration
+            // structure lazily in Tick.
+            var renderer = go.AddComponent<Caelix.Rendering.RayQuery.CaelixRayQueryRenderer>();
             renderer.brickMat = material;
             try
             {
@@ -132,7 +139,11 @@ namespace Caelix.Tests
                 world.GetEntity(guid).RemoveSectorAt(int3.zero);
                 server.Step();
                 client.Receive();
+                client.PrepareRender();
+                renderer.Tick();
+                renderer.voxelScene.Build();
                 Assert.That(renderer.voxelScene.GetInstanceCount(), Is.Zero);
+                client.EndFrame();
 
                 world.SetBlock(guid, new int3(48), new Block(0x8002));
                 server.Step();
@@ -141,6 +152,7 @@ namespace Caelix.Tests
                 renderer.Tick();
                 renderer.voxelScene.Build();
                 Assert.That(renderer.voxelScene.GetInstanceCount(), Is.EqualTo(1));
+                client.EndFrame();
                 server.RemoveWorld(world);
                 server.Step();
                 client.Receive();
@@ -158,6 +170,7 @@ namespace Caelix.Tests
                 renderer.voxelScene.Build();
                 Assert.That(renderer.voxelScene.GetInstanceCount(), Is.EqualTo(1));
                 // Disabling and re-enabling must also upload a quiet, already-synchronized world.
+                // (OnDisable/OnEnable may not run in edit mode; SetSource raises the same flag.)
                 renderer.enabled = false;
                 renderer.enabled = true;
                 renderer.SetSource(client.World);
@@ -172,7 +185,6 @@ namespace Caelix.Tests
             {
                 Object.DestroyImmediate(go);
                 Object.DestroyImmediate(material);
-                Caelix.Rendering.SectorRenderer.sectorMaterial = null;
             }
         }
 

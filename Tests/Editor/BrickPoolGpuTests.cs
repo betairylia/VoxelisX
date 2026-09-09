@@ -18,7 +18,7 @@ namespace Caelix.Tests
     /// </remarks>
     public class BrickPoolGpuTests
     {
-        private const int Words = SectorRenderer.BRICK_DATA_LENGTH;
+        private const int Words = BrickRecordLayout.BRICK_DATA_LENGTH;
         private const int PageLimitBricks = 8192;
 
         [SetUp]

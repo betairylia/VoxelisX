@@ -3,12 +3,9 @@
 
 // Brick pool pages. One GraphicsBuffer cannot exceed SystemInfo.maxGraphicsBufferSize (~3.9 GB),
 // and a large scene holds more brick records than that, so the pool is split into up to sixteen
-// buffers and every sector names the page its bricks live in. The page is selected by the including
-// file (from the instance record in the ray query kernel and in the DXR hit group's table storage,
-// from the instance's property block in the DXR hit group's plain pool storage) and every brick
-// load switches on it. Must match CaelixBrickPool.MaxNamedPages.
-// Sixteen rather than four: the DXR hit group reads a page through a buffer VIEW, which D3D12 caps
-// at 512 MB (2^18 bricks), so a big scene needs many more pages than the compute kernel does.
+// buffers and every render group names the page its bricks live in. The page comes from the
+// group's instance record, and every brick load below switches on it. Must match
+// CaelixBrickPool.MaxNamedPages.
 #define CAELIX_BRICK_PAGES 16
 ByteAddressBuffer g_bricks0;
 ByteAddressBuffer g_bricks1;

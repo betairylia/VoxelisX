@@ -58,23 +58,20 @@ namespace Caelix.Rendering.RayQuery
     }
 
     /// <summary>
-    /// Inline ray query counterpart of <see cref="SectorRenderer"/>: prepares one render group's
-    /// data and keeps its acceleration-structure instance up to date.
+    /// Prepares one render group's data and keeps its acceleration-structure instance up to date.
     /// </summary>
     /// <remarks>
-    /// The render-data job, the AABB buffer rules and the RTAS caching rules are the same as
-    /// <see cref="SectorRenderer"/>'s — read that class's comments, in particular why the AABB
-    /// buffer is thrown away and reallocated whenever a tight box moves. Three things differ:
-    /// <list type="bullet">
-    /// <item>work arrives as a slice of the entity's per-cycle change list, keyed by brick key,
-    /// rather than as a sweep of one sector's 4096 flags;</item>
-    /// <item>brick records go into the shared <see cref="CaelixBrickPool"/> instead of a per-sector
-    /// buffer, because a ray query kernel has no shader table and therefore no per-instance
-    /// binding;</item>
-    /// <item>the previous transform and the group hash seed travel through
-    /// <see cref="CaelixRayQueryInstanceTable"/>, addressed by the RTAS instance ID, instead of a
-    /// per-instance material property block.</item>
-    /// </list>
+    /// Work arrives as a slice of the entity's per-cycle change list, keyed by brick key. Brick
+    /// records go into the shared <see cref="CaelixBrickPool"/>, because a ray query kernel has no
+    /// shader table and therefore no per-instance binding; the previous transform and the group
+    /// hash seed travel through <see cref="CaelixRayQueryInstanceTable"/>, addressed by the RTAS
+    /// instance ID.
+    /// <para>
+    /// The AABB buffer is thrown away and reallocated whenever a tight box moves: Unity builds
+    /// static AABB geometry once per (buffer, aabbCount) and ignores later writes, so that is the
+    /// only way a moved box reaches the BLAS. See
+    /// <c>Documentation~/internals/rendering/UNITY_RTAS_AABB_ISSUES.md</c>.
+    /// </para>
     /// </remarks>
     /// <summary>
     /// Bookkeeping of the acceleration-structure instance handles the scene renderer owns.
@@ -140,7 +137,7 @@ namespace Caelix.Rendering.RayQuery
         private readonly int groupHashSeed;
         private readonly InstanceHandleLedger ledger;
 
-        private NativeList<SectorRenderer.AABB> hostAABBBuffer;
+        private NativeList<BrickRecordLayout.BrickAABB> hostAABBBuffer;
         private SparseBrickIdTable rendererBrickMap;
 
         /// <summary>
@@ -211,9 +208,9 @@ namespace Caelix.Rendering.RayQuery
         /// Number of brick slots the group currently occupies.
         /// </summary>
         /// <remarks>
-        /// Always taken from the sparse brick map. Unlike <see cref="SectorRenderer"/> this class
-        /// does not honour <c>CAELIX_RENDER_DISABLE_CULLING</c>: the pool addresses bricks by the
-        /// renderer's own compacted ids, which only exist with culling on.
+        /// Always taken from the sparse brick map. <c>CAELIX_RENDER_DISABLE_CULLING</c> is not
+        /// honoured here: the pool addresses bricks by the renderer's own compacted ids, which
+        /// only exist with culling on.
         /// </remarks>
         public int BrickBufferSize => rendererBrickMap.IsCreated ? rendererBrickMap.Capacity : 0;
 
@@ -239,7 +236,7 @@ namespace Caelix.Rendering.RayQuery
         /// <summary>Gets the estimated VRAM usage in bytes: the AABB buffer plus this group's pool range.</summary>
         public ulong VRAMUsage =>
             (ulong)(RenderGroup.BricksInGroup * 24 +
-                    (poolHandle?.CapacityBricks ?? 0) * SectorRenderer.BRICK_DATA_LENGTH * 4);
+                    (poolHandle?.CapacityBricks ?? 0) * BrickRecordLayout.BRICK_DATA_LENGTH * 4);
 
         private bool HostBufferInitialized => hostAABBBuffer.IsCreated;
 
@@ -315,7 +312,7 @@ namespace Caelix.Rendering.RayQuery
                 rendererBrickMap = rendererBrickMap,
                 aabbBuffer = hostAABBBuffer,
                 stagingWords = new NativeList<int>(
-                    SectorRenderer.BRICK_DATA_LENGTH * 16, Allocator.TempJob),
+                    BrickRecordLayout.BRICK_DATA_LENGTH * 16, Allocator.TempJob),
                 stagingSlots = new NativeList<int>(16, Allocator.TempJob),
                 syncRecord = new NativeArray<int>(1, Allocator.TempJob)
             };
@@ -339,7 +336,7 @@ namespace Caelix.Rendering.RayQuery
                 return;
             }
 
-            hostAABBBuffer = new NativeList<SectorRenderer.AABB>(0, Allocator.Persistent);
+            hostAABBBuffer = new NativeList<BrickRecordLayout.BrickAABB>(0, Allocator.Persistent);
             rendererBrickMap = SparseBrickIdTable.New(Allocator.Persistent);
         }
 
@@ -373,7 +370,7 @@ namespace Caelix.Rendering.RayQuery
 
             // Unity builds static AABB geometry once per (buffer, aabbCount) and ignores later
             // writes, so a moved tight box only reaches the BLAS through a brand-new buffer.
-            // See SectorRenderer.ApplyCompletedRenderJob for the full reasoning.
+            // See Documentation~/internals/rendering/UNITY_RTAS_AABB_ISSUES.md for the full reasoning.
             bool aabbRealloc = aabbChanged || aabbBuffer == null;
             if (aabbRealloc)
             {
@@ -404,7 +401,7 @@ namespace Caelix.Rendering.RayQuery
                 }
             }
 
-            int requestedCapacity = SectorRenderer.GetCapacity(BrickBufferSize);
+            int requestedCapacity = BrickRecordLayout.GetCapacity(BrickBufferSize);
             if (requestedCapacity != (poolHandle?.CapacityBricks ?? 0))
             {
                 // Reallocate carries the records the range already holds over to the new one, so a
@@ -478,9 +475,8 @@ namespace Caelix.Rendering.RayQuery
         /// Updates the acceleration structure and the instance record with this group's state.
         /// </summary>
         /// <remarks>
-        /// Same three outcomes as <see cref="SectorRenderer.RenderModifyAS"/>: rebuild the instance
-        /// when geometry changed, retrack it while the entity moves (or for the one frame its
-        /// motion vectors must settle), otherwise do nothing.
+        /// Three outcomes: rebuild the instance when geometry changed, retrack it while the entity
+        /// moves (or for the one frame its motion vectors must settle), otherwise do nothing.
         /// </remarks>
         public void RenderModifyAS(
             ref RayTracingAccelerationStructure AS,
@@ -510,7 +506,7 @@ namespace Caelix.Rendering.RayQuery
             // Fall back to the last published range while the pool has no room for this group, so
             // a retrack cannot overwrite a live instance's record with a null range.
             int brickBaseWords = hasPool
-                ? poolHandle.OffsetBricks * SectorRenderer.BRICK_DATA_LENGTH
+                ? poolHandle.OffsetBricks * BrickRecordLayout.BRICK_DATA_LENGTH
                 : publishedBrickBase;
             int brickPage = hasPool ? poolHandle.Page : publishedPage;
 

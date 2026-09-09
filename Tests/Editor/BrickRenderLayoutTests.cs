@@ -9,10 +9,10 @@ namespace Caelix.Tests
         [Test]
         public void BrickRenderRecordUsesHeaderOccupancyAndBlockPayload()
         {
-            Assert.That(SectorRenderer.BRICK_INFO_WORDS, Is.EqualTo(2));
-            Assert.That(SectorRenderer.BRICK_OCCUPANCY_WORDS, Is.EqualTo(16));
-            Assert.That(SectorRenderer.BRICK_BLOCK_DATA_OFFSET, Is.EqualTo(18));
-            Assert.That(SectorRenderer.BRICK_DATA_LENGTH, Is.EqualTo(274));
+            Assert.That(BrickRecordLayout.BRICK_INFO_WORDS, Is.EqualTo(2));
+            Assert.That(BrickRecordLayout.BRICK_OCCUPANCY_WORDS, Is.EqualTo(16));
+            Assert.That(BrickRecordLayout.BRICK_BLOCK_DATA_OFFSET, Is.EqualTo(18));
+            Assert.That(BrickRecordLayout.BRICK_DATA_LENGTH, Is.EqualTo(274));
         }
 
         [TestCase(0, 0, 0, 0, 0, 2)]
@@ -21,15 +21,15 @@ namespace Caelix.Tests
         [TestCase(7, 7, 7, 7, 63, 17)]
         public void OccupancyIndicesMatchBrickQuadrants(int x, int y, int z, int coarseBit, int microBit, int wordOffset)
         {
-            Assert.That(SectorRenderer.ToCoarseOccupancyBit(x, y, z), Is.EqualTo(coarseBit));
-            Assert.That(SectorRenderer.ToMicroOccupancyBit(x, y, z), Is.EqualTo(microBit));
-            Assert.That(SectorRenderer.ToOccupancyWordOffset(coarseBit, microBit), Is.EqualTo(wordOffset));
+            Assert.That(BrickRecordLayout.ToCoarseOccupancyBit(x, y, z), Is.EqualTo(coarseBit));
+            Assert.That(BrickRecordLayout.ToMicroOccupancyBit(x, y, z), Is.EqualTo(microBit));
+            Assert.That(BrickRecordLayout.ToOccupancyWordOffset(coarseBit, microBit), Is.EqualTo(wordOffset));
         }
 
         [Test]
         public void PackBrickInfoStoresAbsoluteIndexAndCoarseOccupancy()
         {
-            int packed = SectorRenderer.PackBrickInfo(0xABC, 0b1010_0101u);
+            int packed = BrickRecordLayout.PackBrickInfo(0xABC, 0b1010_0101u);
 
             Assert.That(packed & 0xFFF, Is.EqualTo(0xABC));
             Assert.That((packed >> 12) & 0xF, Is.EqualTo(0));
@@ -45,7 +45,7 @@ namespace Caelix.Tests
         [TestCase(7, 7, 7, 7, 7, 7)]
         public void PackBrickTightBoundsRoundTripsPerAxis(int minX, int minY, int minZ, int maxX, int maxY, int maxZ)
         {
-            int packed = SectorRenderer.PackBrickTightBounds(new int3(minX, minY, minZ), new int3(maxX, maxY, maxZ));
+            int packed = BrickRecordLayout.PackBrickTightBounds(new int3(minX, minY, minZ), new int3(maxX, maxY, maxZ));
 
             Assert.That(packed & 7, Is.EqualTo(minX));
             Assert.That((packed >> 3) & 7, Is.EqualTo(minY));

@@ -41,54 +41,6 @@ public enum CaelixDebugView
     BudgetSurface = 14
 }
 
-/// <summary>Which GPU mechanism the G-buffer stage uses to trace the voxel scene. Serialized; keep values stable.</summary>
-public enum CaelixTraceBackend
-{
-    /// <summary>DXR pipeline: raygen + intersection + closest-hit through the shader table (<see cref="CaelixRenderer"/>).</summary>
-    DXR = 0,
-    /// <summary>Compute shader with inline ray queries against the same kind of RTAS (<see cref="Caelix.Rendering.RayQuery.CaelixRayQueryRenderer"/>).</summary>
-    InlineRayQuery = 1
-}
-
-/// <summary>
-/// Where <see cref="CaelixRenderer"/> keeps its brick records. Serialized; keep values stable.
-/// </summary>
-/// <remarks>
-/// The two backends of <see cref="CaelixTraceBackend"/> differ in two independent ways: the dispatch
-/// model and the brick storage. This setting exists so the DXR backend can be run on the ray query
-/// backend's storage, which leaves the dispatch model as the only difference between them.
-/// </remarks>
-public enum CaelixBrickStorage
-{
-    /// <summary>
-    /// One <c>g_bricks</c> buffer per sector, bound through the hit group's per-instance property
-    /// block. The default, and the only mode the DXR path had before.
-    /// </summary>
-    PerSector = 0,
-
-    /// <summary>
-    /// The shared <see cref="Caelix.Rendering.RayQuery.CaelixBrickPool"/>, the same one the inline
-    /// ray query backend uses. Each instance's property block binds <c>g_bricks</c> to the page
-    /// holding its sector and publishes the word offset of its own range. Enables the
-    /// <c>CAELIX_BRICK_POOL</c> shader keyword.
-    /// </summary>
-    SharedPool = 1,
-
-    /// <summary>
-    /// The shared pool, and per-instance data through an <c>InstanceID()</c>-indexed table instead
-    /// of a property block; the hit group has no local root arguments at all. Enables the
-    /// <c>CAELIX_BRICK_POOL_TABLE</c> shader keyword.
-    /// </summary>
-    /// <remarks>
-    /// <see cref="SharedPool"/> still gives every hit-group shader record a buffer descriptor and a
-    /// constant buffer that the intersection and closest-hit shaders fetch. This mode removes them:
-    /// the pages are bound as globals, and the page, the word offset and the previous transform come
-    /// from the same <c>g_Instances</c> record the ray query kernel reads. Every shader record is
-    /// then identical, which leaves the dispatch model as the only difference between the backends.
-    /// </remarks>
-    SharedPoolInstanceTable = 2
-}
-
 /// <summary>
 /// Ray tracing parameters for the G-buffer stage. Built from the renderer feature's serialized
 /// fields once per camera and handed to the stage as an immutable snapshot.

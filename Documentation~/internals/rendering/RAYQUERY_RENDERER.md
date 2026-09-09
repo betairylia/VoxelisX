@@ -1,33 +1,43 @@
 # Inline ray query renderer
 
-A second trace backend for the path-traced renderer. Instead of the DXR pipeline (raygen +
-intersection + closest-hit dispatched through a shader table), a compute kernel walks the same
-hardware acceleration structure with DXR 1.1 inline ray queries (`RayQuery` / `TraceRayInline`).
+**The DXR pipeline path was removed on 2026-09-10.** Inline ray queries are now the only way Caelix
+traces: `CaelixRenderer`, `SectorRenderer`, `Full_raygen.raytrace` and `CaelixBudget.raytrace` are
+gone, and both renderer features drive a compute kernel. This document keeps the comparison
+measurements and the DXR findings as history, because they are what the decision rests on and what
+a future reader will want if the question is reopened.
 
-Everything downstream is unchanged: the G-buffer contract, the denoise chain and the present stage
-are the same. The DXR path is untouched and stays the baseline for performance comparison.
+A compute kernel walks the hardware acceleration structure with DXR 1.1 inline ray queries
+(`RayQuery` / `TraceRayInline`). Everything downstream is unchanged from the DXR days: the G-buffer
+contract, the denoise chain and the present stage are the same.
 
-## What actually differs
+## The trace entry
 
-Only three things, all of them macros the entry file defines before including the shared body
-`Runtime/Rendering/Shaders/PathTrace_full/CaelixPathTraceCommon.hlsl`:
+The path-tracing body lives in `Runtime/Rendering/Shaders/PathTrace_full/CaelixPathTraceCommon.hlsl`
+and the entry file supplies three macros before including it:
 
-| Macro | DXR entry (`Full_raygen.raytrace`) | Compute entry (`RayQuery/CaelixPathTraceRQ.compute`) |
-| --- | --- | --- |
-| `CAELIX_TRACE_RAY(ray, payload)` | `TraceRay(...)` | `CaelixRayQueryTrace(ray, payload)` |
-| `CAELIX_LAUNCH_INDEX` | `DispatchRaysIndex().xy` | the thread's `SV_DispatchThreadID.xy` |
-| `CAELIX_LAUNCH_DIM` | `DispatchRaysDimensions().xy` | the `g_LaunchDim` uniform |
+| Macro | Compute entry (`RayQuery/CaelixPathTraceRQ.compute`) |
+| --- | --- |
+| `CAELIX_TRACE_RAY(ray, payload)` | `CaelixRayQueryTrace(ray, payload)` |
+| `CAELIX_LAUNCH_INDEX` | the thread's `SV_DispatchThreadID.xy` |
+| `CAELIX_LAUNCH_DIM` | the `g_LaunchDim` uniform |
 
-`CaelixRayQueryTrace` (in `RayQuery/CaelixRayQueryTrace.hlsl`) replaces both the intersection
-shader and the closest-hit shader: it runs the brick DDA
-(`CaelixTraceBrickPrimitiveCore`) on every procedural candidate, commits the nearest hit, and fills
-the same `RayPayload` the hit group used to fill.
+The indirection is kept: it is what let the DXR entry and the compute entry share one body, and it
+is what would let a second entry share it again.
+
+`CaelixRayQueryTrace` (in `RayQuery/CaelixRayQueryTrace.hlsl`) does the work the intersection shader
+and the closest-hit shader used to: it runs the brick DDA (`CaelixTraceBrickPrimitiveCore`) on every
+procedural candidate, commits the nearest hit, and fills the same `RayPayload`. On a miss it leaves
+the payload cleared, which is exactly what `CaelixApplyVoxelMiss` produced.
+
+Budget mode has its own entry, `Shaders/Budget/CaelixBudgetRQ.compute`, with the same skeleton and
+its own body; the two share `RayQuery/CaelixMaterialTable.hlsl` and, on the C# side,
+`RendererFeature/Passes/CaelixRayQueryDispatch.cs`.
 
 ## Pool and instance table
 
 A ray query has no shader table, so there is no per-instance binding. Two global buffers replace it:
 
-* **`CaelixBrickPool`** — the brick records of every sector, held in up to `MaxNamedPages` = 16 raw
+* **`CaelixBrickPool`** — the brick records of every render group, held in up to `MaxNamedPages` = 16 raw
   `GraphicsBuffer`s bound as `g_bricks0..15`. Pages exist because one buffer cannot exceed
   `SystemInfo.maxGraphicsBufferSize` (about 3.9 GB) and one record is 1096 bytes, so a few million
   live bricks do not fit one buffer. Each page is capped at `PageCapacityLimitBricks` (serialized on
@@ -119,59 +129,32 @@ sector's pool range (which can grow and compact a page), pass 2b scatters record
 acceleration structure. Doing both in one loop would write into a buffer a later sector then
 replaces.
 
-## DXR on the pool
+## DXR on the pool (history, removed 2026-09-10)
 
-The two backends differ in two independent ways: the dispatch model (shader table vs. one compute
-kernel) and the brick storage (a buffer per sector vs. the shared pool). `CaelixRenderer.brickStorage`
-separates them: set it to `SharedPool` and the DXR path stores its bricks in the same
-`CaelixBrickPool`, so a DXR-vs-ray-query comparison measures only the dispatch model — almost.
-`PerSector` is the default. It keeps no host copy either: `CaelixRenderer` owns its own
-`CaelixBrickGpuOps`, a resized per-sector buffer carries its records over with `CopyRanges`, and the
-staged records are scattered into it exactly as they are into a pool range. It is the mode with the
-most scatter destinations — one buffer per sector, thousands of them — which is why the batch groups
-by destination rather than assuming a handful of pages.
+The comparison that decided the removal. The two backends differed in two independent ways — the
+dispatch model (shader table vs. one compute kernel) and the brick storage (a buffer per sector vs.
+the shared pool) — so `CaelixRenderer.brickStorage` was made to separate them and the DXR path was
+run on the ray query path's own pool. On the 8K citadel from the courtyard camera, whole-frame GPU:
+DXR per-sector ~10.0 ms, DXR on the pool ~10.7-11 ms, DXR per-sector with only the pool keyword
+variant ~10.7 ms, and a third mode that also moved per-instance data into `g_Instances` (so every
+hit-group shader record was identical) ~12.0 ms. **The ray query win is the dispatch model, not the
+storage** — an intersection shader is a separate shader-table call with its own state-object
+occupancy — and pooled storage on DXR was consistently a little slower than local root arguments.
 
-In pool mode `CaelixRenderer` runs a private instance of `brickMat` with the `CAELIX_BRICK_POOL`
-keyword enabled (the asset on disk is never touched). There is no page switch in the hit group: the
-DXR path has a per-instance binding anyway, so each sector's property block binds `g_bricks` to the
-POOL PAGE holding the sector and carries `_BrickBase`, the word offset of its first brick, which the
-intersection shader adds to `CaelixBrickBase(PrimitiveIndex())`. A sector whose range moves
-republishes that property block without rebuilding its RTAS instance, exactly as the ray query path
-republishes its instance record. (A 4-way page switch inside the intersection shader was tried
-first and measured no faster than a direct binding.)
+Two facts from that work are still worth keeping:
 
-**Page size matters here.** The hit group reads `g_bricks` through a buffer VIEW from its shader
-record, and D3D12 caps a buffer view at 2^27 elements: 512 MB for a raw buffer. Every brick past
-that mark in a larger page reads as zero, i.e. as empty space, which shows up as sky leaking
-through walls and, because the rays then travel further, as a slower frame. The compute kernel
-binds its pages as root descriptors and is not affected. So `CaelixRenderer.pageCapacityLimitBricks`
-defaults to 2^18 bricks (287 MB, `CaelixBrickPool.DefaultDxrPageCapacityLimitBricks`) while the ray
-query renderer keeps 2^21. The pool allows `MaxPages` (32) pages; anything bound BY NAME is limited
-to the `MaxNamedPages` (16) the shaders can switch over, and `CaelixRayQueryRenderer` logs an error
-when the pool opens more. Sixteen rather than four exists for the DXR view limit above: at 2^18
-bricks a page, a big scene needs many more pages than the compute kernel does at 2^21.
+* **D3D12 caps a buffer VIEW at 2^27 elements: 512 MB for a raw buffer.** A hit group read its page
+  through a view from its shader record, so with pages larger than that every brick past 512 MB read
+  as zero: sky leaking through walls, and a slower frame because the rays then travelled further.
+  The compute kernel binds its pages as root descriptors and is not affected, which is why the ray
+  query path rendered the same pool correctly. `CaelixBrickPool.DefaultDxrPageCapacityLimitBricks`
+  (2^18) survives as the record of that limit; the live renderer uses 2^21.
+* `MaxPages` (32) is what the pool may open; `MaxNamedPages` (16) is what a shader can switch over,
+  and `CaelixRayQueryRenderer` logs an error when the pool opens more. Sixteen rather than four
+  exists for the view limit above.
 
-### `SharedPoolInstanceTable`: no local root arguments either
-
-`SharedPool` leaves one difference standing. Every DXR hit-group shader record still carries local
-root arguments — a buffer descriptor for `g_bricks` and a constant buffer with `_BrickBase` and
-`_PrevObjectToWorld` — which the intersection and closest-hit shaders fetch per invocation. The
-third storage mode removes them, so every record is identical:
-
-* the material instance enables `CAELIX_BRICK_POOL_TABLE` instead of `CAELIX_BRICK_POOL`;
-* `CaelixRenderer` owns a `CaelixRayQueryInstanceTable`, exactly the one the ray query renderer
-  uses, and each sector claims a slot it keeps for life and passes as the `id` argument of
-  `AddInstance(config, matrix, id)`;
-* no `MaterialPropertyBlock` is created at all, and `RayTracingAABBsInstanceConfig.materialProperties`
-  is left unset;
-* the pages are bound as GLOBAL buffers (`g_bricks0..15`) by `CaelixGBufferPass`, together with
-  `g_Instances`;
-* the intersection shader reads `g_Instances[InstanceID()]` for the page and the word offset, and
-  the closest-hit shader reads the previous transform from the same record.
-
-The record struct and `g_Instances` therefore live in `Shaders/CaelixInstanceRecord.hlsl`, shared
-verbatim by the compute kernel and the hit group. A sector whose range moves rewrites its table slot
-and touches the acceleration structure not at all — not even an `UpdateInstancePropertyBlock`.
+`CAELIX_BRICK_POOL` / `CAELIX_BRICK_POOL_TABLE`, `_BrickBase`, `_PrevObjectToWorld` and
+`_SectorHashSeed` were the hit group's side of this and are gone with it.
 
 ## Readiness
 
@@ -202,26 +185,32 @@ trace of every new material buffer (`CaelixRayQueryRenderer.MaterialsBaked`).
 ## Scene setup
 
 1. Add a `CaelixRayQueryRenderer` component to the scene and assign its `brickMat`
-   (`Caelix/BrickRTTest`). The ray query path never runs that material's hit group, but
-   `RayTracingAABBsInstanceConfig` requires a material.
+   (`Caelix/AabbInstance`, the material `Runtime/Resources/Caelix_AabbInstance.mat`). The trace
+   never runs a hit group, but `RayTracingAABBsInstanceConfig` requires a material.
 2. Wire the component into `CaelixHost.rayQueryRenderer`.
-3. Disable the `CaelixRenderer` component and enable the `CaelixRayQueryRenderer` one.
-4. On the URP renderer asset's Caelix feature: set `backend` to `InlineRayQuery` and assign
-   `RayQuery/CaelixPathTraceRQ.compute` to `rayQueryTracer`.
-
-To go back to DXR, reverse steps 3 and 4.
+3. On the URP renderer asset's Caelix feature, assign `RayQuery/CaelixPathTraceRQ.compute` to
+   `rayQueryTracer`. For budget mode, assign `Budget/CaelixBudgetRQ.compute` to the budget
+   feature's `rayQueryTracer`, and enable exactly one of the two features.
 
 ## One scene renderer at a time
 
-Enable exactly one of `CaelixRenderer` and `CaelixRayQueryRenderer`. Both read the same
-`ClientWorld`, and one piece of that state is single-consumer (sector removal itself is an event,
-`ClientWorld.SectorRemoving`, that every subscriber receives):
+Enable exactly one scene renderer per `ClientWorld`. Some of the state a renderer reads is
+single-consumer:
 
 * `EntityView.ShouldResetMotionVectors` is a flag its consumer **clears** after its per-view loop, so
-  the second renderer never sees the frame an entity settled and keeps reprojecting it.
+  a second renderer never sees the frame an entity settled and keeps reprojecting it.
 
-The renderer feature's `backend` only chooses which renderer the G-buffer stage reads; it does not
-disable the other component.
+## Binding a renderer to a world that already exists
+
+`SetSource(ClientWorld)` retires every group of the previous world, binds the new one and raises a
+full-upload flag; `EnsureSource` calls it, `ReleaseResources` calls it with null, and `OnEnable`
+raises the flag too. On the next `Tick`, a renderer holding that flag builds each view's work from
+`VoxelEntityData.EnumerateBricks()` — every key as an `Updated` change carrying
+`BlockBrickAdded | GeometryWithLocalNeighbor` — instead of from the cycle's change list.
+
+This is what removed the old limitation that **a renderer enabled mid-Play drew nothing**: the
+bricks that arrived before the renderer was looking had already had their require-update flags
+consumed, and nothing would ever name them again.
 
 ## Notes
 
@@ -231,8 +220,9 @@ disable the other component.
 * `CaelixPathTraceRQ.compute` declares `#pragma require inlineraytracing Int64`. `Int64` is there
   because the brick DDA loads the 64-bit micro-occupancy word in one go. If an editor ever rejects
   `Int64` as an unknown feature, drop it from that line rather than changing the DDA.
-* `CaelixBrickTrace.hlsl` guards its DXR wrapper behind `#ifndef CAELIX_INLINE_RAY_QUERY`, so the
-  compute translation unit never sees a DXR intrinsic. The DDA core itself takes its ray as
-  parameters and is shared byte-for-byte by both backends.
+* `CaelixBrickTrace.hlsl` contains no DXR intrinsic at all: the DDA core takes its ray as
+  parameters, and the brick-record loads go through the page switch in `CaelixBrickPages.hlsl`,
+  which the including file must define first (`CaelixRayQueryTrace.hlsl` is where that order is
+  fixed). The record layout it decodes is `Caelix.Rendering.BrickRecordLayout` on the C# side.
 * The compute kernel is `CaelixPathTraceKernel`, dispatched at 8x8 threads per group; threads past
   `g_LaunchDim` return immediately.

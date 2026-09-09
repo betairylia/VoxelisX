@@ -5,7 +5,7 @@ var dead = new System.Collections.Generic.HashSet<UnityEngine.GraphicsBuffer>();
 var allAS = new System.Collections.Generic.List<UnityEngine.Rendering.RayTracingAccelerationStructure>();
 
 var mat = UnityEditor.AssetDatabase.LoadAssetAtPath<UnityEngine.Material>(
-    "Packages/ink.irylia.caelix/Runtime/Resources/Caelix_BrickRTTest.mat");
+    "Packages/ink.irylia.caelix/Runtime/Resources/Caelix_AabbInstance.mat");
 if (mat == null) return "MATERIAL NOT FOUND";
 
 System.Func<int, UnityEngine.GraphicsBuffer> MakeBuf = null;

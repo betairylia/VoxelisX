@@ -1,8 +1,10 @@
 #ifndef CAELIX_RAY_QUERY_TRACE_INCLUDED
 #define CAELIX_RAY_QUERY_TRACE_INCLUDED
 
-// Inline ray query replacement for TraceRay + the BrickRTTest hit group. The including compute
-// kernel must define CAELIX_INLINE_RAY_QUERY, CAELIX_LAUNCH_INDEX, and declare
+// Traces one ray against the voxel RTAS with an inline ray query, running the brick DDA on every
+// procedural candidate. The AABB instances still carry a material (Unity requires one), but it is
+// the CaelixAabbInstance stub and its hit group never runs. The including compute kernel must
+// define CAELIX_INLINE_RAY_QUERY, CAELIX_LAUNCH_INDEX, and declare
 // `RaytracingAccelerationStructure g_AccelStruct;` before including this file.
 
 #include "../Utils/Utils.hlsl"
@@ -11,12 +13,12 @@
 
 #include "../CaelixBrickTrace.hlsl"
 
-// The instance record and g_Instances, shared with the DXR hit group in CAELIX_BRICK_POOL_TABLE storage.
+// The per-instance record table, g_Instances: page, brick base and previous transform per RTAS instance.
 #include "../CaelixInstanceRecord.hlsl"
 
-// Same contract as the DXR hit group: on a hit the payload carries T, the packed
-// (blockID << 16 | faceNormalFlags) word, the packed world normal and the packed previous-frame
-// world offset; on a miss the payload stays cleared.
+// On a hit the payload carries T, the packed (blockID << 16 | faceNormalFlags) word, the packed
+// world normal and the packed previous-frame world offset; on a miss the payload stays cleared,
+// which is exactly what CaelixApplyVoxelMiss would leave behind.
 void CaelixRayQueryTrace(RayDesc ray, out RayPayload payload)
 {
     CaelixClearRayPayload(payload);
@@ -45,7 +47,7 @@ void CaelixRayQueryTrace(RayDesc ray, out RayPayload payload)
         float t = CaelixTraceBrickPrimitiveCore(
             brickBase, q.CandidateObjectRayOrigin(), q.CandidateObjectRayDirection(), q.CommittedRayT(), attrib);
 
-        // ReportHit in the DXR path rejects t outside [TMin, TCurrent]; here that is our job.
+        // Nothing rejects a t outside [TMin, TCurrent] for us, so the test is done here.
         if (attrib.matID_faceNormal != 0u && t >= ray.TMin && t < q.CommittedRayT())
         {
             q.CommitProceduralPrimitiveHit(t);

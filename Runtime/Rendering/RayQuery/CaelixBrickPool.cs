@@ -12,14 +12,13 @@ namespace Caelix.Rendering.RayQuery
     /// <see cref="MaxPages"/> raw buffers.
     /// </summary>
     /// <remarks>
-    /// The DXR path can bind a per-sector brick buffer through the hit group's property block.
-    /// Ray queries have no shader table and therefore no per-instance binding, so every sector's
+    /// Ray queries have no shader table and therefore no per-instance binding, so every group's
     /// bricks have to live in a shared buffer and be addressed by an offset the shader looks up from
     /// <see cref="CaelixRayQueryInstanceTable"/>.
     /// <para>
     /// <b>Why pages.</b> One <see cref="GraphicsBuffer"/> cannot exceed
     /// <see cref="SystemInfo.maxGraphicsBufferSize"/> (about 3.9 GB on current desktop drivers), and
-    /// one brick record is <see cref="SectorRenderer.BRICK_DATA_LENGTH"/> words = 1096 bytes, so a
+    /// one brick record is <see cref="BrickRecordLayout.BRICK_DATA_LENGTH"/> words = 1096 bytes, so a
     /// large streamed scene (millions of live bricks) does not fit a single buffer. The pool
     /// therefore owns several, each capped at <see cref="PageCapacityLimitBricks"/>, and every
     /// sector names the page its bricks live in. The shader picks the page with a switch over the
@@ -28,7 +27,7 @@ namespace Caelix.Rendering.RayQuery
     /// </para>
     /// <para>
     /// <b>Why compaction.</b> Sectors own power-of-two-sized ranges (see
-    /// <see cref="SectorRenderer.GetCapacity"/>), handed out by a per-page bump pointer with a
+    /// <see cref="BrickRecordLayout.GetCapacity"/>), handed out by a per-page bump pointer with a
     /// per-capacity free list. That fragments while a world streams: freed ranges are only reused by
     /// a sector of the exact same size. Re-packing the live ranges when a page grows is what keeps a
     /// page from growing past the buffer cap out of fragmentation alone. It is not free — the live
@@ -57,19 +56,11 @@ namespace Caelix.Rendering.RayQuery
         public const int MaxPages = 32;
 
         /// <summary>
-        /// Pages that can be bound by name: the shaders select the page with a switch over that many
-        /// named buffers, so it must match <c>CAELIX_BRICK_PAGES</c> in
-        /// <c>Shaders/CaelixBrickPages.hlsl</c>. Used by the inline ray query kernel and by the DXR
-        /// hit group in <see cref="CaelixBrickStorage.SharedPoolInstanceTable"/> storage. In
-        /// <see cref="CaelixBrickStorage.SharedPool"/> storage the hit group binds its page per
-        /// instance instead and can use every page up to <see cref="MaxPages"/>.
+        /// Pages that can be bound by name: the trace kernel selects the page with a switch over
+        /// that many named buffers, so it must match <c>CAELIX_BRICK_PAGES</c> in
+        /// <c>Shaders/CaelixBrickPages.hlsl</c>. A page past this many is invisible to the kernel,
+        /// which is why the scene renderer refuses to open more.
         /// </summary>
-        /// <remarks>
-        /// Sixteen rather than four because of the DXR view limit: a hit group reads its page
-        /// through a buffer view, capped at 2^18 bricks (see
-        /// <see cref="DefaultDxrPageCapacityLimitBricks"/>), so a large scene needs many more pages
-        /// there than the compute kernel does at 2^21 bricks each.
-        /// </remarks>
         public const int MaxNamedPages = 16;
 
         /// <summary>
@@ -184,7 +175,7 @@ namespace Caelix.Rendering.RayQuery
         }
 
         /// <summary>Estimated VRAM usage of every page in bytes.</summary>
-        public ulong VRAMUsage => (ulong)TotalCapacityBricks * SectorRenderer.BRICK_DATA_LENGTH * 4;
+        public ulong VRAMUsage => (ulong)TotalCapacityBricks * BrickRecordLayout.BRICK_DATA_LENGTH * 4;
 
         /// <summary>
         /// The kernels that move brick records between and inside page buffers. Also what sectors
@@ -204,7 +195,7 @@ namespace Caelix.Rendering.RayQuery
         public CaelixBrickPool(
             int initialCapacityBricks = 4096, int pageCapacityLimitBricks = DefaultPageCapacityLimitBricks)
         {
-            long bytesPerBrick = SectorRenderer.BRICK_DATA_LENGTH * 4;
+            long bytesPerBrick = BrickRecordLayout.BRICK_DATA_LENGTH * 4;
             long platformLimit = SystemInfo.maxGraphicsBufferSize / bytesPerBrick;
             long limit = Math.Min(pageCapacityLimitBricks, platformLimit);
 
@@ -254,7 +245,7 @@ namespace Caelix.Rendering.RayQuery
         /// Reserves a range of <paramref name="capacityBricks"/> bricks on some page.
         /// </summary>
         /// <param name="capacityBricks">
-        /// Power of two, at least 1. Callers size this with <see cref="SectorRenderer.GetCapacity"/>
+        /// Power of two, at least 1. Callers size this with <see cref="BrickRecordLayout.GetCapacity"/>
         /// so the free lists stay dense.
         /// </param>
         /// <returns>
@@ -453,7 +444,7 @@ namespace Caelix.Rendering.RayQuery
 
             GraphicsBuffer previous = page.Buffer;
             page.Buffer = new GraphicsBuffer(
-                GraphicsBuffer.Target.Raw, newCapacity * SectorRenderer.BRICK_DATA_LENGTH, 4);
+                GraphicsBuffer.Target.Raw, newCapacity * BrickRecordLayout.BRICK_DATA_LENGTH, 4);
             page.CapacityBricks = newCapacity;
             page.Generation++;
 
@@ -475,7 +466,7 @@ namespace Caelix.Rendering.RayQuery
             Page page = new Page
             {
                 Buffer = new GraphicsBuffer(
-                    GraphicsBuffer.Target.Raw, capacity * SectorRenderer.BRICK_DATA_LENGTH, 4),
+                    GraphicsBuffer.Target.Raw, capacity * BrickRecordLayout.BRICK_DATA_LENGTH, 4),
                 CapacityBricks = capacity
             };
 

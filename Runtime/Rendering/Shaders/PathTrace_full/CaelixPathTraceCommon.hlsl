@@ -1,15 +1,15 @@
 #ifndef CAELIX_PATH_TRACE_COMMON_INCLUDED
 #define CAELIX_PATH_TRACE_COMMON_INCLUDED
 
-// The whole path tracer, shared by both trace backends. This file has no #include and no #pragma
+// The whole path tracer. This file has no #include and no #pragma
 // of its own: the entry file must already have included URP Core.hlsl, Packing.hlsl,
 // Assets/Caelix/VoxelMaterials.hlsl, RayPayload.hlsl, Utils/Utils.hlsl, Utils/BlueNoise.hlsl,
 // def/CaelixRayPayloadUtils.hlsl and def/CaelixUtils.hlsl, and must have declared g_AccelStruct.
 //
 // The including entry file defines:
 //   CAELIX_TRACE_RAY(ray, payload)  -- trace `ray` (RayDesc) and fill `payload` (RayPayload); a miss leaves the payload cleared
-//   CAELIX_LAUNCH_INDEX             -- uint2, this pixel's launch index (DXR: DispatchRaysIndex().xy)
-//   CAELIX_LAUNCH_DIM               -- uint2, the launch size (DXR: DispatchRaysDimensions().xy)
+//   CAELIX_LAUNCH_INDEX             -- uint2, this pixel's launch index (the kernel's SV_DispatchThreadID.xy)
+//   CAELIX_LAUNCH_DIM               -- uint2, the launch size
 #ifndef CAELIX_TRACE_RAY
 #error "CaelixPathTraceCommon.hlsl: define CAELIX_TRACE_RAY before including"
 #endif

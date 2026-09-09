@@ -1,6 +1,6 @@
 fileFormatVersion: 2
-guid: bff544cbe0384a8409d64cfca7bef279
-RayTracingShaderImporter:
+guid: 9d93b644d152c0b45962f5bb07dca943
+ComputeShaderImporter:
   externalObjects: {}
   userData: 
   assetBundleName: 

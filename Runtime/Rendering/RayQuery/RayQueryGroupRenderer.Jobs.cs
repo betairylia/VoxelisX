@@ -11,11 +11,10 @@ namespace Caelix.Rendering.RayQuery
     /// GPU-ready brick records and AABBs.
     /// </summary>
     /// <remarks>
-    /// The body per brick is <see cref="SectorRenderer.GenerateSectorRenderDataJob"/>'s, with
-    /// group-local brick positions in place of sector-local ones. What differs is the selection:
-    /// instead of sweeping every brick position of a sector and testing its flags, this job walks
-    /// the entries the change list already named, binds each brick by key and opens a 27-brick
-    /// window around it for the face culling.
+    /// Per brick it writes one record in the layout <see cref="BrickRecordLayout"/> describes, in
+    /// group-local brick positions. Work is selected from the change list rather than by sweeping
+    /// brick positions: the job walks the entries this cycle already named, binds each brick by key
+    /// and opens a 27-brick window around it for the face culling.
     /// </remarks>
     [BurstCompile]
     internal struct GenerateGroupRenderDataJob : IJob
@@ -47,11 +46,11 @@ namespace Caelix.Rendering.RayQuery
         /// <summary>
         /// Buffer of all AABB bounding boxes used for RayTracingAccelerationStructure.
         /// </summary>
-        public NativeList<SectorRenderer.AABB> aabbBuffer;
+        public NativeList<BrickRecordLayout.BrickAABB> aabbBuffer;
 
         /// <summary>
         /// The brick records this run rewrote, back to back,
-        /// <see cref="SectorRenderer.BRICK_DATA_LENGTH"/> words each.
+        /// <see cref="BrickRecordLayout.BRICK_DATA_LENGTH"/> words each.
         /// </summary>
         /// <remarks>
         /// Records exist on the GPU only. This job stages the ones it touched and the renderer
@@ -146,7 +145,7 @@ namespace Caelix.Rendering.RayQuery
             }
 
             int stagingBase = stagingWords.Length;
-            stagingWords.Resize(stagingBase + SectorRenderer.BRICK_DATA_LENGTH, NativeArrayOptions.ClearMemory);
+            stagingWords.Resize(stagingBase + BrickRecordLayout.BRICK_DATA_LENGTH, NativeArrayOptions.ClearMemory);
             stagingSlots.Add(rendererBrickId);
             return stagingBase;
         }
@@ -200,13 +199,13 @@ namespace Caelix.Rendering.RayQuery
             // An all-zero record: no occupancy, so the slot traces as empty even if the
             // acceleration structure has not been rebuilt yet.
             int removedBase = TakeStagingRecord(removed, ref removedStagingBase);
-            stagingWords[removedBase] = SectorRenderer.PackBrickInfo(RenderGroup.LocalBrickIdx(local), 0);
+            stagingWords[removedBase] = BrickRecordLayout.PackBrickInfo(RenderGroup.LocalBrickIdx(local), 0);
             removedStagingBase[removed] = removedBase;
 
             // A NaN min.x marks the AABB as an inactive primitive (DXR spec), so the freed slot
             // drops out of the BLAS at the next build instead of leaving a stale full-brick box
             // over dead data.
-            aabbBuffer[removed] = new SectorRenderer.AABB()
+            aabbBuffer[removed] = new BrickRecordLayout.BrickAABB()
             {
                 min = new Vector3(float.NaN, float.NaN, float.NaN),
                 max = new Vector3(float.NaN, float.NaN, float.NaN)
@@ -256,9 +255,9 @@ namespace Caelix.Rendering.RayQuery
 
                         int rendererBlockIdx = BrickKey.ToBlockIdx(bx, by, bz) / 2;
 
-                        uint block0Data = SectorRenderer.GetRendererBlockData(
+                        uint block0Data = BrickRecordLayout.GetRendererBlockData(
                             block0, brickOriginBlock + new int3(bx, by, bz), ref neighborhood);
-                        uint block1Data = SectorRenderer.GetRendererBlockData(
+                        uint block1Data = BrickRecordLayout.GetRendererBlockData(
                             block1, brickOriginBlock + new int3(bx + 1, by, bz), ref neighborhood);
 
                         // Do nothing if blocks are empty. The staged record starts zeroed, so an
@@ -283,7 +282,7 @@ namespace Caelix.Rendering.RayQuery
                             rendererBrickBase = TakeStagingRecord(rendererBrickId, ref removedStagingBase);
                         }
 
-                        stagingWords[rendererBrickBase + SectorRenderer.BRICK_BLOCK_DATA_OFFSET + rendererBlockIdx] =
+                        stagingWords[rendererBrickBase + BrickRecordLayout.BRICK_BLOCK_DATA_OFFSET + rendererBlockIdx] =
                             unchecked((int)((block0Data << 16) | block1Data));
 
                         if (!Block.IsRendererDataEmpty(block0Data))
@@ -311,14 +310,14 @@ namespace Caelix.Rendering.RayQuery
                 return;
             }
 
-            stagingWords[rendererBrickBase] = SectorRenderer.PackBrickInfo(localIdx, coarseOccupancy);
-            stagingWords[rendererBrickBase + 1] = SectorRenderer.PackBrickTightBounds(occupiedMin, occupiedMax);
+            stagingWords[rendererBrickBase] = BrickRecordLayout.PackBrickInfo(localIdx, coarseOccupancy);
+            stagingWords[rendererBrickBase + 1] = BrickRecordLayout.PackBrickTightBounds(occupiedMin, occupiedMax);
 
             // AABB tight to the occupied blocks, in group-local block coordinates.
             // Rewritten on every rebuild since edits can grow or shrink the bounds;
             // syncRecord[0] (=> BLAS rebuild) is raised only when the box actually
             // changed, or for new bricks whose slot may hold garbage/NaN.
-            SectorRenderer.AABB tightAABB = new SectorRenderer.AABB()
+            BrickRecordLayout.BrickAABB tightAABB = new BrickRecordLayout.BrickAABB()
             {
                 min = new Vector3(brickBlockPos.x + occupiedMin.x,
                                   brickBlockPos.y + occupiedMin.y,
@@ -328,7 +327,7 @@ namespace Caelix.Rendering.RayQuery
                                   brickBlockPos.z + occupiedMax.z + 1)
             };
 
-            SectorRenderer.AABB previousAABB = aabbBuffer[rendererBrickId];
+            BrickRecordLayout.BrickAABB previousAABB = aabbBuffer[rendererBrickId];
             bool boundsChanged = isAdded
                 || previousAABB.min.x != tightAABB.min.x
                 || previousAABB.min.y != tightAABB.min.y
@@ -346,9 +345,9 @@ namespace Caelix.Rendering.RayQuery
 
         private void AccumulateOccupancy(ref uint coarseOccupancy, int bp, int bx, int by, int bz)
         {
-            int coarseBit = SectorRenderer.ToCoarseOccupancyBit(bx, by, bz);
-            int microBit = SectorRenderer.ToMicroOccupancyBit(bx, by, bz);
-            int wordOffset = SectorRenderer.ToOccupancyWordOffset(coarseBit, microBit);
+            int coarseBit = BrickRecordLayout.ToCoarseOccupancyBit(bx, by, bz);
+            int microBit = BrickRecordLayout.ToMicroOccupancyBit(bx, by, bz);
+            int wordOffset = BrickRecordLayout.ToOccupancyWordOffset(coarseBit, microBit);
             uint wordBit = 1u << (microBit & 31);
 
             coarseOccupancy |= 1u << coarseBit;

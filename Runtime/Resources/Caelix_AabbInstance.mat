@@ -7,7 +7,7 @@ Material:
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_Name: Caelix_BrickRTTest
+  m_Name: Caelix_AabbInstance
   m_Shader: {fileID: 4800000, guid: d723e5291b8c7e34f913bf19c05a4892, type: 3}
   m_Parent: {fileID: 0}
   m_ModifiedSerializedProperties: 0

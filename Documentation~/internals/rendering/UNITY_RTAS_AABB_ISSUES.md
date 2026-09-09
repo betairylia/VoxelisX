@@ -112,7 +112,7 @@ disposing the old ones does not either.
 ### Workaround in this project
 
 Keep the previous buffer alive until `RenderModifyAS` has removed and re-added the instance on the
-new buffer, then dispose it (`staleAabbBuffer` in `SectorRenderer` and `RayQueryGroupRenderer`).
+new buffer, then dispose it (`staleAabbBuffer` in `RayQueryGroupRenderer`).
 A handle ledger (`InstanceHandleLedger`) logs any claim of a live handle or release by a
 non-owner. `RtasAabbBufferLifetimeTests` pins the behaviour so an upgrade that changes it is
 noticed.
@@ -180,5 +180,4 @@ On any AABB change the renderer disposes the instance's buffer and allocates a f
 capacity, uploads the whole box list, zeroes `aabbCount` on the config so it is rebuilt against the
 new buffer, and removes and re-adds the instance. Since 2026-09-10 the dispose is deferred until
 after the re-add (issue 1). The fallback if the churn ever becomes a problem is content-independent
-full-brick boxes, which change the AABB set only on brick add and remove; it sits commented out in
-`SectorRenderer.Jobs.cs`.
+full-brick boxes, which change the AABB set only on brick add and remove.

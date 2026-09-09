@@ -1,9 +1,8 @@
 #ifndef CAELIX_INSTANCE_RECORD_INCLUDED
 #define CAELIX_INSTANCE_RECORD_INCLUDED
 
-// The per-RTAS-instance record, shared by both backends: the inline ray query kernel reads it for
-// every procedural candidate, and the DXR hit group reads it in CAELIX_BRICK_POOL_TABLE storage,
-// where the shader record carries no local root arguments at all.
+// The per-RTAS-instance record. An inline ray query has no shader table, so this is how
+// per-instance data reaches the trace: the kernel reads the record of every procedural candidate.
 
 // One record per RTAS instance, indexed by InstanceID(). Mirrors Caelix.Rendering.RayQuery.CaelixRayQueryInstance.
 struct CaelixRayQueryInstance
@@ -14,10 +13,10 @@ struct CaelixRayQueryInstance
     float4 prevRow1;
     float4 prevRow2;
     float4 prevRow3;
-    // Word offset of this sector's first brick inside its page.
+    // Word offset of this group's first brick inside its page.
     uint brickBase;
     uint hashSeed;
-    // Brick pool page holding this sector's bricks.
+    // Brick pool page holding this group's bricks.
     uint page;
     uint pad1;
 };

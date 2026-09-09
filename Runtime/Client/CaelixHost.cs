@@ -56,9 +56,8 @@ namespace Caelix
         [SerializeField] protected PhysicsWorldConfig physicsWorld;
 
         [SerializeField] protected VoxelRayCast rayCaster;
-        [SerializeField] protected CaelixRenderer rayTracedRenderer;
 
-        [Tooltip("Inline ray query renderer. Enable at most one of the two ray-traced renderers.")]
+        [Tooltip("Inline ray query renderer. Enable at most one ray-traced renderer.")]
         [SerializeField] protected CaelixRayQueryRenderer rayQueryRenderer;
 
         [SerializeField] protected VoxelMeshRendererComponent meshingRenderer;
@@ -317,12 +316,10 @@ namespace Caelix
 
             long clientEnd = Stopwatch.GetTimestamp();
 
-            bool usedRayTracing = rayTracedRenderer != null && rayTracedRenderer.enabled;
             bool usedRayQuery = rayQueryRenderer != null && rayQueryRenderer.enabled;
             bool usedMeshing = meshingRenderer != null && meshingRenderer.enabled;
             using (s_RenderersMarker.Auto())
             {
-                if (usedRayTracing) rayTracedRenderer.Tick();
                 if (usedRayQuery) rayQueryRenderer.Tick();
                 if (usedMeshing) meshingRenderer.Tick();
             }
@@ -341,7 +338,7 @@ namespace Caelix
             LastTickTimings = new HostTimingStats
             {
                 IsCreated = true,
-                UsedRayTracing = usedRayTracing || usedRayQuery,
+                UsedRayTracing = usedRayQuery,
                 UsedMeshing = usedMeshing,
                 ServerTicks = serverTicks,
                 ServerMilliseconds = TicksToMilliseconds(serverElapsed),

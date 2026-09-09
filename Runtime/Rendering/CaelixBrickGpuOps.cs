@@ -31,10 +31,9 @@ namespace Caelix.Rendering
     /// immediate: there are a handful per frame, and their range table is a few bytes.
     /// </para>
     /// <para>
-    /// One instance is shared: the brick pool owns one (<see cref="RayQuery.CaelixBrickPool.Ops"/>),
-    /// and <see cref="CaelixRenderer"/> owns one for per-sector storage, where there is no pool.
-    /// Whoever owns it must call <see cref="FlushScatter"/> once per frame, after every sector has
-    /// staged, and once more before disposing it.
+    /// One instance is shared: the brick pool owns it (<see cref="RayQuery.CaelixBrickPool.Ops"/>).
+    /// Its owner must call <see cref="FlushScatter"/> once per frame, after every group has staged,
+    /// and once more before disposing it.
     /// </para>
     /// </remarks>
     public sealed class CaelixBrickGpuOps : IDisposable
@@ -228,7 +227,7 @@ namespace Caelix.Rendering
         /// <param name="dst">Buffer holding the destination range.</param>
         /// <param name="slotBase">The range's first brick inside <paramref name="dst"/>.</param>
         /// <param name="words">
-        /// The records back to back, <see cref="SectorRenderer.BRICK_DATA_LENGTH"/> words each. Only
+        /// The records back to back, <see cref="BrickRecordLayout.BRICK_DATA_LENGTH"/> words each. Only
         /// the first <paramref name="brickCount"/> records are read, and they are copied out before
         /// this returns, so the caller may free them straight away.
         /// </param>
@@ -256,7 +255,7 @@ namespace Caelix.Rendering
             // writing past the end of the buffer.
             EnsureFrameStaging(Math.Max(brickCount, Math.Min(batchLimitBricks, batchBricks + brickCount)));
 
-            int brickWords = SectorRenderer.BRICK_DATA_LENGTH;
+            int brickWords = BrickRecordLayout.BRICK_DATA_LENGTH;
             frameStaging[frameStagingIndex].SetData(
                 words, 0, batchBricks * brickWords, brickCount * brickWords);
 
@@ -382,7 +381,7 @@ namespace Caelix.Rendering
         {
             ref GraphicsBuffer buffer = ref frameStaging[frameStagingIndex];
 
-            int brickWords = SectorRenderer.BRICK_DATA_LENGTH;
+            int brickWords = BrickRecordLayout.BRICK_DATA_LENGTH;
             int capacityBricks = NextPow2(Math.Max(bricks, Math.Min(MinFrameStagingBricks, batchLimitBricks)));
             if (buffer != null && buffer.IsValid() && buffer.count >= capacityBricks * brickWords)
             {

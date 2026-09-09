@@ -15,7 +15,7 @@
 #pragma kernel CaelixMoveBrickRanges
 #pragma kernel CaelixScatterBricks
 
-// Words in one brick record. Must equal SectorRenderer.BRICK_DATA_LENGTH.
+// Words in one brick record. Must equal BrickRecordLayout.BRICK_DATA_LENGTH.
 #define CAELIX_BRICK_WORDS 274
 #define CAELIX_BRICK_BYTES (CAELIX_BRICK_WORDS * 4)
 

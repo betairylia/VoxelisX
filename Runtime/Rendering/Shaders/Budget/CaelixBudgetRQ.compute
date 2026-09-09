@@ -1,4 +1,4 @@
-// Budget mode raygen.
+// Budget mode trace kernel.
 //
 // One dispatch, a fixed and small ray budget per pixel:
 //   1 primary ray
@@ -7,7 +7,7 @@
 // + 1 hard sun shadow ray
 // + N AO rays (N = 1 by default) capped at K_MAX world units
 //
-// Nothing here shades. The raygen only fills the G-buffer and the raw AO/shadow signal; the
+// Nothing here shades. The kernel only fills the G-buffer and the raw AO/shadow signal; the
 // lambert + GGX evaluation happens once per pixel in CaelixBudgetShade.shader after the
 // AO/shadow has been denoised. That is what makes this "kinda deferred".
 //
@@ -16,29 +16,51 @@
 // the primary hit distance so the present stage's SV_Depth still composites against ordinary
 // rasterized geometry. The PSR path length goes to g_CurrentDepthHistory, which is what the
 // denoiser reprojects against.
+//
+// Rays are inline ray queries (TraceRayInline) run from a compute kernel, one thread per pixel:
+// the same dispatch model as CaelixPathTraceRQ.compute, and the same CaelixRayQueryTrace call.
 
-#pragma target 6.6
+#include "UnityRayQuery.cginc"
+
+#pragma target 5.0
+#pragma kernel CaelixBudgetKernel
+#pragma kernel CaelixBakeMaterialsAlbedo
+#pragma kernel CaelixBakeMaterialsEmission
+#pragma kernel CaelixBakeMaterialsScalars
 #pragma use_dxc
-
-// Uncomment this pragma for debugging the HLSL code in PIX. GPU performance will be impacted.
-#pragma enable_ray_tracing_shader_debug_symbols
-
-#pragma max_recursion_depth 1
+// Int64 is required by the brick DDA, which loads the 64-bit micro-occupancy word in one go. If a
+// future editor reports Int64 as an unknown feature here, drop it from this line rather than
+// changing the DDA.
+#pragma require inlineraytracing Int64
 
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
 #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Packing.hlsl"
 #include "Assets/Caelix/VoxelMaterials.hlsl"
+
+#include "../RayQuery/CaelixMaterialTable.hlsl"
+
 #include "../RayPayload.hlsl"
 #include "../Utils/Utils.hlsl"
+
+#define CAELIX_INLINE_RAY_QUERY 1
+
+// Per-thread launch index, assigned at kernel entry; everything that used DispatchRaysIndex reads it.
+static uint2 _CaelixLaunchIndex;
+uint2 g_LaunchDim;
+#define CAELIX_LAUNCH_INDEX _CaelixLaunchIndex
+#define CAELIX_LAUNCH_DIM g_LaunchDim
+
 #include "../Utils/BlueNoise.hlsl"
 #include "../def/CaelixRayPayloadUtils.hlsl"
 #include "../def/CaelixUtils.hlsl"
 
+RaytracingAccelerationStructure g_AccelStruct;
+
+#include "../RayQuery/CaelixRayQueryTrace.hlsl"
+
 /////////////////////////////////////////////////////////////////////////////////////////////////
 // GLOBALS
 /////////////////////////////////////////////////////////////////////////////////////////////////
-
-RaytracingAccelerationStructure g_AccelStruct : register(t0, space1);
 
 // View. No initializers on these: DXC ignores an initializer on an external global and logs a
 // diagnostic for it, and the pass sets both every frame anyway.
@@ -72,7 +94,7 @@ float g_BudgetAOMaxDistance;
 // THE TRANSPARENCY INVARIANT this whole chain leans on, established by the DDA rather than here:
 // a transparent cell only reports a hit when the ray crosses one of its flagged faces, and a face
 // is flagged when the neighbour on THAT side is a different transparent medium
-// (SectorRenderer.Jobs.cs GetRendererBlockData -> faceMask, tested in CaelixBrickTrace.hlsl by
+// (BrickRecordLayout.GetRendererBlockData -> faceMask, tested in CaelixBrickTrace.hlsl by
 // `GetFaceBits(blockID) & normalFlags`; normalFlags names the face the ray entered through, so
 // e.g. a ray moving +X sets the bit for the -X neighbour). Therefore:
 //
@@ -81,8 +103,8 @@ float g_BudgetAOMaxDistance;
 // The air cell in front of a pane of glass is NOT reported to a ray arriving through air -- its
 // -X neighbour is also air. The glass cell is, and on the way out the air cell behind the glass
 // is. So the chain never has to second-guess whether a hit is a real interface; it only has to
-// remember which medium it is currently in, exactly as Full_raygen's `previousTransparentMaterial`
-// does.
+// remember which medium it is currently in, exactly as the path tracer's
+// `previousTransparentMaterial` does.
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 // BUFFERS
@@ -123,7 +145,7 @@ struct BudgetPath
     uint rngState;
     // The medium the ray is currently travelling through, as a material ID. 0 is vacuum, and so
     // is material 0 (air: white, IOR 1), so GET_MATERIAL is safe to call on it unconditionally.
-    // Same role as Full_raygen's `previousTransparentMaterial`.
+    // Same role as the path tracer's `previousTransparentMaterial`.
     int mediumMaterial;
     bool deltaUsed;
     // True when the delta actually split into a reflect/refract checkerboard pair, so the
@@ -192,7 +214,7 @@ float CaelixBudgetTraceVisibility(float3 origin, float3 direction, float maxDist
     {
         RayPayload payload;
         CaelixClearRayPayload(payload);
-        TraceRay(g_AccelStruct, RAY_FLAG_FORCE_OPAQUE, 0xFF, 0, 1, 0, ray, payload);
+        CaelixRayQueryTrace(ray, payload);
 
         if (!CaelixRayPayloadHasHit(payload))
         {
@@ -274,7 +296,7 @@ void CaelixBudgetAdvanceRefraction(
     // Split the two branches spatially rather than sampling one of them, so both are present
     // every frame and the cross resolve averages them back together. Total internal reflection
     // has no refracted branch, so it stays unsplit.
-    float doRefraction = (canRefract && ((DispatchRaysIndex().x + DispatchRaysIndex().y) % 2) == 0) ? 1.0f : 0.0f;
+    float doRefraction = (canRefract && ((CAELIX_LAUNCH_INDEX.x + CAELIX_LAUNCH_INDEX.y) % 2) == 0) ? 1.0f : 0.0f;
 
     // A fixed 50/50 checkerboard carries no Fresnel weight of its own, so the surviving branch
     // has to carry it explicitly or glass reads as a 50% mirror at every angle. The x2 cancels
@@ -302,11 +324,10 @@ void CaelixBudgetAdvanceRefraction(
 // MAIN
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
-[shader("raygeneration")]
-void MainRayGenShader()
+void CaelixBudgetMain()
 {
-    uint2 rayDispatchIndex = DispatchRaysIndex().xy;
-    uint2 rayLaunchDim = DispatchRaysDimensions().xy;
+    uint2 rayDispatchIndex = CAELIX_LAUNCH_INDEX;
+    uint2 rayLaunchDim = CAELIX_LAUNCH_DIM;
     uint2 outputLaunchIndex = uint2(rayDispatchIndex.x, rayLaunchDim.y - rayDispatchIndex.y - 1);
 
     // Every pixel starts its draw index at 0 every frame, because SampleBlueNoise shifts the STBN
@@ -355,7 +376,7 @@ void MainRayGenShader()
         CaelixClearRayPayload(payload);
         ray.TMin = 0;
         ray.TMax = K_T_MAX;
-        TraceRay(g_AccelStruct, RAY_FLAG_FORCE_OPAQUE, 0xFF, 0, 1, 0, ray, payload);
+        CaelixRayQueryTrace(ray, payload);
 
         if (!CaelixRayPayloadHasHit(payload))
         {
@@ -526,8 +547,14 @@ void MainRayGenShader()
     AOShadowTarget[outputLaunchIndex] = float4(occlusion / float(aoSamples), sunVisibility, 0.0f, 1.0f);
 }
 
-[shader("miss")]
-void MainMissShader0(inout RayPayload payload : SV_RayPayload)
+[numthreads(8, 8, 1)]
+void CaelixBudgetKernel(uint3 id : SV_DispatchThreadID)
 {
-    CaelixApplyVoxelMiss(payload);
+    if (any(id.xy >= g_LaunchDim))
+    {
+        return;
+    }
+
+    _CaelixLaunchIndex = id.xy;
+    CaelixBudgetMain();
 }

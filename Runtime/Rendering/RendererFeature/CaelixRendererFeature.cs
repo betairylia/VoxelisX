@@ -10,9 +10,8 @@ using Caelix.Rendering.RayQuery;
 /// This type is only the settings surface and the wiring; the work is split across three stages that
 /// hand off through <see cref="CaelixFrameResources"/> in the frame's context container:
 /// <list type="number">
-/// <item><see cref="CaelixGBufferPass"/> — the voxel trace producing the Caelix G-buffer, run by
-/// either of two interchangeable backends (see <see cref="CaelixTraceBackend"/>): the DXR pipeline
-/// or an inline ray query compute kernel;</item>
+/// <item><see cref="CaelixGBufferPass"/> — the voxel trace producing the Caelix G-buffer, an
+/// inline ray query compute kernel dispatched against the scene's acceleration structure;</item>
 /// <item><see cref="CaelixDenoisePass"/> — spatial filter, temporal accumulation, composite;</item>
 /// <item><see cref="CaelixPresentPass"/> — debug view selection and copy to the camera target.</item>
 /// </list>
@@ -25,13 +24,7 @@ using Caelix.Rendering.RayQuery;
 /// </remarks>
 public class CaelixRendererFeature : ScriptableRendererFeature
 {
-    /// <summary>Ray tracing shader used for voxel rendering.</summary>
-    [SerializeField] private RayTracingShader tracer;
-
-    [SerializeField, Tooltip("DXR: raygen/intersection/closest-hit through the shader table (needs a CaelixRenderer in the scene). InlineRayQuery: a compute kernel with TraceRayInline (needs a CaelixRayQueryRenderer in the scene). Same path-tracing code either way.")]
-    private CaelixTraceBackend backend = CaelixTraceBackend.DXR;
-
-    /// <summary>Inline ray query path tracer (CaelixPathTraceRQ.compute). Used only when <see cref="backend"/> is InlineRayQuery.</summary>
+    /// <summary>Inline ray query path tracer (CaelixPathTraceRQ.compute).</summary>
     [SerializeField] private ComputeShader rayQueryTracer;
 
     [SerializeField] private Shader indirectPipelineShader, indirectATrousShader;
@@ -101,9 +94,6 @@ public class CaelixRendererFeature : ScriptableRendererFeature
     private Material flipEdgesMaterial;
 
     /// <summary>Cached scene renderer. Resolved lazily because the feature can be created before the scene loads.</summary>
-    private CaelixRenderer caelixXRenderer;
-
-    /// <summary>Cached inline ray query scene renderer. Resolved lazily, like <see cref="caelixXRenderer"/>.</summary>
     private CaelixRayQueryRenderer rayQueryRenderer;
 
     public override void Create()
@@ -145,24 +135,12 @@ public class CaelixRendererFeature : ScriptableRendererFeature
             return;
         }
 
-        if (backend == CaelixTraceBackend.InlineRayQuery)
+        if (!TryResolveRayQueryRenderer())
         {
-            if (!TryResolveRayQueryRenderer())
-            {
-                return;
-            }
-
-            gbufferPass.ConfigureRayQuery(rayQueryRenderer, rayQueryTracer, blueNoiseTexture, BuildTraceSettings());
+            return;
         }
-        else
-        {
-            if (!TryResolveCaelixRenderer())
-            {
-                return;
-            }
 
-            gbufferPass.ConfigureSettings(caelixXRenderer, tracer, blueNoiseTexture, BuildTraceSettings());
-        }
+        gbufferPass.ConfigureSettings(rayQueryRenderer, rayQueryTracer, blueNoiseTexture, BuildTraceSettings());
 
         denoisePass.ConfigureSettings(
             indirectDenoising, BuildTemporalSettings(), colorResolve, resolveDeltaCheckerboard);
@@ -222,18 +200,6 @@ public class CaelixRendererFeature : ScriptableRendererFeature
             bilinearHistory = temporalRadianceBilinearHistory,
             maximumAverageFrames = maximumAverageFrames
         };
-    }
-
-    private bool TryResolveCaelixRenderer()
-    {
-        // Deliberately not CaelixRenderer.instance: MonoSingleton spawns a temporary GameObject
-        // when none exists, which would litter the scene from a renderer feature.
-        if (caelixXRenderer == null)
-        {
-            caelixXRenderer = FindFirstObjectByType<CaelixRenderer>();
-        }
-
-        return caelixXRenderer != null;
     }
 
     private bool TryResolveRayQueryRenderer()

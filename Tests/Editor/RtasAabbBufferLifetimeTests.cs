@@ -15,7 +15,7 @@ namespace Caelix.Tests
     /// </summary>
     public class RtasAabbBufferLifetimeTests
     {
-        private const string MaterialPath = "Packages/ink.irylia.caelix/Runtime/Resources/Caelix_BrickRTTest.mat";
+        private const string MaterialPath = "Packages/ink.irylia.caelix/Runtime/Resources/Caelix_AabbInstance.mat";
 
         private sealed class Scope : System.IDisposable
         {

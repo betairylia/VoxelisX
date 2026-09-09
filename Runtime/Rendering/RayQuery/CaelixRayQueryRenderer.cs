@@ -14,19 +14,23 @@ namespace Caelix.Rendering.RayQuery
     /// brick pool and the instance table that <c>CaelixPathTraceRQ.compute</c> reads.
     /// </summary>
     /// <remarks>
-    /// Sibling of <see cref="CaelixRenderer"/>, which drives the DXR pipeline backend. Both build
-    /// the same kind of RTAS from the same per-brick render data; this one publishes per-instance
-    /// data through GPU buffers rather than a shader table, because a ray query has no hit group.
+    /// Per-instance data is published through GPU buffers rather than a shader table, because a
+    /// ray query has no hit group to carry it.
     /// <para>
-    /// Work comes from the client store's per-cycle change list rather than from a sweep of every
-    /// sector's flags, and an instance is a <see cref="RenderGroup"/> rather than a sector. At
-    /// group shift 4 a group covers exactly the same volume a sector does, so the image, the
-    /// instance count and the BLAS set are unchanged.
+    /// Work comes from the client store's per-cycle change list, and an instance is a
+    /// <see cref="RenderGroup"/> rather than a sector; nothing here knows how storage groups
+    /// bricks.
     /// </para>
     /// <para>
-    /// Enable exactly ONE of the two at a time. <see cref="EntityView.ShouldResetMotionVectors"/>
-    /// is a flag its consumer clears, so two renderers reading the same client world would steal
-    /// each other's reset.
+    /// Enable exactly ONE scene renderer per client world.
+    /// <see cref="EntityView.ShouldResetMotionVectors"/> is a flag its consumer clears, so two
+    /// renderers reading the same client world would steal each other's reset.
+    /// </para>
+    /// <para>
+    /// A renderer bound after its world already exists still draws it: <see cref="SetSource"/>
+    /// raises a full-upload flag, and the next <see cref="Tick"/> builds its work from every
+    /// allocated brick instead of from the cycle's changes. That is what removed the old
+    /// "a renderer enabled mid-Play draws nothing" limitation.
     /// </para>
     /// </remarks>
     public class CaelixRayQueryRenderer : MonoBehaviour
@@ -61,6 +65,14 @@ namespace Caelix.Rendering.RayQuery
 
         private ClientWorld source;
         private bool warnedTooManyPages;
+
+        /// <summary>
+        /// Set while the renderer still has to upload a world it did not watch being built: after
+        /// binding a source, and after its resources were released. The next <see cref="Tick"/>
+        /// builds every view's work from <c>EnumerateBricks</c> rather than from the cycle's
+        /// changes, then clears it.
+        /// </summary>
+        private bool needsInitialUpload;
 
         /// <summary>Maps view → render group → renderer, so render state stays separate from entity data.</summary>
         private readonly Dictionary<EntityView, Dictionary<int3, RayQueryGroupRenderer>> groups = new();
@@ -150,6 +162,10 @@ namespace Caelix.Rendering.RayQuery
             public NativeList<int> GroupStarts;
             public NativeList<int> GroupCounts;
 
+            /// <summary>Buckets a plain array, for the work a full upload synthesises.</summary>
+            public static ChangeBuckets Build(NativeArray<BrickChange> changes)
+                => Build(changes.AsReadOnly());
+
             public static ChangeBuckets Build(NativeArray<BrickChange>.ReadOnly changes)
             {
                 int count = changes.Length;
@@ -205,7 +221,7 @@ namespace Caelix.Rendering.RayQuery
             {
                 Debug.LogWarning(
                     "Caelix: this device reports no inline ray tracing support. " +
-                    "CaelixPathTraceRQ.compute cannot run; use the DXR backend instead.", this);
+                    "The Caelix trace kernels cannot run on it.", this);
             }
 
             Pool ??= new CaelixBrickPool(4096, pageCapacityLimitBricks);
@@ -242,7 +258,7 @@ namespace Caelix.Rendering.RayQuery
         /// <summary>Binds to the host's client world. Safe to call every frame.</summary>
         private bool EnsureSource()
         {
-            if (source != null)
+            if (source != null && !source.IsDisposed)
             {
                 return true;
             }
@@ -258,13 +274,63 @@ namespace Caelix.Rendering.RayQuery
             }
 
             host.EnsureInitialized();
-            source = host.ClientWorld;
+            SetSource(host.ClientWorld);
+            return source != null;
+        }
+
+        /// <summary>Binds a replica and releases every group belonging to the previous one.</summary>
+        /// <remarks>
+        /// The new world is uploaded in full on the next <see cref="Tick"/>: its bricks were
+        /// replicated before this renderer was looking, so its change list says nothing about them.
+        /// </remarks>
+        public void SetSource(ClientWorld world)
+        {
+            if (ReferenceEquals(source, world))
+            {
+                return;
+            }
+
+            if (source != null)
+            {
+                source.ViewDespawning -= OnViewDespawning;
+                source.Owner.WorldRemoving -= OnWorldRemoving;
+            }
+
+            foreach (var viewGroups in groups)
+            {
+                foreach (var kvp in viewGroups.Value)
+                {
+                    kvp.Value.MarkRemove();
+                    if (_voxelScene != null && Instances != null && Pool != null)
+                    {
+                        kvp.Value.RemoveMe(ref _voxelScene, Instances, Pool);
+                    }
+                    else
+                    {
+                        kvp.Value.Dispose();
+                    }
+                }
+
+                viewGroups.Value.Clear();
+            }
+
+            groups.Clear();
+
+            source = world != null && !world.IsDisposed ? world : null;
             if (source != null)
             {
                 source.ViewDespawning += OnViewDespawning;
+                source.Owner.WorldRemoving += OnWorldRemoving;
+                needsInitialUpload = true;
             }
+        }
 
-            return source != null;
+        private void OnWorldRemoving(ClientWorld world)
+        {
+            if (ReferenceEquals(source, world))
+            {
+                SetSource(null);
+            }
         }
 
         private void OnViewDespawning(EntityView view)
@@ -282,6 +348,12 @@ namespace Caelix.Rendering.RayQuery
 
             viewGroups.Clear();
             groups.Remove(view);
+        }
+
+        /// <summary>A re-enabled renderer starts from nothing, so it uploads the world in full.</summary>
+        private void OnEnable()
+        {
+            needsInitialUpload = true;
         }
 
         private void Update()
@@ -339,13 +411,26 @@ namespace Caelix.Rendering.RayQuery
                 EntityView view = views[v];
                 Dictionary<int3, RayQueryGroupRenderer> viewGroups = GetOrCreateViewGroups(view);
 
-                NativeArray<BrickChange>.ReadOnly changes = view.Data.Changes;
-                if (changes.Length == 0 && !AnyGroupNeedsFullRebuild(viewGroups))
+                ChangeBuckets buckets;
+                if (needsInitialUpload)
                 {
-                    continue;
+                    // Nothing told this renderer about the bricks that arrived before it was
+                    // bound, so the work is synthesised from the storage itself.
+                    NativeArray<BrickChange> initial = BuildFullUploadChanges(view.Data);
+                    buckets = ChangeBuckets.Build(initial);
+                    initial.Dispose();
+                }
+                else
+                {
+                    NativeArray<BrickChange>.ReadOnly changes = view.Data.Changes;
+                    if (changes.Length == 0 && !AnyGroupNeedsFullRebuild(viewGroups))
+                    {
+                        continue;
+                    }
+
+                    buckets = ChangeBuckets.Build(changes);
                 }
 
-                ChangeBuckets buckets = ChangeBuckets.Build(changes);
                 frameBuckets.Add((view, buckets));
                 NativeArray<BrickChange> sorted = buckets.Sorted.AsArray();
 
@@ -385,6 +470,8 @@ namespace Caelix.Rendering.RayQuery
                     CombineJob(kvp.Value, ref renderJobs, ref hasRenderJobs);
                 }
             }
+
+            needsInitialUpload = false;
 
             if (hasRenderJobs)
             {
@@ -483,6 +570,41 @@ namespace Caelix.Rendering.RayQuery
             return viewGroups;
         }
 
+        /// <summary>
+        /// One <see cref="BrickChange"/> per allocated brick of an entity, as if every one of them
+        /// had just been added. The caller owns the array.
+        /// </summary>
+        /// <remarks>
+        /// The two require-update bits are what <c>ChangeBuckets</c> keeps and what the group job
+        /// acts on: BlockBrickAdded claims a renderer brick id, GeometryWithLocalNeighbor rebuilds
+        /// the record. Walked twice rather than grown, because the enumerator allocates nothing.
+        /// </remarks>
+        private static NativeArray<BrickChange> BuildFullUploadChanges(VoxelEntityData data)
+        {
+            int count = 0;
+            foreach (int3 unused in data.EnumerateBricks())
+            {
+                count++;
+            }
+
+            var changes = new NativeArray<BrickChange>(
+                count, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
+
+            int i = 0;
+            foreach (int3 key in data.EnumerateBricks())
+            {
+                changes[i++] = new BrickChange
+                {
+                    Key = key,
+                    Kind = ChangeKind.Updated,
+                    SourceFlags = DirtyFlags.None,
+                    RequiredFlags = DirtyFlags.BlockBrickAdded | DirtyFlags.GeometryWithLocalNeighbor
+                };
+            }
+
+            return changes;
+        }
+
         private static bool SliceHasUpdate(NativeArray<BrickChange> sorted, int start, int count)
         {
             for (int i = start; i < start + count; i++)
@@ -537,11 +659,10 @@ namespace Caelix.Rendering.RayQuery
         /// <summary>Releases all GPU resources.</summary>
         private void ReleaseResources()
         {
-            if (source != null)
-            {
-                source.ViewDespawning -= OnViewDespawning;
-                source = null;
-            }
+            // Unbinds the events and retires every group while the pool and the table are still
+            // alive; whatever the renderer draws next has to be uploaded in full.
+            SetSource(null);
+            needsInitialUpload = true;
 
             for (int i = 0; i < frameBuckets.Count; i++)
             {

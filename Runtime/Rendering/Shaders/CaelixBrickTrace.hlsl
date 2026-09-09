@@ -41,7 +41,7 @@
 
 // Word 0: absolute brick index + coarse occupancy. Word 1: packed tight occupied
 // bounds (also keeps uint64_t occupancy loads 8-byte aligned).
-// Word 1 layout (matches SectorRenderer.PackBrickTightBounds, both bounds inclusive):
+// Word 1 layout (matches BrickRecordLayout.PackBrickTightBounds, both bounds inclusive):
 // [minX:0-2][minY:3-5][minZ:6-8][maxX:9-11][maxY:12-14][maxZ:15-17]
 #define BRICK_INFO_WORDS 2
 #define BRICK_TIGHT_AXIS_MASK 7u
@@ -108,22 +108,9 @@ inline half3 UnpackObjectNormal(uint normalFlag)
     return objectNormals[firstbitlow(normalFlag)];
 }
 
-// Brick record loads. The DXR hit group reads its per-instance g_bricks directly; the inline ray
-// query kernel, and the DXR hit group in brick pool mode, route these through a page switch
-// (see CaelixBrickPages.hlsl) and define all three before including this file.
-#ifndef CAELIX_BRICKS_LOAD
-// StructuredBuffer<uint> g_bricks;
-ByteAddressBuffer g_bricks;
-#define CAELIX_BRICKS_LOAD(byteAddress) g_bricks.Load(byteAddress)
-#define CAELIX_BRICKS_LOAD2(byteAddress) g_bricks.Load2(byteAddress)
-#define CAELIX_BRICKS_LOAD64(byteAddress) g_bricks.Load<uint64_t>(byteAddress)
-#endif
-
-// Per-instance values the hit group's property block carries in PerSector and SharedPool storage.
-// CAELIX_BRICK_POOL_TABLE reads both from the instance record instead and never references these,
-// so they are left declared: an unreferenced global is dropped and no local root argument survives.
-float4x4 _PrevObjectToWorld;
-uint _SectorHashSeed;
+// Brick record loads. Every brick lives in the shared brick pool, so the three macros route
+// through the page switch in CaelixBrickPages.hlsl; the including file defines them before it
+// includes this one (CaelixRayQueryTrace.hlsl is where that order is fixed).
 
 inline CaelixBrickHit CaelixMakeBrickMiss()
 {
@@ -154,17 +141,12 @@ inline uint CaelixFaceID(int3 normal)
     return 5u;
 }
 
-inline uint CaelixMakeVoxelFaceHash(int3 sectorLocalVoxelPos, int3 normal)
+// No face hash is produced: NormalTarget.b carries the 6-bit face-direction flags instead. The
+// per-instance seed the old body hashed with lives in the instance record (hashSeed) if this is
+// ever revived.
+inline uint CaelixMakeVoxelFaceHash(int3 localVoxelPos, int3 normal)
 {
     return 0u;
-    uint voxelKey =
-        uint(sectorLocalVoxelPos.x & 0x7F) |
-        (uint(sectorLocalVoxelPos.y & 0x7F) << 7) |
-        (uint(sectorLocalVoxelPos.z & 0x7F) << 14) |
-        (CaelixFaceID(normal) << 21);
-
-    uint hash = CaelixHashAvalanche(_SectorHashSeed ^ voxelKey) & VOXEL_FACE_HASH_MASK;
-    return hash == 0u ? 1u : (hash & 0xFFFF);
 }
 
 inline int3 CaelixBrickRayIntMask(bool3 mask)
@@ -368,8 +350,8 @@ inline float CaelixTraceBrickRay(uint brickBase, float3 entryPositionInBrick, fl
 
 // Ray-vs-brick intersection, with every input passed in rather than read from a DXR intrinsic, so
 // the inline ray query kernel can run it on each procedural candidate. `brickBase` is the word
-// offset of the brick record in the buffer CAELIX_BRICKS_LOAD reads: a per-sector buffer in the
-// DXR path, the brick pool page the candidate's instance record names in the ray query path.
+// offset of the brick record inside the brick pool page the candidate's instance record names,
+// which is the buffer CAELIX_BRICKS_LOAD reads.
 inline float CaelixTraceBrickPrimitiveCore(uint brickBase, float3 objectRayOrigin, float3 objectRayDir, float tCurrent, out AttributeData attrib)
 {
     // attrib.matID_faceNormal = ((0x8001 & 0xFFFF) << 16) + (0b010000 >> 26);
@@ -447,32 +429,5 @@ inline float CaelixTraceBrickPrimitiveCore(uint brickBase, float3 objectRayOrigi
         (normalFlags << 26)  | CaelixGetCoarseOccupancy(brickInfo.x),
         attrib);
 }
-
-#ifndef CAELIX_INLINE_RAY_QUERY
-#ifdef CAELIX_BRICK_POOL
-// Pool storage: g_bricks is bound per instance to the POOL PAGE holding this sector, and the
-// sector's first brick sits _BrickBase words into it. The page is selected on the CPU by binding
-// the right buffer, not by a switch in the shader: a 4-way buffer switch inside the intersection
-// shader measured ~40% slower than a direct per-instance binding on the 8K StressTest scene.
-uint _BrickBase;
-#endif
-
-// DXR intersection-shader entry: the brick is the current procedural primitive of the current instance.
-inline float CaelixTraceBrickPrimitive(out AttributeData attrib)
-{
-#if defined(CAELIX_BRICK_POOL_TABLE)
-    // Everything per instance comes from the InstanceID()-indexed record: the shader record of this
-    // hit group carries no local root arguments at all.
-    CaelixRayQueryInstance inst = g_Instances[InstanceID()];
-    _CaelixBrickPage = inst.page;
-    uint brickBase = inst.brickBase + CaelixBrickBase(PrimitiveIndex());
-#elif defined(CAELIX_BRICK_POOL)
-    uint brickBase = _BrickBase + CaelixBrickBase(PrimitiveIndex());
-#else
-    uint brickBase = CaelixBrickBase(PrimitiveIndex());
-#endif
-    return CaelixTraceBrickPrimitiveCore(brickBase, ObjectRayOrigin(), ObjectRayDirection(), RayTCurrent(), attrib);
-}
-#endif
 
 #endif

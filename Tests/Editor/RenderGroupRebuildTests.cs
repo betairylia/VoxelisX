@@ -18,7 +18,7 @@ namespace Caelix.Tests
         private sealed class JobScope : System.IDisposable
         {
             public SparseBrickIdTable Map = SparseBrickIdTable.New(Allocator.Persistent);
-            public NativeList<SectorRenderer.AABB> Aabbs = new(0, Allocator.Persistent);
+            public NativeList<BrickRecordLayout.BrickAABB> Aabbs = new(0, Allocator.Persistent);
 
             public GenerateGroupRenderDataJob Run(
                 VoxelEntityData data, NativeArray<BrickChange> changes, int count, bool fullUpload)
@@ -33,7 +33,7 @@ namespace Caelix.Tests
                     forceFullUpload = fullUpload,
                     rendererBrickMap = Map,
                     aabbBuffer = Aabbs,
-                    stagingWords = new NativeList<int>(SectorRenderer.BRICK_DATA_LENGTH * 4, Allocator.TempJob),
+                    stagingWords = new NativeList<int>(BrickRecordLayout.BRICK_DATA_LENGTH * 4, Allocator.TempJob),
                     stagingSlots = new NativeList<int>(4, Allocator.TempJob),
                     syncRecord = new NativeArray<int>(1, Allocator.TempJob)
                 };
