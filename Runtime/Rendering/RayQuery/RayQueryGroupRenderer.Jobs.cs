@@ -83,6 +83,11 @@ namespace Caelix.Rendering.RayQuery
 
             if (forceFullUpload)
             {
+                // The renderer's previous state may name bricks whose storage went away while the
+                // group waited for pool room: those keys are absent from the enumeration below and
+                // their removal records were consumed by earlier cycles. Start from nothing.
+                RetireAllRendererBricks(ref removedStagingBase);
+
                 foreach (int3 key in data.EnumerateBricks(
                              RenderGroup.FirstKey(groupKey), RenderGroup.LastKey(groupKey)))
                 {
@@ -144,6 +149,29 @@ namespace Caelix.Rendering.RayQuery
             stagingWords.Resize(stagingBase + SectorRenderer.BRICK_DATA_LENGTH, NativeArrayOptions.ClearMemory);
             stagingSlots.Add(rendererBrickId);
             return stagingBase;
+        }
+
+        /// <summary>
+        /// Retires every renderer brick of the group, so a full rebuild re-adds exactly the bricks
+        /// that exist now. The re-adds reuse the zeroed records staged here (see
+        /// <see cref="TakeStagingRecord"/>), so a surviving brick costs no extra record.
+        /// </summary>
+        private unsafe void RetireAllRendererBricks(ref NativeArray<int> removedStagingBase)
+        {
+            if (!rendererBrickMap.IsCreated || rendererBrickMap.Count == 0)
+            {
+                return;
+            }
+
+            for (int i = 0; i < SparseBrickIdTable.CAPACITY; i++)
+            {
+                if (rendererBrickMap.indices[i] == SparseBrickIdTable.EMPTY)
+                {
+                    continue;
+                }
+
+                RemoveRendererBrick(RenderGroup.LocalBrickPos(i), ref removedStagingBase);
+            }
         }
 
         /// <summary>

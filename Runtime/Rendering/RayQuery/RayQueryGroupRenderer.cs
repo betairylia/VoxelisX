@@ -42,6 +42,10 @@ namespace Caelix.Rendering.RayQuery
         /// <summary>Flat index of a group-local brick position, x-fastest. Matches the shader's decode.</summary>
         public static int LocalBrickIdx(int3 local) => local.x | (local.y << Shift) | (local.z << (2 * Shift));
 
+        /// <summary>Group-local brick position of a flat index produced by <see cref="LocalBrickIdx"/>.</summary>
+        public static int3 LocalBrickPos(int localIdx)
+            => new int3(localIdx & Mask, (localIdx >> Shift) & Mask, localIdx >> (2 * Shift));
+
         /// <summary>The lowest brick key of a group.</summary>
         public static int3 FirstKey(int3 group) => group << Shift;
 
