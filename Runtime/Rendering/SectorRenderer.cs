@@ -171,7 +171,7 @@ namespace Caelix.Rendering
         private int currentGPUBrickBufferCapacity;
 
         // --- Brick pool mode. All null / -1 / false in per-sector mode, where `pool` is always null.
-        // Mirrors RayQuerySectorRenderer's bookkeeping; read that class for the reasoning.
+        // Mirrors RayQueryGroupRenderer's bookkeeping; read that class for the reasoning.
 
         /// <summary>This sector's slice of the brick pool. Null until the first allocation.</summary>
         /// <remarks>
@@ -198,7 +198,7 @@ namespace Caelix.Rendering
         /// </summary>
         /// <remarks>
         /// Claimed once and kept for this renderer's whole life, because the ID has to survive the
-        /// remove + add a geometry rebuild does. Mirrors <see cref="RayQuerySectorRenderer"/>.
+        /// remove + add a geometry rebuild does. Mirrors <see cref="RayQueryGroupRenderer"/>.
         /// </remarks>
         private int instanceSlot = -1;
 

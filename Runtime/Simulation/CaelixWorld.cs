@@ -680,6 +680,13 @@ namespace Caelix.Simulation
                         sector.Value.ApplySnapshot();
                     }
                 }
+
+                // The snapshot swap exchanges whole slot tables, so every brick pointer bound
+                // before it names the wrong buffer now. The epoch is what a consumer asserts on.
+                for (int i = 0; i < entityKeys.Length; i++)
+                {
+                    entities[entityKeys[i]].MarkStorageMutated();
+                }
             }
 
             /////////////////////////////////////////////////////////////////////////
@@ -800,6 +807,13 @@ namespace Caelix.Simulation
                 alienElapsedTicks = Stopwatch.GetTimestamp() - alienStartTicks;
             }
 
+            // The change list is complete only here: alien propagation is the last stage that can
+            // mark a brick, so every consumer of this tick's changes reads after this point.
+            for (int i = 0; i < entityKeys.Length; i++)
+            {
+                entities[entityKeys[i]].BuildChangeList();
+            }
+
             entityKeys.Dispose();
 
             long totalElapsedTicks = Stopwatch.GetTimestamp() - tickStartTicks;
@@ -826,6 +840,7 @@ namespace Caelix.Simulation
                 {
                     VoxelEntityData e = Data.VoxelEntities[keys[i]];
                     e.ClearDirtyFlags();
+                    e.ClearChanges();
                     Data.VoxelEntities[keys[i]] = e;
                 }
             }

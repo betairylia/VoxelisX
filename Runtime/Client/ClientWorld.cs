@@ -312,6 +312,14 @@ namespace Caelix.Client
             }
             
             dirtyPropagationHandle.Complete();
+
+            // Propagation is final here, so this is where the frame's change list is published.
+            // Every view, not only the dirty ones: a clean entity's build walks no sector and the
+            // guard that catches a double build has to see every view exactly once.
+            for (int i = 0; i < viewList.Count; i++)
+            {
+                viewList[i].Data.BuildChangeList();
+            }
         }
 
         /// <summary>Ends the dirty lifetime of this frame's applied bricks. Call after the renderers ran.</summary>
@@ -321,6 +329,7 @@ namespace Caelix.Client
             {
                 EntityView view = viewList[i];
                 view.Data.ClearDirtyFlags();
+                view.Data.ClearChanges();
             }
         }
 

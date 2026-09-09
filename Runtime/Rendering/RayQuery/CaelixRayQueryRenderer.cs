@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using Unity.Collections;
 using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
@@ -13,8 +15,14 @@ namespace Caelix.Rendering.RayQuery
     /// </summary>
     /// <remarks>
     /// Sibling of <see cref="CaelixRenderer"/>, which drives the DXR pipeline backend. Both build
-    /// the same kind of RTAS from the same render-data job; this one publishes per-instance data
-    /// through GPU buffers rather than a shader table, because a ray query has no hit group.
+    /// the same kind of RTAS from the same per-brick render data; this one publishes per-instance
+    /// data through GPU buffers rather than a shader table, because a ray query has no hit group.
+    /// <para>
+    /// Work comes from the client store's per-cycle change list rather than from a sweep of every
+    /// sector's flags, and an instance is a <see cref="RenderGroup"/> rather than a sector. At
+    /// group shift 4 a group covers exactly the same volume a sector does, so the image, the
+    /// instance count and the BLAS set are unchanged.
+    /// </para>
     /// <para>
     /// Enable exactly ONE of the two at a time. <see cref="EntityView.ShouldResetMotionVectors"/>
     /// is a flag its consumer clears, so two renderers reading the same client world would steal
@@ -27,7 +35,7 @@ namespace Caelix.Rendering.RayQuery
         [SerializeField] private CaelixHost host;
 
         /// <summary>
-        /// Material handed to every sector's <see cref="RayTracingAABBsInstanceConfig"/>. The ray
+        /// Material handed to every group's <see cref="RayTracingAABBsInstanceConfig"/>. The ray
         /// query path never runs its hit group, but the config requires a material.
         /// </summary>
         public Material brickMat;
@@ -45,7 +53,7 @@ namespace Caelix.Rendering.RayQuery
         /// <summary>Debug field showing how many pages the pool has open.</summary>
         public int poolPages;
 
-        /// <summary>Debug field showing how many bricks are reserved by a live sector range.</summary>
+        /// <summary>Debug field showing how many bricks are reserved by a live group range.</summary>
         public int poolLiveBricks;
 
         /// <summary>Debug field showing how many bricks the pool's page buffers can hold together.</summary>
@@ -54,10 +62,17 @@ namespace Caelix.Rendering.RayQuery
         private ClientWorld source;
         private bool warnedTooManyPages;
 
-        /// <summary>Maps (view, sectorPos) → renderer, so render state stays separate from entity data.</summary>
-        private readonly Dictionary<(EntityView entity, int3 sectorPos), RayQuerySectorRenderer> sectorRenderers = new();
+        /// <summary>Maps view → render group → renderer, so render state stays separate from entity data.</summary>
+        private readonly Dictionary<EntityView, Dictionary<int3, RayQueryGroupRenderer>> groups = new();
 
-        private readonly List<(EntityView entity, int3 sectorPos)> removalScratch = new();
+        /// <summary>Groups the current pass has emitted a bucketed job for. Cleared per view.</summary>
+        private readonly HashSet<int3> bucketedGroups = new();
+
+        /// <summary>Groups this tick decided to drop, collected while their dictionary is being read.</summary>
+        private readonly List<(EntityView view, int3 groupKey)> groupRemovalScratch = new();
+
+        /// <summary>This tick's bucketed change lists, one per view that had work. Disposed after pass 2a.</summary>
+        private readonly List<(EntityView view, ChangeBuckets buckets)> frameBuckets = new();
 
         private RayTracingAccelerationStructure _voxelScene;
 
@@ -108,6 +123,75 @@ namespace Caelix.Rendering.RayQuery
         /// </summary>
         public bool HasResources => isActiveAndEnabled && Pool != null && Instances != null
             && MaterialTable != null && _voxelScene != null;
+
+        /// <summary>
+        /// One view's change list, reordered so that each render group's entries are contiguous.
+        /// </summary>
+        /// <remarks>
+        /// Every list is allocated with capacity for at least one element, so that a view whose
+        /// change list is empty — a group that only needs a full rebuild still has to be handed a
+        /// valid array — produces containers a job can be scheduled against.
+        /// </remarks>
+        private struct ChangeBuckets : IDisposable
+        {
+            /// <summary>Require-update bits that make a brick worth a render job.</summary>
+            private const DirtyFlags RenderFlags =
+                DirtyFlags.BlockBrickAdded | DirtyFlags.GeometryWithLocalNeighbor;
+
+            public NativeArray<BrickChange> Source;
+            public NativeList<BrickChange> Sorted;
+            public NativeList<int3> GroupKeys;
+            public NativeList<int> GroupStarts;
+            public NativeList<int> GroupCounts;
+
+            public static ChangeBuckets Build(NativeArray<BrickChange>.ReadOnly changes)
+            {
+                int count = changes.Length;
+                var buckets = new ChangeBuckets
+                {
+                    Source = new NativeArray<BrickChange>(
+                        math.max(1, count), Allocator.TempJob, NativeArrayOptions.UninitializedMemory),
+                    Sorted = new NativeList<BrickChange>(math.max(1, count), Allocator.TempJob),
+                    GroupKeys = new NativeList<int3>(math.max(1, count), Allocator.TempJob),
+                    GroupStarts = new NativeList<int>(math.max(1, count), Allocator.TempJob),
+                    GroupCounts = new NativeList<int>(math.max(1, count), Allocator.TempJob)
+                };
+
+                // Only entries the renderer acts on are bucketed: a removal, or a brick that
+                // was added or whose geometry (own or neighbouring) changed. Entries that carry
+                // only automata flags would otherwise create a group renderer just to drop it.
+                int kept = 0;
+                for (int i = 0; i < count; i++)
+                {
+                    BrickChange change = changes[i];
+                    if (change.Kind == ChangeKind.Removed || (change.RequiredFlags & RenderFlags) != 0)
+                    {
+                        buckets.Source[kept++] = change;
+                    }
+                }
+
+                new BucketChangesJob
+                {
+                    changes = buckets.Source,
+                    changeCount = kept,
+                    sorted = buckets.Sorted,
+                    groupKeys = buckets.GroupKeys,
+                    groupStarts = buckets.GroupStarts,
+                    groupCounts = buckets.GroupCounts
+                }.Run();
+
+                return buckets;
+            }
+
+            public void Dispose()
+            {
+                if (Source.IsCreated) Source.Dispose();
+                if (Sorted.IsCreated) Sorted.Dispose();
+                if (GroupKeys.IsCreated) GroupKeys.Dispose();
+                if (GroupStarts.IsCreated) GroupStarts.Dispose();
+                if (GroupCounts.IsCreated) GroupCounts.Dispose();
+            }
+        }
 
         private void Awake()
         {
@@ -172,40 +256,26 @@ namespace Caelix.Rendering.RayQuery
             if (source != null)
             {
                 source.ViewDespawning += OnViewDespawning;
-                source.SectorRemoving += RemoveSectorRenderer;
             }
 
             return source != null;
         }
 
-        /// <summary>Runs from <see cref="ClientWorld.SectorRemoving"/> while the sector storage is still alive.</summary>
-        private void RemoveSectorRenderer(EntityView view, int3 sectorPos)
-        {
-            var key = (view, sectorPos);
-            if (!sectorRenderers.TryGetValue(key, out RayQuerySectorRenderer renderer)) return;
-            renderer.MarkRemove();
-            renderer.RemoveMe(ref _voxelScene, Instances, Pool);
-            sectorRenderers.Remove(key);
-        }
-
         private void OnViewDespawning(EntityView view)
         {
-            removalScratch.Clear();
-            foreach (var kvp in sectorRenderers)
+            if (!groups.TryGetValue(view, out Dictionary<int3, RayQueryGroupRenderer> viewGroups))
             {
-                if (kvp.Key.entity == view)
-                {
-                    removalScratch.Add(kvp.Key);
-                }
+                return;
             }
 
-            for (int i = 0; i < removalScratch.Count; i++)
+            foreach (var kvp in viewGroups)
             {
-                RayQuerySectorRenderer renderer = sectorRenderers[removalScratch[i]];
-                renderer.MarkRemove();
-                renderer.RemoveMe(ref _voxelScene, Instances, Pool);
-                sectorRenderers.Remove(removalScratch[i]);
+                kvp.Value.MarkRemove();
+                kvp.Value.RemoveMe(ref _voxelScene, Instances, Pool);
             }
+
+            viewGroups.Clear();
+            groups.Remove(view);
         }
 
         private void Update()
@@ -217,11 +287,12 @@ namespace Caelix.Rendering.RayQuery
         /// Performs one render update tick for all voxel entity views.
         /// </summary>
         /// <remarks>
-        /// Pass 1 emits the render jobs and drops sectors that went away. Pass 2a consumes the
-        /// finished jobs and settles every sector's pool range. Pass 2b writes bricks and updates
-        /// the acceleration structure. 2a and 2b are separate loops on purpose: 2a can grow a page,
-        /// which replaces its buffer and moves every range on it, so no sector may write its records
-        /// before every sector has settled its range.
+        /// Pass 1 buckets each view's changes by render group and emits one job per group. Pass 2a
+        /// consumes the finished jobs, settles every group's pool range and drops the groups that
+        /// render nothing. Pass 2b writes bricks and updates the acceleration structure. 2a and 2b
+        /// are separate loops on purpose: 2a can grow a page, which replaces its buffer and moves
+        /// every range on it, so no group may write its records before every group has settled its
+        /// range.
         /// </remarks>
         public void Tick()
         {
@@ -245,51 +316,58 @@ namespace Caelix.Rendering.RayQuery
             bool hasRenderJobs = false;
 
             IReadOnlyList<EntityView> views = source.Views;
+            frameBuckets.Clear();
 
-            // Pass 1: Emit jobs & remove unused sectors
+            // Pass 1: bucket this cycle's changes and emit one job per touched render group.
             for (int v = 0; v < views.Count; v++)
             {
                 EntityView view = views[v];
+                Dictionary<int3, RayQueryGroupRenderer> viewGroups = GetOrCreateViewGroups(view);
 
-                // Sector removal arrives through ClientWorld.SectorRemoving (RemoveSectorRenderer).
-                // A sector can also vanish without it (a replicated world rebuild, for instance).
-                // Sweeping the tracked keys against the live sector map is what keeps the pool from
-                // leaking ranges in that case.
-                removalScratch.Clear();
-                foreach (var kvp in sectorRenderers)
+                NativeArray<BrickChange>.ReadOnly changes = view.Data.Changes;
+                if (changes.Length == 0 && !AnyGroupNeedsFullRebuild(viewGroups))
                 {
-                    if (kvp.Key.entity == view && !view.Data.sectors.ContainsKey(kvp.Key.sectorPos))
-                    {
-                        removalScratch.Add(kvp.Key);
-                    }
+                    continue;
                 }
 
-                for (int i = 0; i < removalScratch.Count; i++)
+                ChangeBuckets buckets = ChangeBuckets.Build(changes);
+                frameBuckets.Add((view, buckets));
+                NativeArray<BrickChange> sorted = buckets.Sorted.AsArray();
+
+                bucketedGroups.Clear();
+                for (int g = 0; g < buckets.GroupKeys.Length; g++)
                 {
-                    RayQuerySectorRenderer stale = sectorRenderers[removalScratch[i]];
-                    stale.MarkRemove();
-                    stale.RemoveMe(ref _voxelScene, Instances, Pool);
-                    sectorRenderers.Remove(removalScratch[i]);
+                    int3 groupKey = buckets.GroupKeys[g];
+                    bucketedGroups.Add(groupKey);
+
+                    if (!viewGroups.TryGetValue(groupKey, out RayQueryGroupRenderer renderer))
+                    {
+                        // A group nobody renders yet has nothing to retire, so a slice of removals
+                        // alone does not warrant a renderer.
+                        if (!SliceHasUpdate(sorted, buckets.GroupStarts[g], buckets.GroupCounts[g]))
+                        {
+                            continue;
+                        }
+
+                        renderer = new RayQueryGroupRenderer(view, groupKey, brickMat);
+                        viewGroups[groupKey] = renderer;
+                    }
+
+                    renderer.RenderEmitJob(view.Data, sorted, buckets.GroupStarts[g], buckets.GroupCounts[g]);
+                    CombineJob(renderer, ref renderJobs, ref hasRenderJobs);
                 }
 
-                // Emit render jobs for all sectors
-                foreach (var kvp in view.Data.sectors)
+                // A group whose records the pool dropped has to regenerate everything, whether or
+                // not this cycle's changes name it.
+                foreach (var kvp in viewGroups)
                 {
-                    int3 sectorPos = kvp.Key;
-
-                    var key = (view, sectorPos);
-                    if (!sectorRenderers.ContainsKey(key))
+                    if (!kvp.Value.NeedsFullRebuild || bucketedGroups.Contains(kvp.Key))
                     {
-                        sectorRenderers[key] = new RayQuerySectorRenderer(view, sectorPos, brickMat);
+                        continue;
                     }
 
-                    RayQuerySectorRenderer renderer = sectorRenderers[key];
-                    renderer.RenderEmitJob(kvp.Value, view.Data.sectorNeighbors[sectorPos]);
-                    if (renderer.TryGetScheduledJobHandle(out JobHandle sectorJob))
-                    {
-                        renderJobs = JobHandle.CombineDependencies(renderJobs, sectorJob);
-                        hasRenderJobs = true;
-                    }
+                    kvp.Value.RenderEmitJob(view.Data, sorted, 0, 0);
+                    CombineJob(kvp.Value, ref renderJobs, ref hasRenderJobs);
                 }
             }
 
@@ -299,44 +377,67 @@ namespace Caelix.Rendering.RayQuery
             }
 
             // Pass 2a: consume the finished jobs. May grow the pool.
+            groupRemovalScratch.Clear();
             for (int v = 0; v < views.Count; v++)
             {
                 EntityView view = views[v];
-
-                foreach (var kvp in view.Data.sectors)
+                if (!groups.TryGetValue(view, out Dictionary<int3, RayQueryGroupRenderer> viewGroups))
                 {
-                    var key = (view, kvp.Key);
-                    if (!sectorRenderers.TryGetValue(key, out RayQuerySectorRenderer renderer)) continue;
+                    continue;
+                }
 
-                    renderer.ApplyCompletedRenderJob(Pool);
+                foreach (var kvp in viewGroups)
+                {
+                    kvp.Value.ApplyCompletedRenderJob(Pool);
+
+                    // A group that renders nothing owns an instance, a pool range and a brick map
+                    // for no geometry. Dropping it here is what replaces the old sector-removal
+                    // subscription; it is recreated as soon as one of its bricks changes again.
+                    if (kvp.Value.RendererBrickCount == 0 && !kvp.Value.NeedsFullRebuild)
+                    {
+                        groupRemovalScratch.Add((view, kvp.Key));
+                    }
                 }
             }
+
+            for (int i = 0; i < groupRemovalScratch.Count; i++)
+            {
+                (EntityView view, int3 groupKey) = groupRemovalScratch[i];
+                if (!groups.TryGetValue(view, out Dictionary<int3, RayQueryGroupRenderer> viewGroups)) continue;
+                if (!viewGroups.TryGetValue(groupKey, out RayQueryGroupRenderer stale)) continue;
+
+                stale.MarkRemove();
+                stale.RemoveMe(ref _voxelScene, Instances, Pool);
+                viewGroups.Remove(groupKey);
+            }
+
+            // The group jobs read the sorted arrays, and pass 2a is the last point that could still
+            // touch a job, so the bucket outputs go back here.
+            for (int i = 0; i < frameBuckets.Count; i++)
+            {
+                frameBuckets[i].buckets.Dispose();
+            }
+
+            frameBuckets.Clear();
 
             // Pass 2b: upload bricks against the final pool, then update the acceleration structure.
             for (int v = 0; v < views.Count; v++)
             {
                 EntityView view = views[v];
-
-                foreach (var kvp in view.Data.sectors)
+                if (groups.TryGetValue(view, out Dictionary<int3, RayQueryGroupRenderer> viewGroups))
                 {
-                    int3 sectorPos = kvp.Key;
-                    ref Sector sector = ref kvp.Value.Get();
-
-                    var key = (view, sectorPos);
-                    if (!sectorRenderers.TryGetValue(key, out RayQuerySectorRenderer renderer)) continue;
-
-                    renderer.UploadBricks(Pool);
-                    renderer.RenderModifyAS(ref _voxelScene, view, sectorPos, Instances);
-
-                    // Call sector tick
-                    sector.ReorderBricks();
+                    foreach (var kvp in viewGroups)
+                    {
+                        kvp.Value.UploadBricks(Pool);
+                        kvp.Value.RenderModifyAS(ref _voxelScene, view, kvp.Key, Instances);
+                    }
                 }
 
-                // Every sector of this view has consumed the reset; its motion vectors are settled.
+                // Every group of this view has consumed the reset; its motion vectors are settled.
                 view.ShouldResetMotionVectors = false;
             }
 
-            // One batched write of every record staged above. Per-sector dispatches would ask the
+            // One batched write of every record staged above. Per-group dispatches would ask the
             // driver for one staging copy of the buffer each — see CaelixBrickGpuOps.
             Pool.Ops.FlushScatter();
 
@@ -351,8 +452,52 @@ namespace Caelix.Rendering.RayQuery
                     $"CaelixRayQueryRenderer: the brick pool opened {Pool.PageCount} pages but the kernel " +
                     $"addresses only {CaelixBrickPool.MaxNamedPages}. Raise pageCapacityLimitBricks.", this);
             }
+
             poolLiveBricks = Pool.TotalLiveBricks;
             poolCapacityBricks = Pool.TotalCapacityBricks;
+        }
+
+        private Dictionary<int3, RayQueryGroupRenderer> GetOrCreateViewGroups(EntityView view)
+        {
+            if (!groups.TryGetValue(view, out Dictionary<int3, RayQueryGroupRenderer> viewGroups))
+            {
+                viewGroups = new Dictionary<int3, RayQueryGroupRenderer>();
+                groups[view] = viewGroups;
+            }
+
+            return viewGroups;
+        }
+
+        private static bool SliceHasUpdate(NativeArray<BrickChange> sorted, int start, int count)
+        {
+            for (int i = start; i < start + count; i++)
+            {
+                if (sorted[i].Kind == ChangeKind.Updated) return true;
+            }
+
+            return false;
+        }
+
+        private static bool AnyGroupNeedsFullRebuild(Dictionary<int3, RayQueryGroupRenderer> viewGroups)
+        {
+            foreach (var kvp in viewGroups)
+            {
+                if (kvp.Value.NeedsFullRebuild) return true;
+            }
+
+            return false;
+        }
+
+        private static void CombineJob(
+            RayQueryGroupRenderer renderer, ref JobHandle renderJobs, ref bool hasRenderJobs)
+        {
+            if (!renderer.TryGetScheduledJobHandle(out JobHandle groupJob))
+            {
+                return;
+            }
+
+            renderJobs = JobHandle.CombineDependencies(renderJobs, groupJob);
+            hasRenderJobs = true;
         }
 
         private void EnsureMaterialTable()
@@ -380,16 +525,25 @@ namespace Caelix.Rendering.RayQuery
             if (source != null)
             {
                 source.ViewDespawning -= OnViewDespawning;
-                source.SectorRemoving -= RemoveSectorRenderer;
                 source = null;
             }
 
-            foreach (var kvp in sectorRenderers)
+            for (int i = 0; i < frameBuckets.Count; i++)
             {
-                kvp.Value.Dispose();
+                frameBuckets[i].buckets.Dispose();
             }
 
-            sectorRenderers.Clear();
+            frameBuckets.Clear();
+
+            foreach (var viewGroups in groups)
+            {
+                foreach (var kvp in viewGroups.Value)
+                {
+                    kvp.Value.Dispose();
+                }
+            }
+
+            groups.Clear();
 
             _voxelScene?.Dispose();
             _voxelScene = null;

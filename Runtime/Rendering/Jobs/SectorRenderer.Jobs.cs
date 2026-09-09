@@ -13,6 +13,81 @@ namespace Caelix.Rendering
 {
     public partial class SectorRenderer
     {
+        /// <summary>
+        /// The renderer's block word for one voxel: <see cref="Block.Empty"/>'s id when every face
+        /// is hidden, the block id when it is opaque and visible, and the transparent id with its
+        /// visible face mask otherwise.
+        /// </summary>
+        /// <typeparam name="TReader">
+        /// How the six neighbours are read. The DXR job passes a
+        /// <see cref="SectorNeighborhoodReaderHelper"/> and sector-local positions; the ray query
+        /// group job passes a <see cref="VoxelNeighborhood"/> and entity-local ones. A generic
+        /// constraint rather than an interface field, so the call stays direct under Burst.
+        /// </typeparam>
+        /// <param name="currentBlock">The voxel being classified.</param>
+        /// <param name="blockPos">Its position, in whatever frame <paramref name="reader"/> reads.</param>
+        /// <param name="reader">The neighbourhood window to read the six neighbours from.</param>
+        internal static ushort GetRendererBlockData<TReader>(
+            Block currentBlock, int3 blockPos, ref TReader reader)
+            where TReader : struct, IBlockReader
+        {
+            bool alive = false;
+
+#if !CAELIX_RENDER_DISABLE_TRANSPARENCY
+            bool isOpaque = currentBlock.isOpaque;
+            uint transparentId = currentBlock.transparentId;
+            uint faceMask = 0;
+#endif
+
+            for (int ni = 0; ni < 6; ni++)
+            {
+                int3 nd = NeighborhoodSettings.Directions[ni];
+                Block neighbor = reader.GetBlock(blockPos + nd);
+
+#if !CAELIX_RENDER_DISABLE_TRANSPARENCY
+                // Opaque face is always non-visible
+                alive |= (!neighbor.isOpaque);
+
+                // For transparent faces, visible only adjacent to different transparent blocks
+                if ((!neighbor.isOpaque) && (!isOpaque))
+                {
+                    uint neighborTransparentId = neighbor.transparentId;
+                    if (neighborTransparentId != transparentId)
+                    {
+                        alive = true;
+                        faceMask |= (1u << ni);
+                    }
+                }
+
+                if (alive && isOpaque) break;
+#else
+                alive |= (neighbor.isRendererEmpty);
+                if (alive) break;
+#endif
+            }
+
+            if (!alive)
+            {
+                return Block.Empty.id;
+            }
+
+            ushort result;
+#if !CAELIX_RENDER_DISABLE_TRANSPARENCY
+            if (!isOpaque)
+            {
+                result = (ushort)Block.MaskTransparency(faceMask, transparentId);
+            }
+            else
+            {
+                result = currentBlock.id;
+            }
+#else
+            result = currentBlock.id;
+#endif
+
+            return result;
+        }
+
         [BurstCompile]
         struct InitializeAABBJob : IJob
         {
@@ -190,8 +265,10 @@ namespace Caelix.Rendering
                             int rendererBlockIdx = Sector.ToBlockIdx(bx, by, bz) / 2;
                             
 #if !CAELIX_RENDER_DISABLE_CULLING
-                            uint block0Data = GetRendererBlockData(block0, brickBlockPos + new int3(bx, by, bz));
-                            uint block1Data = GetRendererBlockData(block1, brickBlockPos + new int3(bx + 1, by, bz));
+                            uint block0Data = GetRendererBlockData(
+                                block0, brickBlockPos + new int3(bx, by, bz), ref helper);
+                            uint block1Data = GetRendererBlockData(
+                                block1, brickBlockPos + new int3(bx + 1, by, bz), ref helper);
                             
                             // Do nothing if blocks are empty. The staged record starts zeroed, so an
                             // empty pair simply stays zero.
@@ -322,67 +399,6 @@ namespace Caelix.Rendering
                     syncRecord[0] = 1;
                 }
             }
-
-#if !CAELIX_RENDER_DISABLE_CULLING
-            private ushort GetRendererBlockData(Block currentBlock, int3 sectorBlockPos)
-            {
-                bool alive = false;
-
-    #if !CAELIX_RENDER_DISABLE_TRANSPARENCY
-                bool isOpaque = currentBlock.isOpaque;
-                uint transparentId = currentBlock.transparentId;
-                uint faceMask = 0;
-    #endif
-                
-                for (int ni = 0; ni < 6; ni++)
-                {
-                    int3 nd = NeighborhoodSettings.Directions[ni];
-                    Block neighbor = helper.GetBlock(sectorBlockPos + nd);
-                    
-    #if !CAELIX_RENDER_DISABLE_TRANSPARENCY
-                    // Opaque face is always non-visible
-                    alive |= (!neighbor.isOpaque);
-                    
-                    // For transparent faces, visible only adjacent to different transparent blocks
-                    if((!neighbor.isOpaque) && (!isOpaque))
-                    {
-                        uint neighborTransparentId = neighbor.transparentId;
-                        if (neighborTransparentId != transparentId)
-                        {
-                            alive = true;
-                            faceMask |= (1u << ni);
-                        }
-                    }
-
-                    if (alive && isOpaque) break;
-    #else
-                    alive |= (neighbor.isRendererEmpty);
-                    if (alive) break;
-    #endif
-                }
-
-                if (!alive)
-                {
-                    return Block.Empty.id;
-                }
-
-                ushort result = 0;
-    #if !CAELIX_RENDER_DISABLE_TRANSPARENCY
-                if (!isOpaque)
-                {
-                    result = (ushort)Block.MaskTransparency(faceMask, transparentId);
-                }
-                else
-                {
-                    result = currentBlock.id;
-                }
-    #else
-                result = currentBlock.id;
-    #endif
-
-                return result;
-            }
-#endif
 
             private void AccumulateOccupancy(ref uint coarseOccupancy, int bp, int bx, int by, int bz)
             {
