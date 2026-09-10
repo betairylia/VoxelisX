@@ -1164,8 +1164,10 @@ namespace Caelix.Tests
             rig.Client.Receive();
             rig.Client.PrepareRender();
             rig.Client.EndFrame();
-            AssertAllBlockStorageEqual(rig.World, rig.Client.World);
+            // Sampled BEFORE the comparison: the stage times the client frame, and the
+            // brick-by-brick comparison below costs seconds on a large world.
             CaptureScaleSample(rig, report, "sync-applied", timer.Elapsed.TotalSeconds);
+            AssertAllBlockStorageEqual(rig.World, rig.Client.World);
 
             // Several server ticks can arrive before one client frame. Use a non-physics entity
             // to make the edit workload independent of the saved world's moving bodies.
@@ -1184,8 +1186,10 @@ namespace Caelix.Tests
             rig.Client.Receive();
             rig.Client.PrepareRender();
             rig.Client.EndFrame();
-            AssertAllBlockStorageEqual(rig.World, rig.Client.World);
+            // Sampled BEFORE the comparison: the stage times the client frame, and the
+            // brick-by-brick comparison below costs seconds on a large world.
             CaptureScaleSample(rig, report, "four-deltas-applied", timer.Elapsed.TotalSeconds);
+            AssertAllBlockStorageEqual(rig.World, rig.Client.World);
 
             if (!string.IsNullOrEmpty(save))
             {
@@ -1195,8 +1199,10 @@ namespace Caelix.Tests
                 rig.Client.Receive();
                 rig.Client.PrepareRender();
                 rig.Client.EndFrame();
-                AssertAllBlockStorageEqual(rig.World, rig.Client.World);
+                // Sampled BEFORE the comparison: the stage times the client frame, and the
+                // brick-by-brick comparison below costs seconds on a large world.
                 CaptureScaleSample(rig, report, "reload-applied", timer.Elapsed.TotalSeconds);
+                AssertAllBlockStorageEqual(rig.World, rig.Client.World);
             }
             GC.Collect();
             GC.WaitForPendingFinalizers();
