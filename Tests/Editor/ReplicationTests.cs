@@ -868,8 +868,8 @@ namespace Caelix.Tests
             rig.Exchange();
             rig.Client.World.TryGetView(EntityA, out EntityView view);
             var data = rig.World.GetEntity(EntityA);
-            data.RemoveSectorAt(int3.zero);
-            data.AddEmptySectorAt(int3.zero);
+            data.RemoveRegion(int3.zero);
+            data.EnsureRegion(int3.zero);
             rig.World.SetBlock(EntityA, new int3(48), new Block(0x8002));
 
             rig.Server.Step();
