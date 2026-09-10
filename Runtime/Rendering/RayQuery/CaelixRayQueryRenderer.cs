@@ -142,79 +142,6 @@ namespace Caelix.Rendering.RayQuery
         public bool HasResources => isActiveAndEnabled && Pool != null && Instances != null
             && MaterialTable != null && _voxelScene != null;
 
-        /// <summary>
-        /// One view's change list, reordered so that each render group's entries are contiguous.
-        /// </summary>
-        /// <remarks>
-        /// Every list is allocated with capacity for at least one element, so that a view whose
-        /// change list is empty — a group that only needs a full rebuild still has to be handed a
-        /// valid array — produces containers a job can be scheduled against.
-        /// </remarks>
-        private struct ChangeBuckets : IDisposable
-        {
-            /// <summary>Require-update bits that make a brick worth a render job.</summary>
-            private const DirtyFlags RenderFlags =
-                DirtyFlags.BlockBrickAdded | DirtyFlags.GeometryWithLocalNeighbor;
-
-            public NativeArray<BrickChange> Source;
-            public NativeList<BrickChange> Sorted;
-            public NativeList<int3> GroupKeys;
-            public NativeList<int> GroupStarts;
-            public NativeList<int> GroupCounts;
-
-            /// <summary>Buckets a plain array, for the work a full upload synthesises.</summary>
-            public static ChangeBuckets Build(NativeArray<BrickChange> changes)
-                => Build(changes.AsReadOnly());
-
-            public static ChangeBuckets Build(NativeArray<BrickChange>.ReadOnly changes)
-            {
-                int count = changes.Length;
-                var buckets = new ChangeBuckets
-                {
-                    Source = new NativeArray<BrickChange>(
-                        math.max(1, count), Allocator.TempJob, NativeArrayOptions.UninitializedMemory),
-                    Sorted = new NativeList<BrickChange>(math.max(1, count), Allocator.TempJob),
-                    GroupKeys = new NativeList<int3>(math.max(1, count), Allocator.TempJob),
-                    GroupStarts = new NativeList<int>(math.max(1, count), Allocator.TempJob),
-                    GroupCounts = new NativeList<int>(math.max(1, count), Allocator.TempJob)
-                };
-
-                // Only entries the renderer acts on are bucketed: a removal, or a brick that
-                // was added or whose geometry (own or neighbouring) changed. Entries that carry
-                // only automata flags would otherwise create a group renderer just to drop it.
-                int kept = 0;
-                for (int i = 0; i < count; i++)
-                {
-                    BrickChange change = changes[i];
-                    if (change.Kind == ChangeKind.Removed || (change.RequiredFlags & RenderFlags) != 0)
-                    {
-                        buckets.Source[kept++] = change;
-                    }
-                }
-
-                new BucketChangesJob
-                {
-                    changes = buckets.Source,
-                    changeCount = kept,
-                    sorted = buckets.Sorted,
-                    groupKeys = buckets.GroupKeys,
-                    groupStarts = buckets.GroupStarts,
-                    groupCounts = buckets.GroupCounts
-                }.Run();
-
-                return buckets;
-            }
-
-            public void Dispose()
-            {
-                if (Source.IsCreated) Source.Dispose();
-                if (Sorted.IsCreated) Sorted.Dispose();
-                if (GroupKeys.IsCreated) GroupKeys.Dispose();
-                if (GroupStarts.IsCreated) GroupStarts.Dispose();
-                if (GroupCounts.IsCreated) GroupCounts.Dispose();
-            }
-        }
-
         private void Awake()
         {
             if (!SystemInfo.supportsInlineRayTracing)
@@ -416,7 +343,7 @@ namespace Caelix.Rendering.RayQuery
                 {
                     // Nothing told this renderer about the bricks that arrived before it was
                     // bound, so the work is synthesised from the storage itself.
-                    NativeArray<BrickChange> initial = BuildFullUploadChanges(view.Data);
+                    NativeArray<BrickChange> initial = RenderGroupChanges.BuildFullUploadChanges(view.Data);
                     buckets = ChangeBuckets.Build(initial);
                     initial.Dispose();
                 }
@@ -444,7 +371,7 @@ namespace Caelix.Rendering.RayQuery
                     {
                         // A group nobody renders yet has nothing to retire, so a slice of removals
                         // alone does not warrant a renderer.
-                        if (!SliceHasUpdate(sorted, buckets.GroupStarts[g], buckets.GroupCounts[g]))
+                        if (!RenderGroupChanges.SliceHasUpdate(sorted, buckets.GroupStarts[g], buckets.GroupCounts[g]))
                         {
                             continue;
                         }
@@ -568,51 +495,6 @@ namespace Caelix.Rendering.RayQuery
             }
 
             return viewGroups;
-        }
-
-        /// <summary>
-        /// One <see cref="BrickChange"/> per allocated brick of an entity, as if every one of them
-        /// had just been added. The caller owns the array.
-        /// </summary>
-        /// <remarks>
-        /// The two require-update bits are what <c>ChangeBuckets</c> keeps and what the group job
-        /// acts on: BlockBrickAdded claims a renderer brick id, GeometryWithLocalNeighbor rebuilds
-        /// the record. Walked twice rather than grown, because the enumerator allocates nothing.
-        /// </remarks>
-        private static NativeArray<BrickChange> BuildFullUploadChanges(VoxelEntityData data)
-        {
-            int count = 0;
-            foreach (int3 unused in data.EnumerateBricks())
-            {
-                count++;
-            }
-
-            var changes = new NativeArray<BrickChange>(
-                count, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
-
-            int i = 0;
-            foreach (int3 key in data.EnumerateBricks())
-            {
-                changes[i++] = new BrickChange
-                {
-                    Key = key,
-                    Kind = ChangeKind.Updated,
-                    SourceFlags = DirtyFlags.None,
-                    RequiredFlags = DirtyFlags.BlockBrickAdded | DirtyFlags.GeometryWithLocalNeighbor
-                };
-            }
-
-            return changes;
-        }
-
-        private static bool SliceHasUpdate(NativeArray<BrickChange> sorted, int start, int count)
-        {
-            for (int i = start; i < start + count; i++)
-            {
-                if (sorted[i].Kind == ChangeKind.Updated) return true;
-            }
-
-            return false;
         }
 
         private static bool AnyGroupNeedsFullRebuild(Dictionary<int3, RayQueryGroupRenderer> viewGroups)

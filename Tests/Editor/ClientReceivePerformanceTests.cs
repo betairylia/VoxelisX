@@ -3,6 +3,7 @@ using System.Diagnostics;
 using NUnit.Framework;
 using Caelix.Client;
 using Caelix.Net;
+using Caelix.Rendering.RayQuery;
 using Caelix.Utils;
 using Unity.Mathematics;
 
@@ -26,15 +27,16 @@ namespace Caelix.Tests
                 writer.Reset();
                 NetHeader.Write(writer, NetMessageType.BrickBatch, 0, 1);
                 writer.Write(new BrickBatchHeader { Guid = guid, BrickCount = bricksPerSector });
-                int3 sectorOrigin = new int3(s, 0, 0) * Sector.SIZE_IN_BRICKS;
+                int3 sectorOrigin = VoxelRegion.FirstKeyOf(new int3(s, 0, 0));
                 for (int b = 0; b < bricksPerSector; b++)
                 {
-                    writer.Write(sectorOrigin + Sector.ToBrickPos((short)b));
+                    // Same x-fastest brick layout the storage region uses; see RenderGroupTests.
+                    writer.Write(sectorOrigin + RenderGroup.LocalBrickPos(b));
                     writer.Write((byte)BrickOp.Update);
                     writer.Write((byte)1);
                     writer.Write((byte)SectorSlotId.Block);
                     writer.Write((ushort)2);
-                    for (int v = 0; v < Sector.BLOCKS_IN_BRICK; v++) writer.Write((ushort)(0x8001 + s));
+                    for (int v = 0; v < BrickKey.BlocksInBrick; v++) writer.Write((ushort)(0x8001 + s));
                 }
                 packets[s] = writer.AsSpan().ToArray();
             }
@@ -68,10 +70,19 @@ namespace Caelix.Tests
                     Assert.That(client.World.TryGetView(guid, out EntityView view), Is.True);
                     for (int s = 0; s < sectorCount; s++)
                     {
-                        SectorHandle sector = view.Data.sectors[new int3(s, 0, 0)];
-                        Assert.That(sector.Get().NonEmptyBricks.Length, Is.EqualTo(bricksPerSector));
-                        int3 p = Sector.ToBrickPos((short)(bricksPerSector - 1)) * Sector.SIZE_IN_BLOCKS + new int3(7);
-                        Assert.That(sector.GetBlock(p.x, p.y, p.z), Is.EqualTo(new Block((ushort)(0x8001 + s))));
+                        int3 regionPos = new int3(s, 0, 0);
+                        int allocated = 0;
+                        foreach (int3 unused in view.Data.EnumerateBricks(
+                                     VoxelRegion.FirstKeyOf(regionPos), VoxelRegion.LastKeyOf(regionPos)))
+                        {
+                            allocated++;
+                        }
+
+                        Assert.That(allocated, Is.EqualTo(bricksPerSector));
+                        int3 p = BrickKey.ToBlockOrigin(
+                            VoxelRegion.FirstKeyOf(regionPos) +
+                            RenderGroup.LocalBrickPos(bricksPerSector - 1)) + new int3(7);
+                        Assert.That(view.Data.GetBlock(p), Is.EqualTo(new Block((ushort)(0x8001 + s))));
                     }
                     client.EndFrame();
                 }

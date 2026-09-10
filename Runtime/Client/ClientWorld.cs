@@ -19,7 +19,8 @@ namespace Caelix.Client
     /// Brick residency is not tracked here: a <see cref="NetMessageType.BrickBatch"/> message goes
     /// straight to <see cref="BrickBatchApplier"/> through the view's store, and that decides what
     /// storage to allocate and free. Consumers learn about removals from the change list, in list
-    /// order, not from an event.
+    /// order, not from an event. The only thing this class remembers about a batch is that the view
+    /// got one, which is what selects the views the render propagation has to visit.
     /// </remarks>
     public sealed class ClientWorld : IDisposable
     {
@@ -245,7 +246,7 @@ namespace Caelix.Client
 
         /// <summary>
         /// Converts this frame's applied bricks into require-update flags for the renderers.
-        /// Only Geometry bits propagate, so no sector is ever allocated here.
+        /// Only Geometry bits propagate, so no storage is ever allocated here.
         /// </summary>
         public void PropagateForRender()
         {
@@ -258,7 +259,7 @@ namespace Caelix.Client
             for (int i = 0; i < viewList.Count; i++)
             {
                 EntityView view = viewList[i];
-                if (view.Data.entityDirtyFlags == 0 && !AnySectorDirty(view.Data))
+                if (view.Data.entityDirtyFlags == 0 && !view.BricksAppliedThisFrame)
                 {
                     continue;
                 }
@@ -272,7 +273,7 @@ namespace Caelix.Client
             dirtyPropagationHandle.Complete();
 
             // Propagation is final here, so this is where the frame's change list is published.
-            // Every view, not only the dirty ones: a clean entity's build walks no sector and the
+            // Every view, not only the dirty ones: a clean entity's build walks no storage and the
             // guard that catches a double build has to see every view exactly once.
             for (int i = 0; i < viewList.Count; i++)
             {
@@ -288,18 +289,16 @@ namespace Caelix.Client
                 EntityView view = viewList[i];
                 view.Data.ClearDirtyFlags();
                 view.Data.ClearChanges();
+                view.BricksAppliedThisFrame = false;
             }
         }
 
-        private static bool AnySectorDirty(in VoxelEntityData data)
-        {
-            foreach (var kvp in data.sectors)
-            {
-                if (kvp.Value.Get().sectorDirtyFlags != 0) return true;
-            }
-
-            return false;
-        }
+        /// <summary>
+        /// Records that a brick batch was handed to the applier for <paramref name="view"/> this
+        /// frame. Applying bricks is the only thing that dirties replica storage, so this is what
+        /// <see cref="PropagateForRender"/> selects on instead of peeking into the storage.
+        /// </summary>
+        internal static void MarkBricksApplied(EntityView view) => view.BricksAppliedThisFrame = true;
 
         #endregion
 

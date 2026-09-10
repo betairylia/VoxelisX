@@ -9,42 +9,22 @@ namespace Caelix.Tests
 {
     /// <summary>
     /// Tripwire for the brick-key facade: sector types are backend details of Caelix-Core, and no
-    /// NEW file outside it may name them. The allowance below lists every file that still does;
-    /// milestone 3 of <c>brick-key-facade-proposal.md</c> empties it and then makes the types
-    /// internal. The list only shrinks: a stale entry fails too, so it stays accurate.
+    /// file outside it may name them. Both allowance lists are EMPTY since milestone 3 of
+    /// <c>brick-key-facade-proposal.md</c> ported the last consumer, so this test now only guards
+    /// against re-introduction. A stale entry fails too, which is what keeps a list from growing
+    /// back: an entry may only be added together with the file that needs it, and never for new
+    /// code.
     /// </summary>
     public class SectorReferenceAllowanceTests
     {
         private static readonly Regex SectorReference =
             new(@"SectorHandle|SectorNeighborHandles|\bSector\.", RegexOptions.Compiled);
 
-        // Caelix package, relative to the package root, forward slashes.
-        private static readonly string[] CaelixAllowance =
-        {
-            "Runtime/Authoring/VoxelEntityAuthoringTool.cs",
-            "Runtime/Client/InfiniteLoader.cs",
-            "Runtime/Client/VoxelEntity.cs",
-            "Runtime/Debugging/CaelixDebugGUI.cs",
-            "Runtime/Rendering/Mesh/SectorMeshRenderer.cs",
-            "Runtime/Rendering/Mesh/VoxelMeshRenderer.cs",
-            "Runtime/Simulation/CaelixServer.cs",
-            "Runtime/Simulation/CaelixWorld.cs",
-            "Runtime/TestWorld.cs",
-        };
+        // Caelix package, relative to the package root, forward slashes. Empty since milestone 3.
+        private static readonly string[] CaelixAllowance = System.Array.Empty<string>();
 
-        // Physics package, relative to the package root.
-        private static readonly string[] PhysicsAllowance =
-        {
-            "Caelix.Physics/Runtime/Physics/BrickOverlapDirtyPropagation.cs",
-            "Caelix.Physics/Runtime/Physics/BrickOverlapQueryBuilder.cs",
-            "Caelix.Physics/Runtime/VoxelBodyData.PhysSlots.cs",
-            "Caelix.Physics/Runtime/VoxelBodyData.cs",
-            "Caelix.Physics/Runtime/VoxelCollisionSolver.cs",
-            "Caelix.Physics/Runtime/VoxelEntityPhysics.cs",
-            "Unity.Physics/Collision/Colliders/VoxelCollider.cs",
-            "Unity.Physics/Collision/Queries/VoxelCollisionManifold.cs",
-            "Unity.Physics/Dynamics/Simulation/VoxelBrickOverlap.cs",
-        };
+        // Physics package, relative to the package root. Empty since milestone 3.
+        private static readonly string[] PhysicsAllowance = System.Array.Empty<string>();
 
         [Test]
         public void CaelixPackage_OnlyAllowedFilesNameSectorTypes()

@@ -35,17 +35,17 @@ namespace Caelix.Tests
                 client.PrepareRender();
                 renderer.Update();
                 client.EndFrame();
-                Assert.That(renderer.SectorRendererCount, Is.EqualTo(1));
+                Assert.That(renderer.GroupRendererCount, Is.EqualTo(1));
                 client.World.TryGetView(guid, out EntityView view);
                 Assert.That(VertexCount(view), Is.EqualTo(24));
 
-                world.GetEntity(guid).RemoveSectorAt(int3.zero);
+                world.GetEntity(guid).RemoveRegion(int3.zero);
                 server.Step();
                 client.Receive();
-                // No removal callback any more: RemoveMissingSectors drops the renderer of a freed
-                // sector at the start of the next Update, before any job is scheduled.
-                renderer.Update(); // Used to dereference the freed SectorHandle here.
-                Assert.That(renderer.SectorRendererCount, Is.Zero, "the next Update releases the freed sector");
+                // No removal callback any more: the next Update drops the group whose bricks were
+                // removed, after its jobs completed.
+                renderer.Update();
+                Assert.That(renderer.GroupRendererCount, Is.Zero, "the next Update drops the emptied group");
 
                 world.SetBlock(guid, new int3(48), new Block(0x8002));
                 server.Step();
@@ -53,11 +53,11 @@ namespace Caelix.Tests
                 client.PrepareRender();
                 renderer.Update();
                 client.EndFrame();
-                Assert.That(renderer.SectorRendererCount, Is.EqualTo(1));
+                Assert.That(renderer.GroupRendererCount, Is.EqualTo(1));
                 Assert.That(VertexCount(view), Is.EqualTo(24));
 
                 // Removal and recreation can also arrive together in one client frame.
-                world.GetEntity(guid).RemoveSectorAt(int3.zero);
+                world.GetEntity(guid).RemoveRegion(int3.zero);
                 server.Step();
                 world.SetBlock(guid, new int3(64), new Block(0x8003));
                 server.Step();
@@ -69,7 +69,7 @@ namespace Caelix.Tests
 
                 // Changing source releases old renderers even when it happens outside a render tick.
                 renderer.Source = null;
-                Assert.That(renderer.SectorRendererCount, Is.Zero);
+                Assert.That(renderer.GroupRendererCount, Is.Zero);
                 renderer.Source = client.World;
                 renderer.Update();
                 Assert.That(VertexCount(view), Is.EqualTo(24));
@@ -77,7 +77,7 @@ namespace Caelix.Tests
                 server.Step();
                 client.Receive();
                 Assert.That(renderer.Source, Is.Null);
-                Assert.That(renderer.SectorRendererCount, Is.Zero);
+                Assert.That(renderer.GroupRendererCount, Is.Zero);
 
                 world = server.CreateWorld(CaelixWorldConfig.Default());
                 world.CreateEntity(guid, RigidTransform.identity, isStatic: true);
@@ -138,7 +138,7 @@ namespace Caelix.Tests
                 renderer.voxelScene.Build();
                 Assert.That(renderer.voxelScene.GetInstanceCount(), Is.EqualTo(1));
                 client.EndFrame();
-                world.GetEntity(guid).RemoveSectorAt(int3.zero);
+                world.GetEntity(guid).RemoveRegion(int3.zero);
                 server.Step();
                 client.Receive();
                 client.PrepareRender();
@@ -195,7 +195,7 @@ namespace Caelix.Tests
         [TestCase(DirtyFlags.GeometryWithLocalNeighbor)]
         public void RendererRequireUpdateFlagsInvalidateChunk(DirtyFlags flags)
         {
-            Assert.That(SectorMeshRenderer.RequiresRemesh((ushort)flags), Is.True);
+            Assert.That(GroupMeshRenderer.RequiresRemesh((ushort)flags), Is.True);
         }
 
         [TestCase(DirtyFlags.None)]
@@ -203,27 +203,38 @@ namespace Caelix.Tests
         [TestCase(DirtyFlags.Geometry)]
         public void NonRendererRequireUpdateFlagsDoNotInvalidateChunk(DirtyFlags flags)
         {
-            Assert.That(SectorMeshRenderer.RequiresRemesh((ushort)flags), Is.False);
+            Assert.That(GroupMeshRenderer.RequiresRemesh((ushort)flags), Is.False);
         }
 
         [Test]
-        public void GeneratedMeshCarriesExactBlockIdForShaderLookup()
+        public unsafe void GeneratedMeshCarriesExactBlockIdForShaderLookup()
         {
             const ushort blockId = ushort.MaxValue;
-            using var scope = new SectorTestScope();
+            using var scope = new EntityDataTestScope();
             using var vertices = new NativeList<VoxelVertex>(24, Allocator.TempJob);
             using var indices = new NativeList<int>(36, Allocator.TempJob);
 
-            scope.Set(0, 0, 0, blockId);
+            scope.Data.SetBlock(int3.zero, new Block(blockId));
+            Assert.That(scope.Data.TryBindBrick(SectorSlotId.Block, int3.zero, out Block* blocks), Is.True);
 
-            new MeshGenerationJob
+            var bricks = new NativeArray<System.IntPtr>(1, Allocator.TempJob);
+            try
             {
-                sector = scope.Sector,
-                chunkMin = int3.zero,
-                chunkSize = new int3(1),
-                vertices = vertices,
-                indices = indices
-            }.Execute();
+                bricks[0] = (System.IntPtr)blocks;
+
+                new MeshGenerationJob
+                {
+                    bricks = bricks,
+                    bricksPerAxis = 1,
+                    chunkSize = new int3(1),
+                    vertices = vertices,
+                    indices = indices
+                }.Execute();
+            }
+            finally
+            {
+                bricks.Dispose();
+            }
 
             Assert.That(vertices.Length, Is.EqualTo(24));
             Assert.That(indices.Length, Is.EqualTo(36));

@@ -330,7 +330,11 @@ namespace Caelix.Client
                     if (!worlds.ContainsKey(header.WorldId)) brickReceiveBatch.Flush();
                     // Unknown entity: the whole message is dropped; nothing reads the payload.
                     if (GetOrCreateWorld(header.WorldId).TryGetView(m.Guid, out EntityView view))
+                    {
                         brickReceiveBatch.Add(view.Data, message, reader.Position, m.BrickCount);
+                        ClientWorld.MarkBricksApplied(view);
+                    }
+
                     break;
                 }
                 case NetMessageType.Event:

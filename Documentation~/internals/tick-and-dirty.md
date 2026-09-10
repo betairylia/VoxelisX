@@ -32,17 +32,17 @@ then processes each world in this order:
 ```text
 TickSimulate
   fix the entity/body set for this tick
-  activate snapshots for sectors with required work
+  begin automata writes on every entity with required work
   collect required brick positions and build the read context
   run automata hooks and complete their jobs
-  apply snapshots
+  end automata writes (commits the pending buffers)
   clear consumed requireUpdate flags
   propagate local dirty flags (may add neighboring sectors)
   refresh Block occupancy masks and body properties
   apply forces and simulate physics
   propagate alien influence using the stepped poses, if enabled
 Replicate
-  publish entity/sector state and changed bricks; drain world events
+  publish entity state and changed bricks; drain world events
 EndTick
   clear raw dirty flags and advance the world tick index
 ```
@@ -52,8 +52,8 @@ replication, and end-of-tick work for one world before moving to the next world.
 
 Local propagation runs before physics. Cross-entity (alien) propagation runs after
 physics, using the overlap graph at the stepped poses. Alien propagation marks
-existing target bricks and must not allocate target sectors or bricks. During
-local propagation, existing sector pointers must stay valid until its jobs finish.
+existing target bricks with `MarkRequired` and must not allocate storage. During
+local propagation, existing storage pointers must stay valid until its jobs finish.
 
 ## How to schedule and consume changes
 
@@ -61,9 +61,13 @@ local propagation, existing sector pointers must stay valid until its jobs finis
    Do not replace it with raw slot-memory writes that skip dirty bookkeeping.
 2. Let the world run its propagation phases. Block writes generate the configured
    Block-change flags; other slot writes generate GeneralAutomata work.
-3. In the next automata stage, consume `BricksRequiredUpdate` and read through
-   `AutomataReadContext`. Keep writes within the owning work region.
-4. Let the stage complete and apply its snapshots. Do not clear flags inside a hook.
+3. In the next automata stage, consume `BricksRequiredUpdate` — a
+   `NativeList<RequiredBrick>` keyed by BRICK KEY — and read through
+   `AutomataReadContext`: `ctx.OpenBrick(brick)` gives an `AutomataBrick` and
+   `ctx.CreateReader(brick, access)` an alien-aware `AutomataReader`. Every
+   coordinate is an ENTITY-LOCAL block position; writes stay inside the work brick.
+4. Let the stage complete; `EndAutomataWrites` commits the pending buffers. Do not
+   clear flags inside a hook.
 
 For a newly written entity with no prior required flags, the first server step
 propagates its initial dirty state. Its automata work becomes available on the
@@ -80,7 +84,7 @@ is handled by physics and alien propagation rather than that local propagation l
 
 When `BlockEncoding.PackedSceneColor` is compiled on, `CaelixWorld` skips all
 registered automata hooks. Packed scene materials do not represent gameplay block
-IDs. Snapshot handling, dirty propagation, physics and replication still run, so
+IDs. The automata write phase, dirty propagation, physics and replication still run, so
 loading scenes and applying edits continue to update the client. This is owned by
 the engine world and applies to Titania hooks too; it is not a runtime setting.
 

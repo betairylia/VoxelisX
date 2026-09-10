@@ -4,6 +4,7 @@ using Unity.Collections;
 using Unity.Jobs;
 using Unity.Mathematics;
 using Caelix;
+using Caelix.Rendering;
 using Caelix.Rendering.RayQuery;
 
 namespace Caelix.Tests
@@ -13,8 +14,14 @@ namespace Caelix.Tests
     /// </summary>
     public class RenderGroupTests
     {
+        /// <summary>
+        /// The group and the storage region share their layout BY CONSTRUCTION in milestone 1: both
+        /// are 16 bricks per axis, x-fastest. Storage no longer says so, so the numbers are pinned
+        /// as literals; changing the group shift is a milestone 4 experiment that has to update
+        /// these on purpose.
+        /// </summary>
         [Test]
-        public void LocalBrickIndexMatchesTheSectorBrickIndex()
+        public void LocalBrickIndexIsXFastestOverSixteenBricksPerAxis()
         {
             for (int z = 0; z < RenderGroup.BricksPerAxis; z++)
             for (int y = 0; y < RenderGroup.BricksPerAxis; y++)
@@ -22,16 +29,16 @@ namespace Caelix.Tests
             {
                 Assert.That(
                     RenderGroup.LocalBrickIdx(new int3(x, y, z)),
-                    Is.EqualTo(Sector.ToBrickIdx(x, y, z)));
+                    Is.EqualTo(x + y * 16 + z * 16 * 16));
             }
         }
 
         [Test]
-        public void GroupSizeMatchesTheSectorItReplacesInMilestoneOne()
+        public void GroupSizeMatchesTheStorageRegionItReplacesInMilestoneOne()
         {
-            Assert.That(RenderGroup.BricksPerAxis, Is.EqualTo(Sector.SIZE_IN_BRICKS));
-            Assert.That(RenderGroup.BricksInGroup, Is.EqualTo(Sector.BRICKS_IN_SECTOR));
-            Assert.That(RenderGroup.Mask, Is.EqualTo(Sector.SECTOR_MASK));
+            Assert.That(RenderGroup.BricksPerAxis, Is.EqualTo(16));
+            Assert.That(RenderGroup.BricksInGroup, Is.EqualTo(4096));
+            Assert.That(RenderGroup.Mask, Is.EqualTo(15));
         }
 
         [TestCase(0, 0, 0)]

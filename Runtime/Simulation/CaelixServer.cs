@@ -391,18 +391,9 @@ namespace Caelix.Simulation
             bool found = false;
             if (world.TryGetEntity(query.Guid, out VoxelEntityData data))
             {
-                int shift = Sector.SHIFT_IN_BLOCKS + Sector.SHIFT_IN_BRICKS;
-                var sectorPos = new Unity.Mathematics.int3(
-                    query.Position.x >> shift, query.Position.y >> shift, query.Position.z >> shift);
-                if (data.sectors.TryGetValue(sectorPos, out SectorHandle handle))
-                {
-                    int mask = Sector.BRICK_MASK | (Sector.SECTOR_MASK << Sector.SHIFT_IN_BLOCKS);
-                    handle.Get().WriteVoxelSlots(
-                        writer,
-                        query.Position.x & mask, query.Position.y & mask, query.Position.z & mask,
-                        query.SlotMask);
-                    found = true;
-                }
+                // Writes nothing at all when no region holds the position, so the !found branch
+                // below still decides what an absent voxel looks like on the wire.
+                found = data.WriteVoxelSlots(writer, query.Position, query.SlotMask);
             }
 
             if (!found)

@@ -233,17 +233,17 @@ the renderer is what makes it possible.
   the set of keys it received. `ForgetWorld` and a changed replicated slot mask
   also force a world reset. Identity is server bookkeeping; the local ordered
   channel carries the existing lifecycle messages, with no new wire format.
-- **Empty storage is not replicated.** A server sector that holds no brick — a
-  neighbour that propagation created, or an explicit `AddEmptySectorAt` — has no
+- **Empty storage is not replicated.** A server region that holds no brick — a
+  neighbour that propagation created, or an explicit `EnsureRegion` — has no
   record to send, so the client never learns about it. A replica matches the
-  server's ALLOCATED BRICKS, not its sector set.
+  server's ALLOCATED BRICKS, not its region set.
 - **Renderer lifetime.** `WorldRemoving` and `ViewDespawning` run while the
   corresponding storage is still alive. Mesh and ray renderers unsubscribe,
   complete their jobs, and release cached resources before disposal. There is no
-  `SectorRemoving`: a renderer learns about a removal from the change list, or
-  (the mesh renderer) by comparing storage attachment identity at the start of its
-  own `Update`, before it schedules anything. `VoxelEntityData.RemoveSectorAt`
-  marks the facing bricks of every surviving neighbour sector dirty with
+  `SectorRemoving`: both renderers learn about a removal from the change list, and
+  drop a render group that holds no allocated brick after its jobs completed.
+  `VoxelEntityData.RemoveRegion`
+  marks the facing bricks of every surviving neighbour region dirty with
   `GeometryWithLocalNeighbor` and no direction mask, so the flag reaches only
   those bricks and creates no sector; the server's next propagation turns it into
   the require-update the physics slot refresh reads, and the client's
@@ -435,9 +435,9 @@ with `LocalChannel` alone it would have one implementation and no test of fit.
 
 | Assembly | Repo | Contents | References |
 |---|---|---|---|
-| `Caelix.Core` | Core | `VoxelEntityData`, `Sector`, serializer, dirty propagation, neighborhood reader, tick primitives, `BrickInfo`, `Caelix.Net` codec, channel, registries | Burst, Collections, Mathematics |
+| `Caelix.Core` | Core | `VoxelEntityData` (the brick-key facade: `BrickKey`, `VoxelRegion`, `AutomataBrick`, `RequiredBrick`, `BrickChange`), the sector backend, serializer, dirty propagation, neighborhood reader, tick primitives, `Caelix.Net` codec, channel, registries | Burst, Collections, Mathematics |
 | `Caelix.Physics` | Physics | `VoxelBodyData`, `VoxelPhysicsWorld`, `PhysicsWorldConfig` (scene settings holder), setup jobs, force commands | Core, low-level fork, Entities, Numerics |
-| `Caelix.Simulation` | Caelix | `CaelixWorld`, `CaelixServer`, `ServerConnection`, replication, engine net types, brick collector | Core, Physics, low-level fork, Entities, Numerics |
+| `Caelix.Simulation` | Caelix | `CaelixWorld`, `CaelixServer`, `ServerConnection`, replication, engine net types | Core, Physics, low-level fork, Entities, Numerics |
 | `Caelix` | Caelix | `VoxelEntity`, `VoxelBody`, `CaelixHost`, `CaelixClient`, `ClientWorld`, renderers, raycast, importers, authoring | Simulation, URP |
 | `Caelix.Transport.Utp` | Caelix | Unity Transport channel | Core, com.unity.transport. Later |
 

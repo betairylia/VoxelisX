@@ -37,8 +37,10 @@ namespace Caelix.Tests
                     foreach (var entry in reader.ReadSectorIndex(0))
                     {
                         uint[] expected = reader.ReadPreview(0, entry.Coord);
-                        var actual = new uint[Sector.BRICKS_IN_SECTOR];
-                        PreviewBuilder.Build(entity.sectors[entry.Coord].Ptr, actual);
+                        int bricksInRegion = VoxelRegion.SizeInBricks *
+                                             VoxelRegion.SizeInBricks * VoxelRegion.SizeInBricks;
+                        var actual = new uint[bricksInRegion];
+                        Assert.That(PreviewBuilder.Build(in entity, entry.Coord, actual), Is.True);
                         CollectionAssert.AreEqual(expected, actual);
                     }
                 }

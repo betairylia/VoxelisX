@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Unity.Collections;
 using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
@@ -10,8 +11,14 @@ namespace Caelix.Rendering.Meshing
     /// <summary>
     /// Main coordinator for mesh-based voxel rendering.
     /// Tracks the <see cref="EntityView"/>s of a <see cref="ClientWorld"/> and manages one
-    /// <see cref="SectorMeshRenderer"/> per sector.
+    /// <see cref="GroupMeshRenderer"/> per render group.
     /// </summary>
+    /// <remarks>
+    /// Work comes from the client store's per-cycle change list, bucketed by render group exactly
+    /// as the ray query renderer buckets it. Nothing here knows how storage groups bricks: a group
+    /// that holds no allocated brick after its jobs ran is dropped, which is what replaces the old
+    /// sector-map sweep and its attachment-identity check.
+    /// </remarks>
     public class VoxelMeshRenderer : IDisposable
     {
         // Settings
@@ -20,13 +27,25 @@ namespace Caelix.Rendering.Meshing
 
         // View tracking
         private readonly HashSet<EntityView> trackedViews = new HashSet<EntityView>();
-        private readonly Dictionary<(EntityView, int3), SectorMeshRenderer> sectorRenderers =
-            new Dictionary<(EntityView, int3), SectorMeshRenderer>();
+        private readonly Dictionary<(EntityView, int3), GroupMeshRenderer> groupRenderers =
+            new Dictionary<(EntityView, int3), GroupMeshRenderer>();
 
         // Cached lists to avoid allocations
-        private readonly List<(EntityView, int3)> sectorsToRemove = new List<(EntityView, int3)>();
+        private readonly List<(EntityView, int3)> groupsToRemove = new List<(EntityView, int3)>();
         private readonly List<EntityView> viewsToRemove = new List<EntityView>();
         private readonly HashSet<EntityView> currentViews = new HashSet<EntityView>();
+
+        /// <summary>
+        /// Views whose work must be synthesised from every allocated brick instead of from this
+        /// cycle's changes: a view this renderer did not watch being built, or one whose meshes
+        /// were dropped.
+        /// </summary>
+        private readonly HashSet<EntityView> pendingFullUpload = new HashSet<EntityView>();
+
+        /// <summary>This Update's bucketed change lists, one per view that had work. Disposed at the end.</summary>
+        private readonly List<ChangeBuckets> frameBuckets = new List<ChangeBuckets>();
+
+        private bool regenerateAllPending;
 
         /// <summary>The client world whose views are rendered. Nothing renders until it is set.</summary>
         private ClientWorld source;
@@ -45,10 +64,9 @@ namespace Caelix.Rendering.Meshing
                 source = value != null && !value.IsDisposed ? value : null;
                 if (source != null)
                 {
-                    // No sector-removal subscription: RemoveMissingSectors() drops a renderer whose
-                    // sector is gone at the start of Update, before any job is scheduled, and every
-                    // mesh job was completed inside the previous Update. So no job can touch freed
-                    // storage, and the client no longer publishes a removal callback at all.
+                    // No sector-removal subscription: a group whose bricks are gone is dropped at the
+                    // end of Update, after its jobs completed, and every brick pointer is bound and
+                    // consumed inside one Update. So no job can touch freed storage.
                     source.ViewDespawning += RemoveView;
                     source.Owner.WorldRemoving += OnWorldRemoving;
                 }
@@ -66,9 +84,9 @@ namespace Caelix.Rendering.Meshing
         public int TrackedEntityCount => trackedViews.Count;
 
         /// <summary>
-        /// Gets the total number of sector renderers.
+        /// Gets the total number of render group renderers.
         /// </summary>
-        public int SectorRendererCount => sectorRenderers.Count;
+        public int GroupRendererCount => groupRenderers.Count;
 
         public VoxelMeshRenderer(int chunkSize, Material material)
         {
@@ -89,21 +107,75 @@ namespace Caelix.Rendering.Meshing
 
             // Discover and track new views
             DiscoverViews();
-            RemoveMissingSectors();
 
-            // Phase 1: Schedule mesh generation jobs for all invalidated chunks
-            JobHandle meshJobs = default;
-            bool hasMeshJobs = false;
-
-            foreach (var kvp in sectorRenderers)
+            if (regenerateAllPending)
             {
-                kvp.Value.ScheduleJobs();
-                if (kvp.Value.TryGetScheduledJobHandle(out JobHandle sectorJobs))
+                regenerateAllPending = false;
+                foreach (EntityView view in trackedViews)
                 {
-                    meshJobs = JobHandle.CombineDependencies(meshJobs, sectorJobs);
-                    hasMeshJobs = true;
+                    pendingFullUpload.Add(view);
                 }
             }
+
+            // Phase 1: bucket each view's changes by render group and schedule one job per dirty chunk
+            JobHandle meshJobs = default;
+            bool hasMeshJobs = false;
+            frameBuckets.Clear();
+
+            foreach (EntityView view in trackedViews)
+            {
+                bool fullUpload = pendingFullUpload.Contains(view);
+                ChangeBuckets buckets;
+                if (fullUpload)
+                {
+                    NativeArray<BrickChange> initial = RenderGroupChanges.BuildFullUploadChanges(view.Data);
+                    buckets = ChangeBuckets.Build(initial);
+                    initial.Dispose();
+                }
+                else
+                {
+                    NativeArray<BrickChange>.ReadOnly changes = view.Data.Changes;
+                    if (changes.Length == 0)
+                    {
+                        continue;
+                    }
+
+                    buckets = ChangeBuckets.Build(changes);
+                }
+
+                frameBuckets.Add(buckets);
+                NativeArray<BrickChange> sorted = buckets.Sorted.AsArray();
+
+                for (int g = 0; g < buckets.GroupKeys.Length; g++)
+                {
+                    int3 groupKey = buckets.GroupKeys[g];
+                    int start = buckets.GroupStarts[g];
+                    int count = buckets.GroupCounts[g];
+                    var key = (view, groupKey);
+
+                    if (!groupRenderers.TryGetValue(key, out GroupMeshRenderer renderer))
+                    {
+                        // A group nobody meshes yet has nothing to retire, so a slice of removals
+                        // alone does not warrant a renderer.
+                        if (!RenderGroupChanges.SliceHasUpdate(sorted, start, count))
+                        {
+                            continue;
+                        }
+
+                        renderer = new GroupMeshRenderer(groupKey, chunkSize, material, view.Transform);
+                        groupRenderers[key] = renderer;
+                    }
+
+                    renderer.ScheduleJobs(view.Data, sorted, start, count);
+                    if (renderer.TryGetScheduledJobHandle(out JobHandle groupJobs))
+                    {
+                        meshJobs = JobHandle.CombineDependencies(meshJobs, groupJobs);
+                        hasMeshJobs = true;
+                    }
+                }
+            }
+
+            pendingFullUpload.Clear();
 
             if (hasMeshJobs)
             {
@@ -111,13 +183,37 @@ namespace Caelix.Rendering.Meshing
             }
 
             // Phase 2: Apply meshes after the combined barrier
-            foreach (var kvp in sectorRenderers)
+            foreach (var kvp in groupRenderers)
             {
                 kvp.Value.ApplyCompletedJobs();
             }
 
-            // requireUpdate cleanup is owned by the client frame after consumers have read it.
+            // A group that holds no brick any more draws nothing; dropping it here replaces the old
+            // sector-map sweep. A region freed and recreated at the same coordinate inside one frame
+            // arrives as Removed plus Updated entries, so its group is re-meshed rather than leaked.
+            groupsToRemove.Clear();
+            foreach (var kvp in groupRenderers)
+            {
+                EntityView view = kvp.Key.Item1;
+                if (!trackedViews.Contains(view) || kvp.Value.IsEmpty(view.Data))
+                {
+                    groupsToRemove.Add(kvp.Key);
+                }
+            }
 
+            for (int i = 0; i < groupsToRemove.Count; i++)
+            {
+                RemoveGroupRenderer(groupsToRemove[i].Item1, groupsToRemove[i].Item2);
+            }
+
+            for (int i = 0; i < frameBuckets.Count; i++)
+            {
+                frameBuckets[i].Dispose();
+            }
+
+            frameBuckets.Clear();
+
+            // requireUpdate cleanup is owned by the client frame after consumers have read it.
         }
 
         /// <summary>
@@ -161,116 +257,41 @@ namespace Caelix.Rendering.Meshing
         {
             trackedViews.Add(view);
 
-            // Create renderers for all existing sectors
-            var sectorPositions = view.Data.sectors.GetKeyArray(Unity.Collections.Allocator.Temp);
-            foreach (var sectorPos in sectorPositions)
-            {
-                if (view.Data.sectors.TryGetValue(sectorPos, out var sectorHandle))
-                {
-                    AddSectorRenderer(view, sectorPos, sectorHandle);
-                }
-            }
-
-            sectorPositions.Dispose();
+            // Its bricks arrived before this renderer was looking, so the change list says nothing
+            // about them; the first Update synthesises the work from storage instead.
+            pendingFullUpload.Add(view);
         }
 
         private void RemoveView(EntityView view)
         {
             trackedViews.Remove(view);
+            pendingFullUpload.Remove(view);
 
-            // Remove all sector renderers for this view
-            sectorsToRemove.Clear();
-            foreach (var kvp in sectorRenderers)
+            // Remove all group renderers for this view
+            groupsToRemove.Clear();
+            foreach (var kvp in groupRenderers)
             {
                 if (kvp.Key.Item1 == view)
                 {
-                    sectorsToRemove.Add(kvp.Key);
+                    groupsToRemove.Add(kvp.Key);
                 }
             }
 
-            foreach (var key in sectorsToRemove)
+            foreach (var key in groupsToRemove)
             {
-                RemoveSectorRenderer(key.Item1, key.Item2);
+                RemoveGroupRenderer(key.Item1, key.Item2);
             }
+
+            groupsToRemove.Clear();
         }
 
-        private void AddSectorRenderer(EntityView view, int3 sectorPos, SectorHandle sectorHandle)
+        private void RemoveGroupRenderer(EntityView view, int3 groupKey)
         {
-            var key = (view, sectorPos);
-            if (sectorRenderers.ContainsKey(key))
-                return;
-
-            var renderer = new SectorMeshRenderer(
-                sectorHandle,
-                sectorPos,
-                chunkSize,
-                material,
-                view.Transform
-            );
-
-            sectorRenderers[key] = renderer;
-        }
-
-        private void RemoveSectorRenderer(EntityView view, int3 sectorPos)
-        {
-            var key = (view, sectorPos);
-            if (sectorRenderers.TryGetValue(key, out var renderer))
+            var key = (view, groupKey);
+            if (groupRenderers.TryGetValue(key, out var renderer))
             {
                 renderer.Dispose();
-                sectorRenderers.Remove(key);
-            }
-        }
-
-        /// <summary>
-        /// Checks for new sectors in tracked views and removes sectors that no longer exist.
-        /// </summary>
-        /// <remarks>
-        /// Identity, not coordinate: the replica can free a sector and create a new one at the same
-        /// coordinate inside one client frame (a removal message and a re-fill message land in two
-        /// apply flushes of the same <c>Receive</c>). The coordinate would still be present, while
-        /// the cached handle points at freed memory, so the attachment id is what decides.
-        /// </remarks>
-        private void RemoveMissingSectors()
-        {
-            sectorsToRemove.Clear();
-            foreach (var kvp in sectorRenderers)
-            {
-                EntityView view = kvp.Key.Item1;
-                int3 sectorPos = kvp.Key.Item2;
-
-                if (!trackedViews.Contains(view) || !view.Data.sectors.IsCreated ||
-                    !view.Data.sectors.TryGetValue(sectorPos, out SectorHandle current) ||
-                    current.InstanceId != kvp.Value.SectorInstanceId)
-                {
-                    sectorsToRemove.Add(kvp.Key);
-                }
-            }
-
-            foreach (var key in sectorsToRemove)
-            {
-                RemoveSectorRenderer(key.Item1, key.Item2);
-            }
-
-            // Add new sectors from tracked views
-            foreach (EntityView view in trackedViews)
-            {
-                if (!view.Data.sectors.IsCreated)
-                    continue;
-
-                var sectorPositions = view.Data.sectors.GetKeyArray(Unity.Collections.Allocator.Temp);
-                foreach (var sectorPos in sectorPositions)
-                {
-                    var key = (view, sectorPos);
-                    if (!sectorRenderers.ContainsKey(key))
-                    {
-                        if (view.Data.sectors.TryGetValue(sectorPos, out var sectorHandle))
-                        {
-                            AddSectorRenderer(view, sectorPos, sectorHandle);
-                        }
-                    }
-                }
-
-                sectorPositions.Dispose();
+                groupRenderers.Remove(key);
             }
         }
 
@@ -279,7 +300,8 @@ namespace Caelix.Rendering.Meshing
         /// </summary>
         public void RegenerateAll()
         {
-            foreach (var kvp in sectorRenderers)
+            regenerateAllPending = true;
+            foreach (var kvp in groupRenderers)
             {
                 kvp.Value.MarkAllDirty();
             }
@@ -296,13 +318,21 @@ namespace Caelix.Rendering.Meshing
 
         private void ReleaseRenderers()
         {
-            foreach (var kvp in sectorRenderers)
+            for (int i = 0; i < frameBuckets.Count; i++)
+            {
+                frameBuckets[i].Dispose();
+            }
+
+            frameBuckets.Clear();
+
+            foreach (var kvp in groupRenderers)
             {
                 kvp.Value.Dispose();
             }
 
-            sectorRenderers.Clear();
+            groupRenderers.Clear();
             trackedViews.Clear();
+            pendingFullUpload.Clear();
         }
     }
 }

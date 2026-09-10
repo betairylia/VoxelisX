@@ -64,13 +64,13 @@ namespace Caelix.Tests
         }
 
         [Test]
-        public void FullRebuild_AfterSectorRemoval_RetiresEveryStaleRendererBrick()
+        public void FullRebuild_AfterRegionRemoval_RetiresEveryStaleRendererBrick()
         {
             using var scope = new EntityDataTestScope();
             using var jobs = new JobScope();
 
             // Two bricks in group (0,0,0): brick (0,0,0) and brick (2,0,0).
-            scope.AddSector(int3.zero);
+            scope.Data.EnsureRegion(int3.zero);
             scope.Data.SetBlock(new int3(1, 1, 1), new Block(5));
             scope.Data.SetBlock(new int3(17, 1, 1), new Block(5));
             scope.Data.PropagateDirtyFlags(DirtyFlags.All).Complete();
@@ -87,7 +87,7 @@ namespace Caelix.Tests
             scope.Data.ClearChanges();
             scope.Data.ClearDirtyFlags();
             scope.Data.ClearRequireUpdates();
-            scope.Data.RemoveSectorAt(int3.zero);
+            scope.Data.RemoveRegion(int3.zero);
             scope.Data.ClearChanges();
 
             var empty = new NativeArray<BrickChange>(1, Allocator.TempJob);
@@ -111,7 +111,7 @@ namespace Caelix.Tests
             using var scope = new EntityDataTestScope();
             using var jobs = new JobScope();
 
-            scope.AddSector(int3.zero);
+            scope.Data.EnsureRegion(int3.zero);
             scope.Data.SetBlock(new int3(1, 1, 1), new Block(5));
             scope.Data.SetBlock(new int3(17, 1, 1), new Block(5));
             scope.Data.PropagateDirtyFlags(DirtyFlags.All).Complete();
@@ -122,13 +122,13 @@ namespace Caelix.Tests
             changes.Dispose();
             Assert.That(jobs.Map.Count, Is.EqualTo(2));
 
-            // Replace the storage with a sector holding one brick at a new position.
+            // Replace the storage with a region holding one brick at a new position.
             scope.Data.ClearChanges();
             scope.Data.ClearDirtyFlags();
             scope.Data.ClearRequireUpdates();
-            scope.Data.RemoveSectorAt(int3.zero);
+            scope.Data.RemoveRegion(int3.zero);
             scope.Data.ClearChanges();
-            scope.AddSector(int3.zero);
+            scope.Data.EnsureRegion(int3.zero);
             scope.Data.SetBlock(new int3(33, 1, 1), new Block(5)); // brick (4,0,0)
 
             var empty = new NativeArray<BrickChange>(1, Allocator.TempJob);

@@ -5,18 +5,23 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Rendering;
+using Caelix.Rendering.RayQuery;
 using Caelix.Utils;
 
 namespace Caelix.Rendering.Meshing
 {
     /// <summary>
-    /// Manages mesh rendering for a single sector.
-    /// Subdivides the sector into chunks and creates GameObject hierarchy for rendering.
+    /// Manages mesh rendering for a single <see cref="RenderGroup"/> of one entity.
+    /// Subdivides the group's block box into chunks and creates a GameObject hierarchy for them.
     /// </summary>
-    public class SectorMeshRenderer : IDisposable
+    /// <remarks>
+    /// Work arrives as a slice of the entity's per-cycle change list, keyed by brick key: every
+    /// entry marks the chunk that holds its brick dirty, and each dirty chunk is re-meshed from the
+    /// bricks bound for it. Nothing here knows how storage groups bricks.
+    /// </remarks>
+    public class GroupMeshRenderer : IDisposable
     {
-        private readonly SectorHandle sectorHandle;
-        private readonly int3 sectorPosition;
+        private readonly int3 groupKey;
         private readonly int chunkSize;
         private readonly Material material;
 
@@ -25,9 +30,13 @@ namespace Caelix.Rendering.Meshing
             DirtyFlags.BlockBrickRemoved |
             DirtyFlags.GeometryWithLocalNeighbor;
 
+        /// <summary>Blocks along one axis of a render group (16 bricks x 8 blocks = 128).</summary>
+        private const int GroupSizeInBlocks = RenderGroup.BricksPerAxis * BrickKey.BlocksPerAxis;
+
         // Chunk management
         private readonly int3 chunksPerAxis;
         private readonly int totalChunks;
+        private readonly int bricksPerChunkAxis;
         private readonly GameObject[] chunkObjects;
         private readonly MeshFilter[] meshFilters;
         private readonly MeshRenderer[] meshRenderers;
@@ -35,6 +44,7 @@ namespace Caelix.Rendering.Meshing
 
         // Job tracking
         private readonly List<ChunkMeshData> meshDataList = new List<ChunkMeshData>();
+        private readonly List<NativeArray<IntPtr>> brickTables = new List<NativeArray<IntPtr>>();
         private JobHandle jobHandle;
         private readonly List<int> chunkIndices = new List<int>();
         private readonly HashSet<int> dirtyChunks = new HashSet<int>();
@@ -42,39 +52,34 @@ namespace Caelix.Rendering.Meshing
         /// <summary>
         /// Parent GameObject containing all chunk renderers.
         /// </summary>
-        public GameObject SectorObject { get; private set; }
+        public GameObject GroupObject { get; private set; }
 
-        /// <summary>
-        /// Attachment identity of the storage this renderer reads. A replica can free a storage
-        /// unit and create a new one at the same coordinate inside one client frame, so the owner
-        /// compares this rather than the coordinate before it keeps a renderer alive.
-        /// </summary>
-        public long SectorInstanceId => sectorHandle.InstanceId;
+        /// <summary>The render group this renderer draws, in group units.</summary>
+        public int3 GroupKey => groupKey;
 
-        public SectorMeshRenderer(
-            SectorHandle sectorHandle,
-            int3 sectorPosition,
+        public GroupMeshRenderer(
+            int3 groupKey,
             int chunkSize,
             Material material,
             Transform worldTransform)
         {
-            this.sectorHandle = sectorHandle;
-            this.sectorPosition = sectorPosition;
+            this.groupKey = groupKey;
             this.chunkSize = chunkSize;
             this.material = material;
 
             // Calculate chunk subdivision
             chunksPerAxis = new int3(
-                Sector.SECTOR_SIZE_IN_BLOCKS / chunkSize,
-                Sector.SECTOR_SIZE_IN_BLOCKS / chunkSize,
-                Sector.SECTOR_SIZE_IN_BLOCKS / chunkSize
+                GroupSizeInBlocks / chunkSize,
+                GroupSizeInBlocks / chunkSize,
+                GroupSizeInBlocks / chunkSize
             );
             totalChunks = chunksPerAxis.x * chunksPerAxis.y * chunksPerAxis.z;
+            bricksPerChunkAxis = chunkSize / BrickKey.BlocksPerAxis;
 
             // Create parent GameObject
-            SectorObject = new GameObject($"Sector_{sectorPosition.x}_{sectorPosition.y}_{sectorPosition.z}");
-            SectorObject.transform.SetParent(worldTransform, false);
-            SectorObject.transform.localPosition = (sectorPosition * Sector.SECTOR_SIZE_IN_BLOCKS).ToVector3Int();
+            GroupObject = new GameObject($"Group_{groupKey.x}_{groupKey.y}_{groupKey.z}");
+            GroupObject.transform.SetParent(worldTransform, false);
+            GroupObject.transform.localPosition = RenderGroup.BlockOrigin(groupKey).ToVector3Int();
 
             // Allocate arrays
             chunkObjects = new GameObject[totalChunks];
@@ -108,7 +113,7 @@ namespace Caelix.Rendering.Meshing
 
                         // Create GameObject
                         GameObject chunkObj = new GameObject($"Chunk_{x}_{y}_{z}");
-                        chunkObj.transform.SetParent(SectorObject.transform, false);
+                        chunkObj.transform.SetParent(GroupObject.transform, false);
                         chunkObj.transform.localPosition = (chunkPos * chunkSize).ToVector3Int();
 
                         // Add components
@@ -137,38 +142,54 @@ namespace Caelix.Rendering.Meshing
         }
 
         /// <summary>
-        /// Schedules mesh generation jobs for dirty chunks.
-        /// Called during update phase 1.
+        /// Marks the chunks named by this group's slice of the change list dirty and schedules one
+        /// mesh generation job per dirty chunk. Called during update phase 1.
         /// </summary>
-        public void ScheduleJobs()
+        /// <remarks>
+        /// Removed and Updated entries alike mark their chunk: a freed brick has to disappear from
+        /// the mesh too. The require-update filter already happened while the changes were bucketed.
+        /// Brick pointers are bound here, on the main thread, and every job that reads them is
+        /// completed inside the same <see cref="VoxelMeshRenderer.Update"/> — the phase rule.
+        /// </remarks>
+        public unsafe void ScheduleJobs(
+            in VoxelEntityData data, NativeArray<BrickChange> sorted, int start, int count)
         {
-            ref Sector sector = ref sectorHandle.Get();
-
-            // Dirty source flags have already been propagated and cleared before the renderer tick.
-            // Consume the resulting target-side requireUpdate flags, just like the ray renderer.
-            unsafe
+            for (int i = start; i < start + count; i++)
             {
-                for (int brickIdx = 0; brickIdx < Sector.BRICKS_IN_SECTOR; brickIdx++)
+                int3 chunkIdx = ChunkOf(sorted[i].Key);
+                if (IsValidChunkIndex(chunkIdx))
                 {
-                    if (RequiresRemesh(sector.brickRequireUpdateFlags[brickIdx]))
-                    {
-                        int3 brickPos = Sector.ToBrickPos((short)brickIdx);
-                        int3 chunkIdx = (brickPos * Sector.SIZE_IN_BLOCKS) / chunkSize;
-
-                        if (IsValidChunkIndex(chunkIdx))
-                        {
-                            dirtyChunks.Add(GetChunkIndex(chunkIdx.x, chunkIdx.y, chunkIdx.z));
-                        }
-                    }
+                    dirtyChunks.Add(GetChunkIndex(chunkIdx.x, chunkIdx.y, chunkIdx.z));
                 }
             }
+
+            // A local copy: VoxelEntityData is a struct whose members are not readonly, so calling
+            // through the `in` parameter would make a defensive copy per call. Every copy shares the
+            // same storage, so a local one reads exactly the same bricks.
+            VoxelEntityData store = data;
+            int bricksPerChunk = bricksPerChunkAxis * bricksPerChunkAxis * bricksPerChunkAxis;
+            int3 groupFirstKey = RenderGroup.FirstKey(groupKey);
 
             // Schedule jobs for dirty chunks
             foreach (int chunkIdx in dirtyChunks)
             {
                 int3 chunkCoord = GetChunkCoord(chunkIdx);
-                int3 chunkMin = chunkCoord * chunkSize;
+                int3 chunkFirstKey = groupFirstKey + chunkCoord * bricksPerChunkAxis;
                 int3 chunkSizeVec = new int3(chunkSize, chunkSize, chunkSize);
+
+                // Bind the chunk's bricks on the main thread; an unallocated brick binds as zero.
+                var bricks = new NativeArray<IntPtr>(bricksPerChunk, Allocator.TempJob);
+                var cursor = new BrickCursor();
+                for (int bz = 0; bz < bricksPerChunkAxis; bz++)
+                for (int by = 0; by < bricksPerChunkAxis; by++)
+                for (int bx = 0; bx < bricksPerChunkAxis; bx++)
+                {
+                    int3 key = chunkFirstKey + new int3(bx, by, bz);
+                    int flat = bx + by * bricksPerChunkAxis + bz * bricksPerChunkAxis * bricksPerChunkAxis;
+                    bricks[flat] = store.TryBindBrick(SectorSlotId.Block, key, ref cursor, out Block* blocks)
+                        ? (IntPtr)blocks
+                        : IntPtr.Zero;
+                }
 
                 // Create mesh data
                 var meshData = new ChunkMeshData(
@@ -180,8 +201,8 @@ namespace Caelix.Rendering.Meshing
                 // Create job
                 var job = new MeshGenerationJob
                 {
-                    sector = sector,
-                    chunkMin = chunkMin,
+                    bricks = bricks,
+                    bricksPerAxis = bricksPerChunkAxis,
                     chunkSize = chunkSizeVec,
                     vertices = meshData.vertices,
                     indices = meshData.indices
@@ -192,6 +213,7 @@ namespace Caelix.Rendering.Meshing
 
                 // Track
                 meshDataList.Add(meshData);
+                brickTables.Add(bricks);
                 jobHandle = JobHandle.CombineDependencies(jobHandle, handle);
                 chunkIndices.Add(chunkIdx);
             }
@@ -223,16 +245,14 @@ namespace Caelix.Rendering.Meshing
 
                 // Dispose mesh data
                 meshData.Dispose();
+                brickTables[i].Dispose();
             }
 
             // Clear tracking
             jobHandle = default;
             meshDataList.Clear();
+            brickTables.Clear();
             chunkIndices.Clear();
-
-            // Clear sector state
-            ref Sector sector = ref sectorHandle.Get();
-            sector.ReorderBricks();
         }
 
         /// <summary>
@@ -292,9 +312,28 @@ namespace Caelix.Rendering.Meshing
             }
         }
 
+        /// <summary>True when the entity holds no allocated brick inside this group any more.</summary>
+        public bool IsEmpty(in VoxelEntityData data)
+        {
+            VoxelEntityData store = data;
+            foreach (int3 unused in store.EnumerateBricks(
+                         RenderGroup.FirstKey(groupKey), RenderGroup.LastKey(groupKey)))
+            {
+                return false;
+            }
+
+            return true;
+        }
+
         internal static bool RequiresRemesh(ushort requireUpdateFlags)
         {
             return (requireUpdateFlags & (ushort)MeshUpdateFlags) != 0;
+        }
+
+        /// <summary>Chunk coordinate, inside this group, of the chunk that holds a brick key.</summary>
+        private int3 ChunkOf(int3 key)
+        {
+            return (BrickKey.ToBlockOrigin(RenderGroup.LocalBrick(key))) / chunkSize;
         }
 
         /// <summary>
@@ -340,8 +379,16 @@ namespace Caelix.Rendering.Meshing
                 {
                     meshData.Dispose();
                 }
+
+                for (int i = 0; i < brickTables.Count; i++)
+                {
+                    brickTables[i].Dispose();
+                }
+
                 jobHandle = default;
                 meshDataList.Clear();
+                brickTables.Clear();
+                chunkIndices.Clear();
             }
 
             // Destroy meshes
@@ -354,10 +401,10 @@ namespace Caelix.Rendering.Meshing
             }
 
             // Destroy GameObjects
-            if (SectorObject != null)
+            if (GroupObject != null)
             {
-                DestroyObject(SectorObject);
-                SectorObject = null;
+                DestroyObject(GroupObject);
+                GroupObject = null;
             }
         }
 
