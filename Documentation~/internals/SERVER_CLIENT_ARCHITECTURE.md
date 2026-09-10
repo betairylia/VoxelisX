@@ -171,7 +171,11 @@ the renderer is what makes it possible.
 - **Replicated slot mask.** `CaelixWorldConfig.replicatedSlotMask`, one bit
   per slot id, default Block only. Sent in the handshake. Delta records carry
   slot id, stride, and raw bytes, so the client never needs the C# type of a
-  slot.
+  slot. Both ends must use the same fixed
+  [application-wide slot definitions](https://github.com/betairylia/Caelix-Core/blob/main/Documentation~/internals/voxel-storage.md#application-wide-slot-definitions).
+  A record's stride describes that definition; it cannot redefine a slot after
+  storage removal or recreation. The app-level definition contract is documented;
+  a frozen registry and comprehensive schema validation are not implemented yet.
 - **Everything is a keyed brick record.** One message kind, `BrickBatch`, per
   entity. Every record carries its own brick key and an explicit operation,
   `Update` or `Remove`, so nothing outside Caelix-Core names a sector. There is
@@ -183,12 +187,17 @@ the renderer is what makes it possible.
   `BlockBrickAdded`, `BlockBrickRemoved` — the Block slot is the only writer that
   sets `Geometry`) becomes an `Update` record. Records keep change-list order, so
   a key removed and recreated in one tick reaches the client as Remove then
-  Update. For more replicated slots later, add one dirty bit `SlotReplicate` that
-  any write to a masked slot sets.
+  Update. `SlotReplicate`, a bit set by writes to other replicated slots, is a
+  possible later extension; it is not an existing `DirtyFlags` member.
   `VoxelEntityData.AddSectorAt` marks every allocated brick of an attached
   storage unit `BlockBrickAdded | Geometry | GeometryWithLocalNeighbor`, because
   a generator or importer that hands over pre-filled storage would otherwise
   announce nothing.
+  This dirty gate selects delta work. It does not prove that a record has any
+  payload under the configured slot mask. Full uploads enumerate allocated
+  bricks regardless of dirty flags, because a new client also needs unchanged
+  data. Slot presence and current dirtiness are separate facts; the current
+  codec can emit a zero-slot Update when no selected slot exists.
 - **Two phases, phase B first.** Phase A, `ReplicationBatch`, packs BrickBatch
   messages for a list of entities, in parallel over BRICKS: a collect job flattens
   each entity into brick records, a size job runs over them, and a write job fills

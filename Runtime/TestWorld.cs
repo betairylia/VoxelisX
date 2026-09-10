@@ -195,6 +195,11 @@ namespace Caelix
 
                 foreach (var kvp in Sectors)
                 {
+                    if (math.any(kvp.Key >= numSectors) || math.any(kvp.Key < 0))
+                    {
+                        continue;
+                    }
+                    
                     int p = Time.frameCount;
 
                     jobs.Add(new TestUpdate()
