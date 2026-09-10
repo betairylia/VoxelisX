@@ -35,6 +35,11 @@ namespace Caelix.Rendering.Meshing
         private readonly List<EntityView> viewsToRemove = new List<EntityView>();
         private readonly HashSet<EntityView> currentViews = new HashSet<EntityView>();
 
+        // Groups whose slice carried a Removed change this frame. Only those can have lost their
+        // last brick, so only those are asked whether they are empty; asking every group would
+        // walk every region's brick index each frame (milestone 3 review).
+        private readonly HashSet<(EntityView, int3)> groupsWithRemovals = new HashSet<(EntityView, int3)>();
+
         /// <summary>
         /// Views whose work must be synthesised from every allocated brick instead of from this
         /// cycle's changes: a view this renderer did not watch being built, or one whose meshes
@@ -121,6 +126,7 @@ namespace Caelix.Rendering.Meshing
             JobHandle meshJobs = default;
             bool hasMeshJobs = false;
             frameBuckets.Clear();
+            groupsWithRemovals.Clear();
 
             foreach (EntityView view in trackedViews)
             {
@@ -152,6 +158,10 @@ namespace Caelix.Rendering.Meshing
                     int start = buckets.GroupStarts[g];
                     int count = buckets.GroupCounts[g];
                     var key = (view, groupKey);
+                    if (SliceHasRemoval(sorted, start, count))
+                    {
+                        groupsWithRemovals.Add(key);
+                    }
 
                     if (!groupRenderers.TryGetValue(key, out GroupMeshRenderer renderer))
                     {
@@ -195,7 +205,8 @@ namespace Caelix.Rendering.Meshing
             foreach (var kvp in groupRenderers)
             {
                 EntityView view = kvp.Key.Item1;
-                if (!trackedViews.Contains(view) || kvp.Value.IsEmpty(view.Data))
+                if (!trackedViews.Contains(view) ||
+                    (groupsWithRemovals.Contains(kvp.Key) && kvp.Value.IsEmpty(view.Data)))
                 {
                     groupsToRemove.Add(kvp.Key);
                 }
@@ -219,6 +230,16 @@ namespace Caelix.Rendering.Meshing
         /// <summary>
         /// Tracks the views of the source world and drops the ones that despawned.
         /// </summary>
+        private static bool SliceHasRemoval(NativeArray<BrickChange> sorted, int start, int count)
+        {
+            for (int i = start; i < start + count; i++)
+            {
+                if (sorted[i].Kind == ChangeKind.Removed) return true;
+            }
+
+            return false;
+        }
+
         private void DiscoverViews()
         {
             currentViews.Clear();
