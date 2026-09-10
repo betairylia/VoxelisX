@@ -160,7 +160,7 @@ namespace Caelix
                         int z = ((p / VoxelRegion.SizeInBlocks) % (VoxelRegion.SizeInBlocks / Zs)) * Zs + i;
                         int3 pos = origin + new int3(x, y, z);
                         region.SetBlock(
-                            pos, new Block((ushort)(region.GetBlock(pos).isEmpty ? 1 : 0)));
+                            pos, new Block((ushort)(region.GetBlock(pos).isEmpty ? new Block(0.5f, 1.0f, 0.8f, 0.0f).data : 0)));
                     }
                 }
             }
