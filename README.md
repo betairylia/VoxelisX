@@ -2,6 +2,8 @@
 
 **This repository is in an early research and experimental stage. Expect massive API changes.**
 
+<img width="480" height="560" align="center" alt="silly-bird-loop" src="https://github.com/user-attachments/assets/4e62968c-d537-4bd5-be48-49b1a0201753" />
+
 ---
 
 Caelix is an experimental voxel engine package for Unity URP.
